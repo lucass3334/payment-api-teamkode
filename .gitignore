@@ -1,0 +1,29 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+
+# Virtual environments
+.env
+*.env
+venv/
+.venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+
+# Poetry
+poetry.lock
+
+# Docker
+*.pid
+*.seed
+*.pid.lock
+logs/
+tmp/
