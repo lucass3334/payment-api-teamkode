@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_PASSWORD: Optional[str] = Field(None, env="REDIS_PASSWORD")
     REDIS_DB: int = Field(0, env="REDIS_DB")
-    REDIS_USE_SSL: bool = False  # 🔹 Adicionando suporte ao Redis com SSL
+    REDIS_USE_SSL: Optional[bool] = Field(None, env="REDIS_USE_SSL")  # 🔹 Permite ativar via variável de ambiente
 
     # 🔹 Controle de Ambiente
     USE_SANDBOX: bool = Field(True, env="USE_SANDBOX")
@@ -40,7 +40,8 @@ class Settings(BaseSettings):
             self.REDIS_PORT = parsed_url.port or self.REDIS_PORT
             self.REDIS_PASSWORD = parsed_url.password or self.REDIS_PASSWORD
             self.REDIS_DB = int(parsed_url.path.lstrip("/") or self.REDIS_DB)
-            self.REDIS_USE_SSL = parsed_url.scheme == "rediss"  # 🔹 Se for `rediss://`, ativa SSL
+            if self.REDIS_USE_SSL is None:  # 🔹 Só altera se não estiver definido
+                self.REDIS_USE_SSL = parsed_url.scheme == "rediss"  # 🔹 Se for `rediss://`, ativa SSL
 
 # Instância única de configurações
 settings = Settings()
