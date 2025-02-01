@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -28,3 +28,10 @@ poetry.lock
 *.pid.lock
 logs/
 tmp/
+
+# Ignorar certificados mTLS (Sicredi)
+app/certs/*.pem
+certs/
+*.key
+*.crt
+*.pem
