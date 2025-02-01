@@ -1,13 +1,12 @@
 from pydantic import BaseModel
 from pydantic.types import StringConstraints, DecimalConstraints
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Dict
 import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
 AmountType = Annotated[float, DecimalConstraints(gt=0, decimal_places=2)]
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
-UUIDType = Annotated[str, StringConstraints(min_length=36, max_length=36)]  # Validação para UUID
 
 class CustomerInfo(BaseModel):
     """
@@ -17,7 +16,7 @@ class CustomerInfo(BaseModel):
     email: Annotated[str, StringConstraints(min_length=5, max_length=100)]
     cpf_cnpj: Annotated[str, StringConstraints(min_length=11, max_length=14)]  # CPF (11) ou CNPJ (14)
     phone: Annotated[str, StringConstraints(min_length=10, max_length=15)]  # Formato DDD + Número
-    endereco: Optional[dict] = None  # Permite armazenar endereço como JSON
+    endereco: Optional[Dict[str, str]] = None  # ✅ Usa Dict validado para JSON do endereço
 
 class EmpresaSchema(BaseModel):
     """
@@ -27,11 +26,34 @@ class EmpresaSchema(BaseModel):
     nome: Annotated[str, StringConstraints(min_length=3, max_length=100)]
     cnpj: Annotated[str, StringConstraints(min_length=14, max_length=14)]  # CNPJ sem formatação
 
+class EmpresaConfigSchema(BaseModel):
+    """
+    Estrutura para credenciais da empresa nos serviços de pagamento.
+    """
+    id: uuid.UUID
+    empresa_id: uuid.UUID
+    asaas_api_key: Optional[str] = None
+    sicredi_client_id: Optional[str] = None
+    sicredi_client_secret: Optional[str] = None
+    sicredi_api_key: Optional[str] = None
+    rede_pv: Optional[str] = None
+    rede_api_key: Optional[str] = None
+
+class EmpresaCertificadosSchema(BaseModel):
+    """
+    Estrutura para armazenar certificados mTLS do Sicredi.
+    """
+    id: uuid.UUID
+    empresa_id: uuid.UUID
+    sicredi_cert_base64: Optional[str] = None
+    sicredi_key_base64: Optional[str] = None
+    sicredi_ca_base64: Optional[str] = None
+
 class PaymentSchema(BaseModel):
     """
     Estrutura para criação e consulta de pagamentos.
     """
-    empresa_id: UUIDType  # Relaciona o pagamento a uma empresa específica
+    empresa_id: uuid.UUID  # ✅ Agora usa `uuid.UUID` diretamente
     transaction_id: TransactionIDType
     amount: AmountType
     description: Annotated[str, StringConstraints(min_length=3, max_length=255)]
