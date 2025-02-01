@@ -10,12 +10,13 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = Field(..., env="SUPABASE_URL")
     SUPABASE_KEY: str = Field(..., env="SUPABASE_KEY")
 
-    # 🔹 Configuração do Redis (Prioriza REDIS_URL, mas permite configurações manuais)
+    # 🔹 Configuração do Redis (Agora com suporte a `rediss://`)
     REDIS_URL: Optional[str] = Field(None, env="REDIS_URL")
     REDIS_HOST: str = Field("localhost", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_PASSWORD: Optional[str] = Field(None, env="REDIS_PASSWORD")
     REDIS_DB: int = Field(0, env="REDIS_DB")
+    REDIS_USE_SSL: bool = False  # 🔹 Adicionando suporte ao Redis com SSL
 
     # 🔹 Controle de Ambiente
     USE_SANDBOX: bool = Field(True, env="USE_SANDBOX")
@@ -32,13 +33,14 @@ class Settings(BaseSettings):
         case_sensitive = True  # Garante que os nomes das variáveis sejam case-sensitive
 
     def configure_redis(self):
-        """Configura o Redis com base na URL ou nos parâmetros individuais."""
+        """Configura o Redis com base na URL `rediss://` ou nos parâmetros individuais."""
         if self.REDIS_URL:
             parsed_url = urlparse(self.REDIS_URL)
             self.REDIS_HOST = parsed_url.hostname or self.REDIS_HOST
             self.REDIS_PORT = parsed_url.port or self.REDIS_PORT
             self.REDIS_PASSWORD = parsed_url.password or self.REDIS_PASSWORD
             self.REDIS_DB = int(parsed_url.path.lstrip("/") or self.REDIS_DB)
+            self.REDIS_USE_SSL = parsed_url.scheme == "rediss"  # 🔹 Se for `rediss://`, ativa SSL
 
 # Instância única de configurações
 settings = Settings()

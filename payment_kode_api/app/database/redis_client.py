@@ -11,7 +11,7 @@ if settings.REDIS_URL:
         port=parsed_url.port,
         password=parsed_url.password,
         db=settings.REDIS_DB,
-        ssl=True if parsed_url.scheme == "rediss" else False  # Usa SSL se "rediss://"
+        ssl=settings.REDIS_USE_SSL  # Usa SSL se "rediss://"
     )
 else:
     # Configuração manual se REDIS_URL não estiver definida
@@ -20,7 +20,7 @@ else:
         port=settings.REDIS_PORT,
         password=settings.REDIS_PASSWORD,
         db=settings.REDIS_DB,
-        ssl=False  # SSL desativado para instâncias locais
+        ssl=settings.REDIS_USE_SSL  # Usa SSL se necessário
     )
 
 # Testa conexão com Redis e captura falhas
