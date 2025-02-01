@@ -1,34 +1,33 @@
 import os
 import redis
 from urllib.parse import urlparse
+from payment_kode_api.app.config import settings
 
-# Obtém a URL do Redis (prioritário para ambientes na nuvem)
-REDIS_URL = os.getenv("REDIS_URL", None)
-
-if REDIS_URL:
-    # Se REDIS_URL estiver definida, faz parsing da URL
-    parsed_url = urlparse(REDIS_URL)
-
+# Usa REDIS_URL prioritariamente
+if settings.REDIS_URL:
+    parsed_url = urlparse(settings.REDIS_URL)
     redis_client = redis.Redis(
         host=parsed_url.hostname,
         port=parsed_url.port,
         password=parsed_url.password,
-        db=0,  # Normalmente 0, mas pode ser ajustado se necessário
+        db=settings.REDIS_DB,
         ssl=True if parsed_url.scheme == "rediss" else False  # Usa SSL se "rediss://"
     )
 else:
     # Configuração manual se REDIS_URL não estiver definida
     redis_client = redis.Redis(
-        host=os.getenv("REDIS_HOST", "localhost"),
-        port=int(os.getenv("REDIS_PORT", 6379)),
-        password=os.getenv("REDIS_PASSWORD", None),
-        db=int(os.getenv("REDIS_DB", 0)),
-        ssl=True  # Mantém SSL ativado para conexões seguras na nuvem
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        password=settings.REDIS_PASSWORD,
+        db=settings.REDIS_DB,
+        ssl=False  # SSL desativado para instâncias locais
     )
 
-# Testa a conexão e faz log do status
+# Testa conexão com Redis e captura falhas
 try:
     redis_client.ping()
     print("✅ Conexão com Redis bem-sucedida!")
+except redis.exceptions.AuthenticationError:
+    print("❌ Erro de autenticação no Redis. Verifique sua senha.")
 except redis.exceptions.ConnectionError:
-    print("❌ Erro ao conectar ao Redis.")
+    print("❌ Erro ao conectar ao Redis. Verifique a configuração.")
