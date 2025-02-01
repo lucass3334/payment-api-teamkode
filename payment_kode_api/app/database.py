@@ -1,3 +1,5 @@
+import os
+import sys
 from supabase import create_client
 from app.config import settings
 from app.utilities.logging_config import logger
