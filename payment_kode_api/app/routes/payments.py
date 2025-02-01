@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel
-from pydantic.types import StringConstraints, DecimalConstraints
+from pydantic import BaseModel, Field
 from typing import Annotated, Optional
 from ..services import create_asaas_payment, create_sicredi_pix_payment, create_rede_payment
 from ..database.database import save_payment, get_payment, update_payment_status
@@ -8,16 +7,15 @@ from ..services.config_service import get_empresa_credentials
 import uuid
 import httpx
 from ..utilities.logging_config import logger
-import asyncio
 
 router = APIRouter()
 
 # Tipagens para validação
-PixKeyType = Annotated[str, StringConstraints(min_length=5, max_length=150)]
-TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[float, DecimalConstraints(gt=0, decimal_places=2)]
-InstallmentsType = Annotated[int, DecimalConstraints(ge=1, le=12)]
-EmpresaIDType = Annotated[str, StringConstraints(min_length=36, max_length=36)]
+PixKeyType = Annotated[str, Field(min_length=5, max_length=150)]
+TransactionIDType = Annotated[str, Field(min_length=6, max_length=35)]
+AmountType = Annotated[float, Field(gt=0, decimal_places=2)]
+InstallmentsType = Annotated[int, Field(ge=1, le=12)]
+EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
 class PixPaymentRequest(BaseModel):
     empresa_id: EmpresaIDType
@@ -66,7 +64,7 @@ async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: 
             chave_pix=payment_data.chave_pix,
             txid=payment_data.txid
         )
-        if response and "status" in response and response["status"] == "pending":
+        if response and response.get("status") == "pending":
             logger.info(f"Pagamento Pix via Sicredi iniciado com sucesso para {transaction_id}")
             return {"status": "processing", "message": "Pagamento Pix sendo processado via Sicredi", "transaction_id": transaction_id}
 
@@ -85,7 +83,7 @@ async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: 
                 transaction_id=transaction_id,
                 customer={}
             )
-            if response and "status" in response and response["status"] == "pending":
+            if response and response.get("status") == "pending":
                 logger.info(f"Pagamento Pix via Asaas iniciado com sucesso para {transaction_id}")
                 return {"status": "processing", "message": "Sicredi falhou, usando Asaas como fallback", "transaction_id": transaction_id}
             
