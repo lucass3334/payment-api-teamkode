@@ -1,6 +1,7 @@
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
-from app.utilities.logging_config import logger
+from payment_kode_api.app.utilities.logging_config import logger
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 def add_error_handlers(app):
     """
@@ -11,7 +12,15 @@ def add_error_handlers(app):
         logger.error(f"HTTPException: {exc.detail}")
         return JSONResponse(
             status_code=exc.status_code,
-            content={"message": exc.detail},
+            content={"error": "HTTPException", "message": exc.detail, "status_code": exc.status_code},
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+        logger.error(f"StarletteHTTPException: {exc.detail}")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": "StarletteHTTPException", "message": exc.detail, "status_code": exc.status_code},
         )
 
     @app.exception_handler(Exception)
@@ -19,5 +28,5 @@ def add_error_handlers(app):
         logger.error(f"Unhandled Exception: {exc}")
         return JSONResponse(
             status_code=500,
-            content={"message": "Ocorreu um erro interno no servidor."},
+            content={"error": "InternalServerError", "message": "Ocorreu um erro interno no servidor."},
         )
