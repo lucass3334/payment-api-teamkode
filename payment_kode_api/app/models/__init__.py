@@ -1,5 +1,12 @@
-from .schemas import PaymentSchema, EmpresaSchema
-from .database_models import PaymentModel
-from .database_models import save_payment, get_payment, update_payment_status
+from .schemas import PaymentSchema, EmpresaSchema, EmpresaConfigSchema, EmpresaCertificadosSchema  # ✅ Adicionados novos schemas
+from .database_models import PaymentModel, EmpresaConfigModel, EmpresaCertificadosModel  # ✅ Adicionados modelos atualizados
 
-__all__ = ["PaymentSchema", "EmpresaSchema", "PaymentModel", "save_payment", "get_payment", "update_payment_status"]
+__all__ = [
+    "PaymentSchema", 
+    "EmpresaSchema", 
+    "EmpresaConfigSchema",  # ✅ Novo schema
+    "EmpresaCertificadosSchema",  # ✅ Novo schema
+    "PaymentModel", 
+    "EmpresaConfigModel",  # ✅ Novo modelo
+    "EmpresaCertificadosModel",  # ✅ Novo modelo
+]
