@@ -8,6 +8,7 @@ from ..services.config_service import get_empresa_credentials
 import uuid
 import httpx
 from ..utilities.logging_config import logger
+import asyncio
 
 router = APIRouter()
 
@@ -26,22 +27,6 @@ class PixPaymentRequest(BaseModel):
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
 
-class CreditCardData(BaseModel):
-    cardholder_name: Annotated[str, StringConstraints(min_length=3, max_length=50)]
-    card_number: Annotated[str, StringConstraints(min_length=13, max_length=19)]
-    expiration_month: Annotated[str, StringConstraints(min_length=2, max_length=2)]
-    expiration_year: Annotated[str, StringConstraints(min_length=4, max_length=4)]
-    security_code: Annotated[str, StringConstraints(min_length=3, max_length=4)]
-    soft_descriptor: Optional[Annotated[str, StringConstraints(max_length=13)]] = "Compra Online"
-
-class CreditCardPaymentRequest(BaseModel):
-    empresa_id: EmpresaIDType
-    amount: AmountType
-    transaction_id: Optional[TransactionIDType] = None
-    card_data: CreditCardData
-    installments: InstallmentsType = 1
-    webhook_url: Optional[str] = None
-
 async def notify_user_webhook(webhook_url: str, data: dict):
     """Envia uma notificação para o webhook configurado pelo usuário."""
     async with httpx.AsyncClient() as client:
@@ -53,7 +38,7 @@ async def notify_user_webhook(webhook_url: str, data: dict):
 
 @router.post("/payment/pix")
 async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: BackgroundTasks):
-    """Cria um pagamento via Pix usando o Sicredi para uma empresa específica."""
+    """Cria um pagamento via Pix usando Sicredi como primeira opção e Asaas como fallback."""
     transaction_id = payment_data.transaction_id or str(uuid.uuid4())
 
     existing_payment = get_payment(transaction_id, payment_data.empresa_id)
@@ -74,13 +59,39 @@ async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: 
     })
 
     try:
-        background_tasks.add_task(
-            create_sicredi_pix_payment,
+        logger.info(f"Tentando processar pagamento Pix via Sicredi para {transaction_id}")
+        response = await create_sicredi_pix_payment(
             empresa_id=payment_data.empresa_id,
             amount=payment_data.amount,
             chave_pix=payment_data.chave_pix,
             txid=payment_data.txid
         )
-        return {"status": "processing", "message": "Pagamento Pix sendo processado", "transaction_id": transaction_id}
+        if response and "status" in response and response["status"] == "pending":
+            logger.info(f"Pagamento Pix via Sicredi iniciado com sucesso para {transaction_id}")
+            return {"status": "processing", "message": "Pagamento Pix sendo processado via Sicredi", "transaction_id": transaction_id}
+
+        logger.warning(f"Pagamento via Sicredi não foi iniciado corretamente para {transaction_id}. Tentando fallback via Asaas.")
+        raise Exception("Erro desconhecido no Sicredi")
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao processar Pix: {str(e)}")
+        logger.error(f"Erro no Sicredi para {transaction_id}: {str(e)}")
+
+        try:
+            logger.info(f"Sicredi falhou, tentando fallback via Asaas para {transaction_id}")
+            response = await create_asaas_payment(
+                empresa_id=payment_data.empresa_id,
+                amount=payment_data.amount,
+                payment_type="pix",
+                transaction_id=transaction_id,
+                customer={}
+            )
+            if response and "status" in response and response["status"] == "pending":
+                logger.info(f"Pagamento Pix via Asaas iniciado com sucesso para {transaction_id}")
+                return {"status": "processing", "message": "Sicredi falhou, usando Asaas como fallback", "transaction_id": transaction_id}
+            
+            logger.error(f"Erro no Asaas, pagamento falhou para {transaction_id}")
+            raise HTTPException(status_code=500, detail="Falha no pagamento Pix em todos os gateways disponíveis")
+
+        except Exception as fallback_error:
+            logger.error(f"Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
+            raise HTTPException(status_code=500, detail="Falha no pagamento Pix em todos os gateways disponíveis")
