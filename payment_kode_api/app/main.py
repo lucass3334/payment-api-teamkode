@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from payment_kode_api.app.routes import payments_router, webhooks_router, empresas_router  # ✅ Importação correta das rotas
 from payment_kode_api.app.config import settings
 from payment_kode_api.app.error_handlers import add_error_handlers
-from payment_kode_api.app.utilities.logging_config import logger
+from payment_kode_api.app.utilities.logging_config import logger  # ✅ Importação garantida
 
 def create_app() -> FastAPI:
     """
@@ -30,9 +30,6 @@ def create_app() -> FastAPI:
         """
         Inicializa configurações necessárias no startup.
         """
-        if not logger:
-            from payment_kode_api.app.utilities.logging_config import logger  # 🔹 Garante que logger está carregado
-        
         logger.info("🚀 Aplicação iniciando...")
         logger.info(f"✅ API `{app.title}` versão `{app.version}` inicializada com sucesso!")
         logger.info(f"🔧 Modo Debug: {'Ativado' if app.debug else 'Desativado'}")
