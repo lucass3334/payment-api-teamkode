@@ -10,10 +10,10 @@ services:
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
-      - REDIS_URL=rediss://${REDIS_USERNAME}:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/0
-      - REDIS_HOST=${REDIS_HOST:-oregon-redis.render.com}  # ✅ Se for Render, já ajusta
+      - REDIS_URL=${REDIS_URL}  # ✅ Usa o valor direto do `.env`
+      - REDIS_HOST=${REDIS_HOST:-oregon-redis.render.com}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_USERNAME=${REDIS_USERNAME:-red-cuf4esdds78s73fgmgig}  # ✅ Usuário exigido pelo Render
+      - REDIS_USERNAME=${REDIS_USERNAME:-red-cuf4esdds78s73fgmgig}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_USE_SSL=${REDIS_USE_SSL:-true}
       - REDIS_SSL_CERT_REQS=${REDIS_SSL_CERT_REQS:-CERT_NONE}
@@ -33,6 +33,7 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+    restart: always  # ✅ Reinicia automaticamente na nuvem
 
   redis:
     image: redis:latest
@@ -42,10 +43,11 @@ services:
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "--user", "${REDIS_USERNAME}", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]  # ✅ Corrigido
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: always  # ✅ Redis se mantém ativo
 
   worker:
     build:
@@ -54,7 +56,7 @@ services:
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
-      - REDIS_URL=rediss://${REDIS_USERNAME}:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/0
+      - REDIS_URL=${REDIS_URL}  # ✅ Usa o valor direto do `.env`
       - REDIS_HOST=${REDIS_HOST:-oregon-redis.render.com}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_USERNAME=${REDIS_USERNAME:-red-cuf4esdds78s73fgmgig}
@@ -68,12 +70,14 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    entrypoint: ["/app/docker-entrypoint.sh"]  # ✅ Espera Redis estar pronto
     command:
       - poetry
       - run
       - celery
       - -A
-      - payment_kode_api.app.workers.tasks  # ✅ Correção do caminho completo do módulo Celery
+      - payment_kode_api.app.workers.tasks  
       - worker
       - --loglevel=info
       - --concurrency=4
+    restart: always # ✅ Mantém o worker rodando na nuvem

@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     openssl \
-    redis-tools \   
+    redis-tools \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,8 +43,15 @@ ENV PYTHONPATH="/app"
 # Remove arquivos temporários desnecessários
 RUN rm -rf /root/.cache/pip
 
+# 🔹 Copia o script de entrypoint e torna executável
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Expõe a porta padrão do FastAPI
 EXPOSE 8000
+
+# Define o entrypoint padrão
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Comando para iniciar a aplicação
 CMD ["poetry", "run", "uvicorn", "payment_kode_api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
