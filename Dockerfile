@@ -25,8 +25,11 @@ COPY pyproject.toml poetry.lock /app/
 # Instala as dependências do projeto
 RUN poetry config virtualenvs.create false && poetry install --no-root --no-interaction --no-ansi
 
-# Copia o restante do código
-COPY . /app/
+# Copia o restante do código, incluindo `bugs_scripts`
+COPY payment_kode_api /app/payment_kode_api
+COPY bugs_scripts /app/bugs_scripts  
+# 🔹 Garante que a pasta de scripts existe antes de alterar permissões
+RUN chmod -R 755 /app/bugs_scripts
 
 # Remove arquivos temporários desnecessários
 RUN rm -rf /root/.cache/pip
