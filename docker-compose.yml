@@ -14,6 +14,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - USE_SANDBOX=${USE_SANDBOX}
       - SICREDI_ENV=${SICREDI_ENV}
+      - WEBHOOK_PIX=${WEBHOOK_PIX}  # ✅ ADICIONADO AQUI
     depends_on:
       redis:
         condition: service_healthy  # ✅ Aguarda o Redis ficar pronto
@@ -53,6 +54,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - USE_SANDBOX=${USE_SANDBOX}
       - SICREDI_ENV=${SICREDI_ENV}
+      - WEBHOOK_PIX=${WEBHOOK_PIX}  # ✅ ADICIONADO AQUI
     depends_on:
       redis:
         condition: service_healthy  # ✅ Aguarda o Redis ficar pronto
