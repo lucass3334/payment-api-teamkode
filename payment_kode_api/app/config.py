@@ -42,38 +42,41 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = True
 
-def configure_redis(self):
-    """Configura o Redis com SSL e tratamento especial para Render.com"""
-    if self.REDIS_URL:
-        parsed_url = urlparse(self.REDIS_URL)
+    def __init__(self, **values):
+        """Executa configuração extra após carregar valores do `.env`."""
+        super().__init__(**values)
+        self.configure_redis()  # ✅ Agora chamado corretamente
 
-        # 🔹 Captura usuário e senha corretamente (Evita erro de autenticação)
-        self.REDIS_USERNAME = parsed_url.username  # Pode ser None, Redis muitas vezes não usa
-        self.REDIS_PASSWORD = parsed_url.password  # ⚠️ Removi strip() para evitar perda de caracteres
+    def configure_redis(self):
+        """Configura o Redis com SSL e tratamento especial para Render.com"""
+        if self.REDIS_URL:
+            parsed_url = urlparse(self.REDIS_URL)
 
-        # 🔹 Força configurações SSL quando usar `rediss://`
-        if parsed_url.scheme == "rediss":
-            self.REDIS_USE_SSL = True
-            self.REDIS_SSL_CERT_REQS = "CERT_NONE"  # ✅ Permite conexões sem certificado local
+            # 🔹 Captura usuário e senha corretamente (Evita erro de autenticação)
+            self.REDIS_USERNAME = parsed_url.username  # Pode ser None, Redis muitas vezes não usa
+            self.REDIS_PASSWORD = parsed_url.password.strip() if parsed_url.password else self.REDIS_PASSWORD  # 🔹 `strip()` mantido para evitar espaços extras
 
-        self.REDIS_HOST = parsed_url.hostname or self.REDIS_HOST
+            # 🔹 Força configurações SSL quando usar `rediss://`
+            if parsed_url.scheme == "rediss":
+                self.REDIS_USE_SSL = True
+                self.REDIS_SSL_CERT_REQS = "CERT_NONE"  # ✅ Permite conexões sem certificado local
 
-        # 🔹 Define porta corretamente (Se não houver porta na URL, usa 6379)
-        self.REDIS_PORT = int(parsed_url.port) if parsed_url.port else 6379
-        self.REDIS_DB = int(parsed_url.path.lstrip("/") or self.REDIS_DB)
+            self.REDIS_HOST = parsed_url.hostname or self.REDIS_HOST
 
-    # 🔹 Converte `REDIS_SSL_CERT_REQS` para `ssl` corretamente
-    ssl_cert_map = {
-        "CERT_NONE": ssl.CERT_NONE,
-        "CERT_OPTIONAL": ssl.CERT_OPTIONAL,
-        "CERT_REQUIRED": ssl.CERT_REQUIRED
-    }
-    self.REDIS_SSL_CERT_REQS = ssl_cert_map.get(self.REDIS_SSL_CERT_REQS.upper(), ssl.CERT_NONE)
+            # 🔹 Define porta corretamente (Se não houver porta na URL, usa 6379)
+            self.REDIS_PORT = int(parsed_url.port) if parsed_url.port else 6379
+            self.REDIS_DB = int(parsed_url.path.lstrip("/") or self.REDIS_DB)
 
-    # 🔹 Garante que `REDIS_USE_SSL` seja um booleano correto
-    self.REDIS_USE_SSL = str(self.REDIS_USE_SSL).lower() in ["true", "1"]
-   
+        # 🔹 Converte `REDIS_SSL_CERT_REQS` para `ssl` corretamente
+        ssl_cert_map = {
+            "CERT_NONE": ssl.CERT_NONE,
+            "CERT_OPTIONAL": ssl.CERT_OPTIONAL,
+            "CERT_REQUIRED": ssl.CERT_REQUIRED
+        }
+        self.REDIS_SSL_CERT_REQS = ssl_cert_map.get(self.REDIS_SSL_CERT_REQS.upper(), ssl.CERT_NONE)
 
-# Instância única de configurações
+        # 🔹 Garante que `REDIS_USE_SSL` seja um booleano correto
+        self.REDIS_USE_SSL = str(self.REDIS_USE_SSL).lower() in ["true", "1"]
+
+# ✅ Instância única de configurações (agora `configure_redis()` será chamado automaticamente)
 settings = Settings()
-settings.configure_redis()
