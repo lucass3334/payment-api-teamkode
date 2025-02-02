@@ -45,6 +45,24 @@ async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
         logger.error(f"Erro ao buscar certificados da empresa {empresa_id}: {e}")
         raise
 
+async def get_empresa(empresa_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca uma empresa pelo ID.
+    """
+    try:
+        response = (
+            supabase.table("empresas")
+            .select("*")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+
+        return response.data[0] if response.data else None
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar empresa {empresa_id}: {e}")
+        raise
+
 async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Salva um novo pagamento no banco de dados, garantindo idempotência para cada empresa.

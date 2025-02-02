@@ -16,7 +16,7 @@ services:
       - SICREDI_ENV=${SICREDI_ENV}
     depends_on:
       - redis
-    command: poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8000 
 
   redis:
     image: redis:latest

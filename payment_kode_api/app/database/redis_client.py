@@ -5,31 +5,38 @@ import ssl
 
 def create_redis_client():
     """Factory para criar cliente Redis com configuração segura para Render.com"""
-    if settings.REDIS_URL:
-        parsed_url = urlparse(settings.REDIS_URL)
+    try:
+        use_ssl = settings.REDIS_USE_SSL
+        cert_reqs = ssl.CERT_REQUIRED if settings.REDIS_SSL_CERT_REQS else ssl.CERT_NONE  # Correção aqui
+
+        if settings.REDIS_URL:
+            parsed_url = urlparse(settings.REDIS_URL)
+            return redis.Redis(
+                host=parsed_url.hostname,
+                port=parsed_url.port,
+                password=parsed_url.password,
+                db=int(parsed_url.path.lstrip("/") or settings.REDIS_DB),
+                ssl=use_ssl,
+                ssl_cert_reqs=cert_reqs,
+                decode_responses=True,
+                socket_timeout=5,
+                socket_connect_timeout=5
+            )
+
         return redis.Redis(
-            host=parsed_url.hostname,
-            port=parsed_url.port,
-            password=parsed_url.password,
-            db=int(parsed_url.path.lstrip("/") or settings.REDIS_DB),
-            ssl=settings.REDIS_USE_SSL,
-            ssl_cert_reqs=settings.REDIS_SSL_CERT_REQS,
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            password=settings.REDIS_PASSWORD,
+            db=settings.REDIS_DB,
+            ssl=use_ssl,
+            ssl_cert_reqs=cert_reqs,
             decode_responses=True,
             socket_timeout=5,
             socket_connect_timeout=5
         )
-    
-    return redis.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        password=settings.REDIS_PASSWORD,
-        db=settings.REDIS_DB,
-        ssl=settings.REDIS_USE_SSL,
-        ssl_cert_reqs=settings.REDIS_SSL_CERT_REQS,
-        decode_responses=True,
-        socket_timeout=5,
-        socket_connect_timeout=5
-    )
+    except Exception as e:
+        print(f"❌ Erro ao configurar Redis: {str(e)}")
+        return None
 
 # Criação do cliente Redis
 redis_client = create_redis_client()
@@ -37,9 +44,10 @@ redis_client = create_redis_client()
 # Teste de conexão robusto
 def test_redis_connection():
     try:
-        if redis_client.ping():
+        if redis_client and redis_client.ping():
             print("✅ Conexão com Redis: Operacional")
             return True
+        print("❌ Redis não respondeu ao ping.")
         return False
     except redis.exceptions.AuthenticationError as e:
         print(f"❌ Falha de autenticação: {str(e)}")
@@ -52,5 +60,5 @@ def test_redis_connection():
     return False
 
 # Executa teste na inicialização
-if __name__ != "__main__":
+if redis_client:
     test_redis_connection()
