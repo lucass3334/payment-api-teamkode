@@ -2,7 +2,7 @@ from pydantic import AnyHttpUrl, Field
 from pydantic_settings import BaseSettings
 from typing import Optional
 from urllib.parse import urlparse
-import ssl  # 🔹 Importação para configuração SSL
+import ssl
 
 class Settings(BaseSettings):
     """Configurações globais da aplicação carregadas de variáveis de ambiente."""
@@ -11,15 +11,15 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = Field(..., env="SUPABASE_URL")
     SUPABASE_KEY: str = Field(..., env="SUPABASE_KEY")
 
-    # 🔹 Configuração do Redis (Agora com suporte completo a SSL)
+    # 🔹 Configuração do Redis
     REDIS_URL: Optional[str] = Field(None, env="REDIS_URL")
     REDIS_HOST: str = Field("localhost", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")
     REDIS_PASSWORD: Optional[str] = Field(None, env="REDIS_PASSWORD")
     REDIS_DB: int = Field(0, env="REDIS_DB")
     
-    REDIS_USE_SSL: bool = Field(False, env="REDIS_USE_SSL")  # 🔹 Forçando bool
-    REDIS_SSL_CERT_REQS: str = Field("CERT_NONE", env="REDIS_SSL_CERT_REQS")  # 🔹 Agora é string
+    REDIS_USE_SSL: bool = Field(False, env="REDIS_USE_SSL")
+    REDIS_SSL_CERT_REQS: str = Field("CERT_NONE", env="REDIS_SSL_CERT_REQS")
 
     # 🔹 Controle de Ambiente
     USE_SANDBOX: bool = Field(True, env="USE_SANDBOX")
@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     # 🔹 Configuração de Webhooks
     WEBHOOK_PIX: AnyHttpUrl = Field(..., env="WEBHOOK_PIX")
+
+    # 🔹 Configuração do ambiente do Sicredi (produção ou homologação)
+    SICREDI_ENV: str = Field("production", env="SICREDI_ENV")
 
     class Config:
         env_file = ".env"
@@ -42,14 +45,16 @@ class Settings(BaseSettings):
 
             # 🔹 Extrai password corretamente (incluindo caracteres especiais)
             self.REDIS_PASSWORD = parsed_url.password or self.REDIS_PASSWORD
-            
+
             # 🔹 Força configurações SSL quando usar rediss://
             if parsed_url.scheme == "rediss":
                 self.REDIS_USE_SSL = True
-                self.REDIS_SSL_CERT_REQS = "CERT_NONE"  # 🔹 Padrão compatível com Redis no Render.com
-                
+                self.REDIS_SSL_CERT_REQS = "CERT_NONE"
+
             self.REDIS_HOST = parsed_url.hostname or self.REDIS_HOST
-            self.REDIS_PORT = parsed_url.port or self.REDIS_PORT
+            
+            # 🔹 Correção: Remove espaços antes de converter para inteiro
+            self.REDIS_PORT = int(parsed_url.port) if parsed_url.port else 6379  # ✅ Define um valor padrão seguro
             self.REDIS_DB = int(parsed_url.path.lstrip("/") or self.REDIS_DB)
 
         # 🔹 Converte `REDIS_SSL_CERT_REQS` para `ssl` corretamente
