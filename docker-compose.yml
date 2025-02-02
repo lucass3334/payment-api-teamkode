@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   web:
     build:
@@ -10,13 +8,15 @@ services:
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
+      - REDIS_URL=${REDIS_URL}   # ✅ Adicionando a URL completa
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - USE_SANDBOX=${USE_SANDBOX}
       - SICREDI_ENV=${SICREDI_ENV}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy  # ✅ Aguarda o Redis ficar pronto
     command: 
       - poetry
       - run
@@ -34,6 +34,11 @@ services:
       - "6379:6379"
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
+    healthcheck:  # ✅ Garante que o Redis está pronto antes de iniciar os outros serviços
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   worker:
     build:
@@ -42,13 +47,15 @@ services:
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
+      - REDIS_URL=${REDIS_URL}  # ✅ Adicionando a URL completa
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - USE_SANDBOX=${USE_SANDBOX}
       - SICREDI_ENV=${SICREDI_ENV}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy  # ✅ Aguarda o Redis ficar pronto
     command: 
       - poetry
       - run
