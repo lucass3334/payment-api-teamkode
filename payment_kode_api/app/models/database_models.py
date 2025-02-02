@@ -1,12 +1,11 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints, condecimal
 from datetime import datetime
-from pydantic.types import StringConstraints, DecimalConstraints
 from typing import Annotated, Optional
 import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[float, DecimalConstraints(gt=0, decimal_places=2)]
+AmountType = Annotated[float, condecimal(gt=0, decimal_places=2)]
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
 
 class PaymentModel(BaseModel):

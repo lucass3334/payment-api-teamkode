@@ -9,12 +9,17 @@ ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=UTF-8
 
-# Instala dependências de sistema necessárias (PostgreSQL, OpenSSL, Build Essentials)
+# Instala dependências de sistema necessárias (PostgreSQL, OpenSSL, Build Essentials, Redis CLI)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     openssl \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    redis-tools \   
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configura variável de ambiente para permitir o uso do Redis via SSL
+ENV REDIS_SSL_CERT_REQS=CERT_NONE
 
 # Instala o Poetry globalmente sem cache
 RUN pip install --no-cache-dir poetry
@@ -22,8 +27,9 @@ RUN pip install --no-cache-dir poetry
 # Copia apenas os arquivos necessários para instalar dependências primeiro (cache otimizado)
 COPY pyproject.toml poetry.lock /app/
 
-# Instala as dependências do projeto
-RUN poetry config virtualenvs.create false && poetry install --no-root --no-interaction --no-ansi
+# Garante que as dependências sejam instaladas mesmo que `poetry.lock` não exista
+RUN poetry config virtualenvs.create false \
+    && [ -f poetry.lock ] && poetry install --no-root --no-interaction --no-ansi || poetry install --no-interaction --no-ansi
 
 # Copia TODO o código da API corretamente
 COPY payment_kode_api /app/payment_kode_api
