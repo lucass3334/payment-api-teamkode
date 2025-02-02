@@ -61,7 +61,7 @@ class Settings(BaseSettings):
                 self.REDIS_USE_SSL = True
                 self.REDIS_SSL_CERT_REQS = "CERT_NONE"  # ✅ Permite conexões sem certificado local
 
-            self.REDIS_HOST = parsed_url.hostname or self.REDIS_HOST
+            self.REDIS_HOST = parsed_url.hostname or "redis"
 
             # 🔹 Define porta corretamente (Se não houver porta na URL, usa 6379)
             self.REDIS_PORT = int(parsed_url.port) if parsed_url.port else 6379
