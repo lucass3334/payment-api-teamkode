@@ -1,25 +1,26 @@
 [project]
 name = "payment-kode-api"
 version = "0.0.1"
-description = "Api com Fallback com as melhores taxas de mercado"
+description = "API com Fallback com as melhores taxas de mercado"
 authors = [
-    {name = "Team Kode"}
+    { name = "Team Kode" }
 ]
-license = {text = "MIT"}
+license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9,<4.0"
-dependencies = [
-    "fastapi (>=0.115.6,<0.116.0)",
-    "uvicorn (>=0.34.0,<0.35.0)",
-    "supabase (>=2.11.0,<3.0.0)",
-    "redis (>=5.2.1,<6.0.0)",
-    "celery (>=5.4.0,<6.0.0)",
-    "pydantic (>=2.10.5,<3.0.0)",
-    "httpx (>=0.28.1,<0.29.0)",
-    "loguru (>=0.7.3,<0.8.0)",
-    "aiofiles (>=24.1.0,<25.0.0)"
-]
 
+dependencies = [
+    "fastapi>=0.115.6,<0.116.0",
+    "uvicorn>=0.34.0,<0.35.0",
+    "supabase>=2.11.0,<3.0.0",
+    "redis>=5.2.1,<6.0.0",
+    "celery>=5.4.0,<6.0.0",
+    "pydantic>=2.10.5,<3.0.0",  # Mantido para validação
+    "pydantic-settings>=2.0.0,<3.0.0",  # Necessário para BaseSettings
+    "httpx>=0.28.1,<0.29.0",
+    "loguru>=0.7.3,<0.8.0",
+    "aiofiles>=24.1.0,<25.0.0"
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -37,4 +38,3 @@ coverage = "^7.6.10"
 packages = [
     { include = "payment_kode_api" }
 ]
-

@@ -10,18 +10,42 @@ services:
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_URL=rediss://${REDIS_USERNAME}:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/0
+      - REDIS_HOST=${REDIS_HOST:-oregon-redis.render.com}  # ✅ Se for Render, já ajusta
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_USERNAME=${REDIS_USERNAME:-red-cuf4esdds78s73fgmgig}  # ✅ Usuário exigido pelo Render
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_USE_SSL=${REDIS_USE_SSL:-true}
+      - REDIS_SSL_CERT_REQS=${REDIS_SSL_CERT_REQS:-CERT_NONE}
       - USE_SANDBOX=${USE_SANDBOX}
       - SICREDI_ENV=${SICREDI_ENV}
+      - WEBHOOK_PIX=${WEBHOOK_PIX}
+      - PYTHONPATH="/app"
     depends_on:
-      - redis
-    command: poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8000 --reload
+      redis:
+        condition: service_healthy
+    command:
+      - poetry
+      - run
+      - uvicorn
+      - payment_kode_api.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
 
   redis:
     image: redis:latest
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     ports:
       - "6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "--user", "${REDIS_USERNAME}", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   worker:
     build:
@@ -30,10 +54,26 @@ services:
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_URL=rediss://${REDIS_USERNAME}:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/0
+      - REDIS_HOST=${REDIS_HOST:-oregon-redis.render.com}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_USERNAME=${REDIS_USERNAME:-red-cuf4esdds78s73fgmgig}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_USE_SSL=${REDIS_USE_SSL:-true}
+      - REDIS_SSL_CERT_REQS=${REDIS_SSL_CERT_REQS:-CERT_NONE}
       - USE_SANDBOX=${USE_SANDBOX}
       - SICREDI_ENV=${SICREDI_ENV}
+      - WEBHOOK_PIX=${WEBHOOK_PIX}
+      - PYTHONPATH="/app"
     depends_on:
-      - redis
-    command: poetry run celery -A payment_kode_api.app.workers worker --loglevel=info --concurrency=4
+      redis:
+        condition: service_healthy
+    command:
+      - poetry
+      - run
+      - celery
+      - -A
+      - payment_kode_api.app.workers.tasks  # ✅ Correção do caminho completo do módulo Celery
+      - worker
+      - --loglevel=info
+      - --concurrency=4
