@@ -2,18 +2,16 @@ import redis
 from redis import Redis
 from urllib.parse import urlparse
 from payment_kode_api.app.config import settings
-from loguru import logger  # Padronizando logs
+from loguru import logger
 import ssl
 
 def create_redis_client() -> Redis:
     """Cria cliente Redis com configuração segura e tratamento de erros robusto."""
     try:
-        # Configuração SSL baseada nas settings
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ssl_context.check_hostname = False
         ssl_context.verify_mode = settings.REDIS_SSL_CERT_REQS
 
-        # Parâmetros comuns
         conn_params = {
             "ssl": settings.REDIS_USE_SSL,
             "ssl_cert_reqs": ssl_context.verify_mode,
@@ -24,15 +22,10 @@ def create_redis_client() -> Redis:
             "health_check_interval": 30
         }
 
-        # Preferência por REDIS_URL se disponível
         if settings.REDIS_URL:
             logger.debug(f"Conectando via URL: {settings.REDIS_URL.split('@')[-1]}")
-            return Redis.from_url(
-                settings.REDIS_URL,
-                **conn_params
-            )
+            return Redis.from_url(settings.REDIS_URL, **conn_params)
 
-        # Conexão via parâmetros individuais
         logger.debug("Conectando via parâmetros individuais")
         return Redis(
             host=settings.REDIS_HOST,
@@ -50,6 +43,8 @@ def create_redis_client() -> Redis:
         logger.error(f"Erro na conexão com Redis: {str(e)}")
         raise
 
+_redis_client = None
+
 def get_redis_client() -> Redis:
     """Getter singleton para o cliente Redis com reconexão automática."""
     global _redis_client
@@ -57,11 +52,11 @@ def get_redis_client() -> Redis:
         _redis_client = create_redis_client()
     return _redis_client
 
-def test_redis_connection(client: Redis = None) -> bool:
+def test_redis_connection() -> bool:  # ✅ Versão corrigida
     """Testa a conexão com Redis de forma robusta."""
     try:
-        target_client = client or get_redis_client()
-        return bool(target_client.ping())
+        client = get_redis_client()
+        return bool(client.ping())
     except redis.exceptions.AuthenticationError as e:
         logger.critical(f"Autenticação falhou: {str(e)}")
     except redis.exceptions.ConnectionError as e:
@@ -72,12 +67,10 @@ def test_redis_connection(client: Redis = None) -> bool:
         logger.error(f"Erro inesperado: {str(e)}")
     return False
 
-# Inicialização lazy do cliente
-_redis_client = None
-
-# Teste de conexão apenas quando executado diretamente
 if __name__ == "__main__":
     if test_redis_connection():
         logger.success("✅ Conexão com Redis estabelecida com sucesso!")
     else:
         logger.error("❌ Falha na conexão com Redis")
+
+__all__ = ["get_redis_client", "test_redis_connection"]  # ✅ Exportações explícitas
