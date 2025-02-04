@@ -1,12 +1,12 @@
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives import serialization, hashes
 import base64
-from ..database.database import get_empresa_certificados  # 🔹 Alterado para o nome correto
+from ..database.database import get_empresa_certificados  # 🔹 Certifique-se que a função tem esse nome correto
 
 
 def get_private_key(empresa_id: str):
     """Busca a chave privada RSA da empresa no banco de dados."""
-    certificados = get_empresa_certificados(empresa_id)  # 🔹 Atualizado o nome da função
+    certificados = get_empresa_certificados(empresa_id)  # 🔹 Nome da função corrigido
     if not certificados or not certificados.get("private_key_base64"):
         raise ValueError(f"Chave privada não encontrada para empresa {empresa_id}")
     
@@ -16,7 +16,7 @@ def get_private_key(empresa_id: str):
 
 def get_public_key(empresa_id: str):
     """Busca a chave pública RSA da empresa no banco de dados."""
-    certificados = get_empresa_certificados(empresa_id)  # 🔹 Atualizado o nome da função
+    certificados = get_empresa_certificados(empresa_id)  # 🔹 Nome da função corrigido
     if not certificados or not certificados.get("public_key_base64"):
         raise ValueError(f"Chave pública não encontrada para empresa {empresa_id}")
     
