@@ -22,14 +22,14 @@ class SupabaseClient:
 
 supabase = SupabaseClient.get_client()
 
-async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
+async def get_empresas_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
     """
     Busca os certificados digitais da empresa na tabela dedicada.
     Retorna um dicionário com os certificados em base64 ou None se não encontrado.
     """
     try:
         response = (
-            supabase.table("empresas_certificados")
+            supabase.table("empresas_certificados")  # 🔹 Nome atualizado da tabela
             .select("*")
             .eq("empresa_id", empresa_id)
             .execute()
@@ -61,6 +61,46 @@ async def get_empresa(empresa_id: str) -> Optional[Dict[str, Any]]:
 
     except Exception as e:
         logger.error(f"Erro ao buscar empresa {empresa_id}: {e}")
+        raise
+
+async def save_empresa_certificados(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Salva os certificados digitais de uma empresa na tabela `empresas_certificados`.
+    """
+    try:
+        empresa_id = data.get("empresa_id")
+        if not empresa_id:
+            raise ValueError("empresa_id é obrigatório para salvar certificados.")
+
+        response = supabase.table("empresas_certificados")  # 🔹 Nome atualizado da tabela
+        response = response.insert(data).execute()
+
+        if not response.data:
+            raise ValueError("Erro ao salvar certificados: resposta vazia do Supabase.")
+
+        logger.info(f"Certificados salvos para empresa {empresa_id}")
+        return response.data[0]
+
+    except Exception as e:
+        logger.error(f"Erro ao salvar certificados para empresa {empresa_id}: {e}")
+        raise
+
+async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca uma empresa pelo `access_token` para autenticação de chamadas protegidas.
+    """
+    try:
+        response = (
+            supabase.table("empresas")
+            .select("*")
+            .eq("access_token", access_token)
+            .execute()
+        )
+
+        return response.data[0] if response.data else None
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar empresa pelo access_token: {e}")
         raise
 
 async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,41 +189,6 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
 
     except Exception as e:
         logger.error(f"Erro ao atualizar status do pagamento para empresa {empresa_id}, transaction_id {transaction_id}: {e}")
-        raise
-
-async def save_empresa(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Cadastro de empresas com verificação de CNPJ duplicado.
-    """
-    try:
-        empresa_id = data.get("empresa_id")
-        cnpj = data.get("cnpj")
-
-        if not empresa_id or not cnpj:
-            raise ValueError("empresa_id e cnpj são obrigatórios")
-
-        # Verificação de CNPJ existente
-        existing_empresa = (
-            supabase.table("empresas")
-            .select("empresa_id")
-            .eq("cnpj", cnpj)
-            .execute()
-        )
-
-        if existing_empresa.data:
-            logger.info(f"Empresa já cadastrada: CNPJ {cnpj}")
-            return existing_empresa.data[0]
-
-        response = supabase.table("empresas").insert(data).execute()
-
-        if not response.data:
-            raise ValueError("Erro ao salvar empresa: resposta vazia do Supabase.")
-
-        logger.info(f"Nova empresa cadastrada: {response.data[0]}")
-        return response.data[0]
-
-    except Exception as e:
-        logger.error(f"Erro ao salvar empresa: {e}")
         raise
 
 async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:

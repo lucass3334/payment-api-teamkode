@@ -1,12 +1,18 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 from typing import Annotated, Optional
-from ..services import create_asaas_payment, create_sicredi_pix_payment, create_rede_payment
-from ..database.database import save_payment, get_payment, update_payment_status
-from ..services.config_service import get_empresa_credentials
 import uuid
 import httpx
-from ..utilities.logging_config import logger
+
+from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
+from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
+from payment_kode_api.app.services.gateways.rede_client import create_rede_payment
+from payment_kode_api.app.database.database import save_payment, get_payment, update_payment_status
+from payment_kode_api.app.services.config_service import get_empresa_credentials
+from payment_kode_api.app.utilities.logging_config import logger
+from payment_kode_api.app.security.auth import validate_access_token  # 🔹 Importa a validação do token
+
+router = APIRouter()
 
 router = APIRouter()
 
@@ -18,7 +24,6 @@ InstallmentsType = Annotated[int, Field(ge=1, le=12)]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
 class PixPaymentRequest(BaseModel):
-    empresa_id: EmpresaIDType
     amount: AmountType
     chave_pix: PixKeyType
     txid: TransactionIDType
@@ -35,20 +40,25 @@ async def notify_user_webhook(webhook_url: str, data: dict):
             logger.error(f"Erro ao enviar notificação ao webhook do usuário: {e}")
 
 @router.post("/payment/pix")
-async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: BackgroundTasks):
+async def create_pix_payment(
+    payment_data: PixPaymentRequest, 
+    background_tasks: BackgroundTasks, 
+    empresa: dict = Depends(validate_access_token)  # 🔹 Valida o access_token
+):
     """Cria um pagamento via Pix usando Sicredi como primeira opção e Asaas como fallback."""
+    empresa_id = empresa["empresa_id"]  # 🔹 Obtém empresa autenticada
     transaction_id = payment_data.transaction_id or str(uuid.uuid4())
 
-    existing_payment = get_payment(transaction_id, payment_data.empresa_id)
+    existing_payment = get_payment(transaction_id, empresa_id)
     if existing_payment:
         return {"status": "already_processed", "message": "Pagamento já foi processado", "transaction_id": transaction_id}
 
-    credentials = get_empresa_credentials(payment_data.empresa_id)
+    credentials = get_empresa_credentials(empresa_id)
     if not credentials:
         raise HTTPException(status_code=400, detail="Empresa não encontrada ou sem credenciais configuradas.")
 
     save_payment({
-        "empresa_id": payment_data.empresa_id,
+        "empresa_id": empresa_id,
         "transaction_id": transaction_id,
         "amount": payment_data.amount,
         "payment_type": "pix",
@@ -59,7 +69,7 @@ async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: 
     try:
         logger.info(f"Tentando processar pagamento Pix via Sicredi para {transaction_id}")
         response = await create_sicredi_pix_payment(
-            empresa_id=payment_data.empresa_id,
+            empresa_id=empresa_id,
             amount=payment_data.amount,
             chave_pix=payment_data.chave_pix,
             txid=payment_data.txid
@@ -77,7 +87,7 @@ async def create_pix_payment(payment_data: PixPaymentRequest, background_tasks: 
         try:
             logger.info(f"Sicredi falhou, tentando fallback via Asaas para {transaction_id}")
             response = await create_asaas_payment(
-                empresa_id=payment_data.empresa_id,
+                empresa_id=empresa_id,
                 amount=payment_data.amount,
                 payment_type="pix",
                 transaction_id=transaction_id,

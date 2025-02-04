@@ -1,3 +1,7 @@
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+import base64
+import os
 from pydantic import AnyHttpUrl, Field, ValidationError
 from pydantic_settings import BaseSettings
 from typing import Optional
@@ -37,6 +41,10 @@ class Settings(BaseSettings):
 
     # 🔹 Depuração
     DEBUG: bool = Field(False, env="DEBUG")
+
+    # 🔹 Chave privada RSA para descriptografia de cartões
+    PRIVATE_KEY_PATH: Optional[str] = Field(None, env="PRIVATE_KEY_PATH")
+    PRIVATE_KEY_DATA: Optional[str] = Field(None, env="PRIVATE_KEY_DATA")
 
     class Config:
         env_file = ".env"

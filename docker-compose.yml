@@ -8,47 +8,53 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env  # ✅ Carrega todas as variáveis automaticamente
+      - .env
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "poetry", "run", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
       retries: 5
-    restart: always  # ✅ Mantém a API rodando na nuvem
+    restart: always
 
   redis:
-    image: redis:latest
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    image: redis:7.2
+    command: redis-server --requirepass "${REDIS_PASSWORD}"
     ports:
       - "6379:6379"
     env_file:
-      - .env  # ✅ Carrega todas as variáveis automaticamente
+      - .env
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: always  # ✅ Mantém o Redis rodando corretamente
+    restart: always
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - .env  # ✅ Carrega todas as variáveis automaticamente
+      - .env
     depends_on:
       redis:
         condition: service_healthy
       web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "celery", "-A", "payment_kode_api.app.workers.tasks", "status"]
-      interval: 30s
+      test: ["CMD", "sh", "-c", "poetry run celery -A payment_kode_api.app.workers.tasks inspect ping || exit 1"]
+      interval: 20s
       timeout: 10s
       retries: 5
     command: >
       sh -c "exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4"
-    restart: always # ✅ Mantém o worker rodando corretamente
+    restart: always
+
+volumes:
+  redis_data:
+    driver: local
