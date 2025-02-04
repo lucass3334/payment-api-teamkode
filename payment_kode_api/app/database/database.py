@@ -43,7 +43,7 @@ async def save_empresa(data: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"Erro ao salvar empresa {empresa_id}: {e}")
         raise
 
-async def get_empresas_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
+async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
     """
     Busca os certificados digitais da empresa na tabela dedicada.
     Retorna um dicionário com os certificados em base64 ou None se não encontrado.

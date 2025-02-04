@@ -8,7 +8,8 @@ try:
         get_payment, 
         update_payment_status, 
         save_empresa, 
-        get_empresa_config
+        get_empresa_config,
+        get_empresa_certificados
     )
     
     # Cliente Redis com inicialização controlada
@@ -53,6 +54,7 @@ __all__ = [
     "save_empresa", 
     "get_empresa_config",
     "get_redis_client",
+    get_empresa_certificados,
     "init_database",  # Novo export
     "shutdown_database"  # Novo export
 ]
