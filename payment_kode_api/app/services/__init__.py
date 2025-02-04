@@ -1,6 +1,6 @@
-from .asaas_client import create_asaas_payment
-from .sicredi_client import create_sicredi_pix_payment
-from .rede_client import create_rede_payment
+from .gateways.asaas_client import create_asaas_payment
+from .gateways.sicredi_client import create_sicredi_pix_payment
+from .gateways.rede_client import create_rede_payment
 from .config_service import get_empresa_credentials, create_temp_cert_files  #  Adicionado para gerenciar credenciais e certificados
 
 __all__ = [
