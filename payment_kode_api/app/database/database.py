@@ -22,6 +22,27 @@ class SupabaseClient:
 
 supabase = SupabaseClient.get_client()
 
+async def save_empresa(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Salva os dados de uma empresa no banco de dados.
+    """
+    try:
+        empresa_id = data.get("empresa_id")
+        if not empresa_id:
+            raise ValueError("empresa_id é obrigatório para salvar a empresa.")
+
+        response = supabase.table("empresas").insert(data).execute()
+
+        if not response.data:
+            raise ValueError("Erro ao salvar empresa: resposta vazia do Supabase.")
+
+        logger.info(f"Empresa {empresa_id} salva com sucesso.")
+        return response.data[0]
+
+    except Exception as e:
+        logger.error(f"Erro ao salvar empresa {empresa_id}: {e}")
+        raise
+
 async def get_empresas_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
     """
     Busca os certificados digitais da empresa na tabela dedicada.
