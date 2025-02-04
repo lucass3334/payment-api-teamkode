@@ -1,7 +1,7 @@
 import redis
 from redis import Redis
 from urllib.parse import urlparse
-from payment_kode_api.app.config import settings
+from payment_kode_api.app.core.config import settings
 from loguru import logger
 import ssl
 

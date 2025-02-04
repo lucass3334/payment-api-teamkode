@@ -1,6 +1,6 @@
 import os
 from supabase import create_client, Client
-from payment_kode_api.app.config import settings
+from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.utilities.logging_config import logger
 from datetime import datetime
 from typing import Optional, Dict, Any

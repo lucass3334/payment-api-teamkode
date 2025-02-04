@@ -1,8 +1,9 @@
 import httpx
 from fastapi import HTTPException
-from ..utilities.logging_config import logger
-from ..database.database import update_payment_status
-from ..services.config_service import get_empresa_credentials
+from ...utilities.logging_config import logger
+from ...database.database import update_payment_status
+from ..config_service import get_empresa_credentials
+import asyncio
 
 async def get_asaas_headers(empresa_id: str):
     """
@@ -24,20 +25,20 @@ async def create_asaas_payment(
     transaction_id: str,
     customer: dict,
     card_data: dict = None,
-    installments: int = 1
+    installments: int = 1,
+    retries: int = 2
 ):
     """
-    Cria um pagamento no Asaas para a empresa específica.
+    Cria um pagamento no Asaas para a empresa específica, com tentativas de fallback.
     """
 
-    # Busca credenciais da empresa
     credentials = get_empresa_credentials(empresa_id)
     headers = await get_asaas_headers(empresa_id)
 
     # Define a URL correta
     use_sandbox = credentials.get("use_sandbox", "true").lower() == "true"
     asaas_api_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
-    
+
     # Webhook dinâmico por empresa
     webhook_pix = credentials.get("webhook_pix")
 
@@ -86,17 +87,24 @@ async def create_asaas_payment(
     else:
         raise HTTPException(status_code=400, detail="Tipo de pagamento inválido")
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(asaas_api_url, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro HTTP ao criar pagamento no Asaas: {e.response.status_code} - {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento no Asaas")
-        except httpx.RequestError as e:
-            logger.error(f"Erro de conexão ao criar pagamento no Asaas: {e}")
-            raise HTTPException(status_code=500, detail="Erro interno ao processar pagamento no Asaas")
+    async with httpx.AsyncClient(timeout=15) as client:
+        for attempt in range(retries):
+            try:
+                response = await client.post(asaas_api_url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Erro HTTP ao criar pagamento no Asaas (tentativa {attempt+1}): {e.response.status_code} - {e.response.text}")
+                if e.response.status_code in {400, 402, 403}:
+                    raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento no Asaas")
+
+            except httpx.RequestError as e:
+                logger.warning(f"Erro de conexão ao criar pagamento no Asaas (tentativa {attempt+1}): {e}")
+
+            await asyncio.sleep(2)  # Espera um pouco antes de tentar novamente
+
+    raise HTTPException(status_code=500, detail="Falha ao processar pagamento no Asaas após múltiplas tentativas")
 
 async def get_asaas_payment_status(empresa_id: str, transaction_id: str):
     """Verifica o status de um pagamento no Asaas para a empresa específica."""
@@ -108,7 +116,7 @@ async def get_asaas_payment_status(empresa_id: str, transaction_id: str):
 
     url = f"{asaas_api_url}?externalReference={transaction_id}"
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10) as client:
         try:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
