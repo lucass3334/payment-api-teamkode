@@ -1,64 +1,83 @@
 import redis
+from redis import Redis
 from urllib.parse import urlparse
 from payment_kode_api.app.config import settings
+from loguru import logger  # Padronizando logs
 import ssl
 
-def create_redis_client():
-    """Factory para criar cliente Redis com configuração segura para Render.com"""
+def create_redis_client() -> Redis:
+    """Cria cliente Redis com configuração segura e tratamento de erros robusto."""
     try:
-        use_ssl = settings.REDIS_USE_SSL
-        cert_reqs = ssl.CERT_REQUIRED if settings.REDIS_SSL_CERT_REQS else ssl.CERT_NONE  # Correção aqui
+        # Configuração SSL baseada nas settings
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = settings.REDIS_SSL_CERT_REQS
 
+        # Parâmetros comuns
+        conn_params = {
+            "ssl": settings.REDIS_USE_SSL,
+            "ssl_cert_reqs": ssl_context.verify_mode,
+            "ssl_ca_certs": None,
+            "decode_responses": True,
+            "socket_timeout": 5,
+            "socket_connect_timeout": 5,
+            "health_check_interval": 30
+        }
+
+        # Preferência por REDIS_URL se disponível
         if settings.REDIS_URL:
-            parsed_url = urlparse(settings.REDIS_URL)
-            return redis.Redis(
-                host=parsed_url.hostname,
-                port=parsed_url.port,
-                password=parsed_url.password,
-                db=int(parsed_url.path.lstrip("/") or settings.REDIS_DB),
-                ssl=use_ssl,
-                ssl_cert_reqs=cert_reqs,
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5
+            logger.debug(f"Conectando via URL: {settings.REDIS_URL.split('@')[-1]}")
+            return Redis.from_url(
+                settings.REDIS_URL,
+                **conn_params
             )
 
-        return redis.Redis(
+        # Conexão via parâmetros individuais
+        logger.debug("Conectando via parâmetros individuais")
+        return Redis(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
+            username=settings.REDIS_USERNAME,
             password=settings.REDIS_PASSWORD,
             db=settings.REDIS_DB,
-            ssl=use_ssl,
-            ssl_cert_reqs=cert_reqs,
-            decode_responses=True,
-            socket_timeout=5,
-            socket_connect_timeout=5
+            **conn_params
         )
+
+    except redis.AuthenticationError as e:
+        logger.critical(f"Falha de autenticação: {str(e)}")
+        raise
     except Exception as e:
-        print(f"❌ Erro ao configurar Redis: {str(e)}")
-        return None
+        logger.error(f"Erro na conexão com Redis: {str(e)}")
+        raise
 
-# Criação do cliente Redis
-redis_client = create_redis_client()
+def get_redis_client() -> Redis:
+    """Getter singleton para o cliente Redis com reconexão automática."""
+    global _redis_client
+    if not _redis_client or not _redis_client.ping():
+        _redis_client = create_redis_client()
+    return _redis_client
 
-# Teste de conexão robusto
-def test_redis_connection():
+def test_redis_connection(client: Redis = None) -> bool:
+    """Testa a conexão com Redis de forma robusta."""
     try:
-        if redis_client and redis_client.ping():
-            print("✅ Conexão com Redis: Operacional")
-            return True
-        print("❌ Redis não respondeu ao ping.")
-        return False
+        target_client = client or get_redis_client()
+        return bool(target_client.ping())
     except redis.exceptions.AuthenticationError as e:
-        print(f"❌ Falha de autenticação: {str(e)}")
+        logger.critical(f"Autenticação falhou: {str(e)}")
     except redis.exceptions.ConnectionError as e:
-        print(f"❌ Falha de conexão: Verifique host/porta - {str(e)}")
+        logger.error(f"Conexão falhou: {str(e)}")
     except redis.exceptions.TimeoutError as e:
-        print(f"❌ Timeout: O Redis não respondeu em 5s - {str(e)}")
+        logger.warning(f"Timeout: {str(e)}")
     except Exception as e:
-        print(f"❌ Erro inesperado: {str(e)}")
+        logger.error(f"Erro inesperado: {str(e)}")
     return False
 
-# Executa teste na inicialização
-if redis_client:
-    test_redis_connection()
+# Inicialização lazy do cliente
+_redis_client = None
+
+# Teste de conexão apenas quando executado diretamente
+if __name__ == "__main__":
+    if test_redis_connection():
+        logger.success("✅ Conexão com Redis estabelecida com sucesso!")
+    else:
+        logger.error("❌ Falha na conexão com Redis")
