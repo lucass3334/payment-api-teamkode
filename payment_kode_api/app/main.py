@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, Response
-from payment_kode_api.app.routes import payments_router, webhooks_router, empresas_router
-from payment_kode_api.app.config import settings
-from payment_kode_api.app.error_handlers import add_error_handlers
+from payment_kode_api.app.api.routes import payments_router, webhooks_router, empresas_router
+from payment_kode_api.app.core.config import settings
+from payment_kode_api.app.core.error_handlers import add_error_handlers
 from payment_kode_api.app.utilities.logging_config import logger
 from redis import Redis
 
