@@ -48,32 +48,40 @@ class Settings(BaseSettings):
         if self.REDIS_URL:
             parsed_url = urlparse(self.REDIS_URL)
 
-            # 🔹 Captura corretamente usuário e senha do Redis
+            # 🔹 Captura credenciais sem encoding adicional
             self.REDIS_USERNAME = parsed_url.username or self.REDIS_USERNAME
-            self.REDIS_PASSWORD = quote_plus(parsed_url.password) if parsed_url.password else self.REDIS_PASSWORD
+            self.REDIS_PASSWORD = parsed_url.password or self.REDIS_PASSWORD  # ✅ Correção principal
 
-            # 🔹 Ajusta host e porta corretamente
+            # 🔹 Codifica valores para reconstrução segura da URL
+            safe_username = quote_plus(self.REDIS_USERNAME) if self.REDIS_USERNAME else ""
+            safe_password = quote_plus(self.REDIS_PASSWORD) if self.REDIS_PASSWORD else ""
+
+            # 🔹 Reconstrói URL com encoding correto
+            self.REDIS_URL = (
+                f"{parsed_url.scheme}://"
+                f"{safe_username}:{safe_password}"
+                f"@{parsed_url.hostname}:{parsed_url.port}"
+                f"/{parsed_url.path.lstrip('/') or self.REDIS_DB}"
+            )
+
+            # 🔹 Atualiza configurações de conexão
             self.REDIS_HOST = parsed_url.hostname or "redis"
             self.REDIS_PORT = parsed_url.port or 6379
             self.REDIS_DB = int(parsed_url.path.lstrip("/") or self.REDIS_DB)
-
-            # 🔹 Reconstrói a URL correta para Celery e outros serviços
-            self.REDIS_URL = f"rediss://{self.REDIS_USERNAME}:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
-
-            # 🔹 Ativa SSL se necessário
             self.REDIS_USE_SSL = parsed_url.scheme == "rediss"
-            if self.REDIS_USE_SSL:
-                self.REDIS_SSL_CERT_REQS = "CERT_NONE"  # ✅ Evita problemas de certificado
 
-        # 🔹 Mapeia certificados SSL corretamente
+        # 🔹 Configuração SSL
         ssl_cert_map = {
             "CERT_NONE": ssl.CERT_NONE,
             "CERT_OPTIONAL": ssl.CERT_OPTIONAL,
             "CERT_REQUIRED": ssl.CERT_REQUIRED
         }
-        self.REDIS_SSL_CERT_REQS = ssl_cert_map.get(self.REDIS_SSL_CERT_REQS.upper(), ssl.CERT_NONE)
+        self.REDIS_SSL_CERT_REQS = ssl_cert_map.get(
+            self.REDIS_SSL_CERT_REQS.upper(), 
+            ssl.CERT_NONE
+        )
 
-        # 🔹 Garante que `REDIS_USE_SSL` seja booleano
+        # 🔹 Validação final
         self.REDIS_USE_SSL = str(self.REDIS_USE_SSL).lower() in ["true", "1"]
 
         logger.info("🔍 Configuração do Redis carregada:")
@@ -84,7 +92,7 @@ class Settings(BaseSettings):
         logger.info(f"  - Usuário: {self.REDIS_USERNAME}")
         logger.info(f"  - URL Redis reconstruída: {self.REDIS_URL.replace(self.REDIS_PASSWORD, '[REDACTED]') if self.REDIS_PASSWORD else '⚠ Sem senha definida!'}")
 
-# ✅ Instância de configurações apenas quando necessário
+# ✅ Instância de configurações
 try:
     settings = Settings()
     settings.configure_redis()

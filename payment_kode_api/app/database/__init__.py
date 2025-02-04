@@ -12,7 +12,7 @@ try:
     )
     
     # Cliente Redis com inicialização controlada
-    from .redis_client import redis_client, test_redis_connection
+    from .redis_client import get_redis_client, test_redis_connection
     
 except ImportError as e:
     raise RuntimeError(f"Erro crítico na inicialização do módulo database: {str(e)}") from e
@@ -40,7 +40,7 @@ def init_database():
 def shutdown_database():
     """Encerra conexões do banco de dados de forma segura"""
     try:
-        redis_client.close()
+        get_redis_client.close()
         print("✅ Conexões do database encerradas")
     except Exception as e:
         print(f"⚠️ Erro ao encerrar conexões: {str(e)}")
@@ -52,7 +52,7 @@ __all__ = [
     "update_payment_status", 
     "save_empresa", 
     "get_empresa_config",
-    "redis_client",
+    "get_redis_client",
     "init_database",  # Novo export
     "shutdown_database"  # Novo export
 ]

@@ -8,43 +8,57 @@ WORKDIR /app
 ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=UTF-8
+ENV PATH="/root/.local/bin:$PATH"
+ENV REDIS_SSL_CERT_REQS="CERT_NONE"  
 
-# Instala dependências de sistema necessárias (PostgreSQL, OpenSSL, Build Essentials, Redis CLI)
+# Instala dependências de sistema necessárias
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     openssl \
-    redis-tools \   
+    redis-tools \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Configura variável de ambiente para permitir o uso do Redis via SSL
-ENV REDIS_SSL_CERT_REQS=CERT_NONE
+# Instala o Poetry corretamente e garante que está atualizado
+RUN curl -sSL https://install.python-poetry.org | python3 - \
+    && /root/.local/bin/poetry self update \
+    && /root/.local/bin/poetry --version  
 
-# Instala o Poetry globalmente sem cache
-RUN pip install --no-cache-dir poetry
+# Configura Poetry para não criar ambientes virtuais
+RUN poetry config virtualenvs.create false
 
-# Copia apenas os arquivos necessários para instalar dependências primeiro (cache otimizado)
+# Copia apenas os arquivos de dependências para otimizar cache
 COPY pyproject.toml poetry.lock /app/
 
-# Garante que as dependências sejam instaladas mesmo que `poetry.lock` não exista
-RUN poetry config virtualenvs.create false \
-    && [ -f poetry.lock ] && poetry install --no-root --no-interaction --no-ansi || poetry install --no-interaction --no-ansi
+# ✅ Copia o README.md para evitar erro no Poetry
+COPY README.md /app/
 
-# Copia TODO o código da API corretamente
-COPY payment_kode_api /app/payment_kode_api
+# Instala dependências do projeto via Poetry (sem instalar o próprio projeto)
+RUN poetry install --no-interaction --no-ansi --no-root  
 
-# Garante que a pasta de scripts de debug tenha as permissões corretas
-RUN mkdir -p /app/payment_kode_api/app/bugs_scripts && chmod -R 755 /app/payment_kode_api/app/bugs_scripts
+# Copia TODO o código corretamente (agora depois da instalação das dependências)
+COPY . /app/
 
-# Adiciona o diretório `/app` ao PYTHONPATH para garantir que os módulos sejam encontrados
+# Ajusta permissões do diretório de scripts
+RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts
+
+# Adiciona o diretório `/app` ao PYTHONPATH
 ENV PYTHONPATH="/app"
 
-# Remove arquivos temporários desnecessários
+# Remove arquivos temporários
 RUN rm -rf /root/.cache/pip
 
-# Expõe a porta padrão do FastAPI
+# 🔹 Copia o script de entrypoint e torna executável
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Expõe a porta do FastAPI
 EXPOSE 8000
+
+# Define o entrypoint correto
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Comando para iniciar a aplicação
 CMD ["poetry", "run", "uvicorn", "payment_kode_api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
