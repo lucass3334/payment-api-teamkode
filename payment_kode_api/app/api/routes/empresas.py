@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pydantic.types import StringConstraints
 from typing import Annotated
@@ -8,7 +8,6 @@ import uuid
 import secrets
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
-
 import base64
 
 router = APIRouter()
@@ -61,17 +60,22 @@ def get_rsa_keys(empresa_id: str):
 async def create_empresa(empresa_data: EmpresaRequest):
     """Cria uma nova empresa, gera suas chaves RSA e retorna o ID e access_token."""
     try:
-        # Verifica se o CNPJ já existe
-        existing_empresa = get_empresa(empresa_data.cnpj)
+        # 🔹 Adicionando log para depuração
+        logger.info(f"🔍 Verificando se CNPJ já está cadastrado: {empresa_data.cnpj}")
+
+        # 🔥 Adicionando `await` para evitar erro de coroutine
+        existing_empresa = await get_empresa(empresa_data.cnpj)
+        logger.info(f"🔍 Resultado da consulta para CNPJ ({empresa_data.cnpj}): {existing_empresa}")
+
         if existing_empresa:
-            logger.warning(f"Tentativa de criar empresa com CNPJ já existente: {empresa_data.cnpj}")
+            logger.warning(f"🚨 Tentativa de criar empresa com CNPJ já existente: {empresa_data.cnpj}")
             raise HTTPException(status_code=400, detail="CNPJ já cadastrado para outra empresa.")
 
         empresa_id = str(uuid.uuid4())
         access_token = secrets.token_urlsafe(32)  # 🔹 Gera um access_token seguro
         private_key, public_key = generate_rsa_keys()  # 🔹 Gera chaves RSA para a empresa
         
-        save_empresa({
+        await save_empresa({
             "empresa_id": empresa_id,
             "nome": empresa_data.nome,
             "cnpj": empresa_data.cnpj,
@@ -80,28 +84,32 @@ async def create_empresa(empresa_data: EmpresaRequest):
             "access_token": access_token  # 🔹 Armazena o token no banco de dados
         })
         
-        save_empresa_certificados({
+        await save_empresa_certificados({
             "empresa_id": empresa_id,
             "private_key_base64": private_key,
             "public_key_base64": public_key
         })
         
-        logger.info(f"Empresa criada com sucesso: {empresa_id} - {empresa_data.nome}")
+        logger.info(f"✅ Empresa criada com sucesso: {empresa_id} - {empresa_data.nome}")
         return {"empresa_id": empresa_id, "access_token": access_token}
 
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Erro ao criar empresa: {str(e)}")
+        logger.error(f"❌ Erro ao criar empresa: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao criar empresa.")
+
 
 @router.get("/empresa/token/{access_token}")
 async def validate_access_token(access_token: str):
     """Valida um access_token e retorna os dados da empresa associada."""
-    empresa = get_empresa_by_token(access_token)
+
+    # 🔥 Adicionando `await` para evitar erro de coroutine
+    empresa = await get_empresa_by_token(access_token)
+
     if not empresa:
-        logger.warning(f"Tentativa de acesso com token inválido: {access_token}")
+        logger.warning(f"⚠️ Tentativa de acesso com token inválido: {access_token}")
         raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
     
-    logger.info(f"Access token validado com sucesso para empresa: {empresa['empresa_id']}")
+    logger.info(f"🔑 Access token validado com sucesso para empresa: {empresa['empresa_id']}")
     return empresa
