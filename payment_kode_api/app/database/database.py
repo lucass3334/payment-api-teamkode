@@ -94,6 +94,9 @@ async def save_empresa_certificados(data: Dict[str, Any]) -> Dict[str, Any]:
         empresa_id = data.get("empresa_id")
         if not empresa_id:
             raise ValueError("empresa_id é obrigatório para salvar certificados.")
+        
+         # 🔥 Garante que `sicredi_cert_base64` tenha um valor válido ou None
+        data.setdefault("sicredi_cert_base64", None)
 
         response = supabase.table("empresas_certificados")  # 🔹 Nome atualizado da tabela
         response = response.insert(data).execute()
