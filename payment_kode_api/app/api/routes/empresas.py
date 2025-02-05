@@ -6,7 +6,9 @@ from payment_kode_api.app.database.database import save_empresa, get_empresa, ge
 from payment_kode_api.app.utilities.logging_config import logger
 import uuid
 import secrets
-from cryptography.hazmat.primitives.asymmetric import rsa, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+
 import base64
 
 router = APIRouter()
