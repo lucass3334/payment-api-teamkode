@@ -9,7 +9,7 @@ try:
         update_payment_status, 
         save_empresa, 
         get_empresa_config,
-        get_empresa_certificados
+        get_tokenized_card  # 🔹 Adicionando suporte à recuperação de cartões tokenizados
     )
     
     # Cliente Redis com inicialização controlada
@@ -27,7 +27,7 @@ def init_database():
             raise ConnectionError("Falha na conexão com Redis")
             
         # Verifica imports essenciais
-        required_methods = [save_payment, get_payment, update_payment_status]
+        required_methods = [save_payment, get_payment, update_payment_status, get_tokenized_card]
         if None in required_methods:
             raise ImportError("Métodos essenciais do banco de dados não carregados")
             
@@ -53,8 +53,8 @@ __all__ = [
     "update_payment_status", 
     "save_empresa", 
     "get_empresa_config",
+    "get_tokenized_card",  # 🔹 Novo método para buscar cartões tokenizados
     "get_redis_client",
-    get_empresa_certificados,
     "init_database",  # Novo export
     "shutdown_database"  # Novo export
 ]
