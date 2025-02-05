@@ -5,6 +5,8 @@ from payment_kode_api.app.utilities.logging_config import logger
 from datetime import datetime
 from typing import Optional, Dict, Any
 import asyncio
+import uuid
+
 
 # Lista de status válidos para pagamentos
 VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
@@ -27,7 +29,7 @@ async def save_empresa(data: Dict[str, Any]) -> Dict[str, Any]:
     Salva os dados de uma empresa no banco de dados.
     """
     try:
-        empresa_id = data.get("empresa_id")
+        empresa_id = data.get("empresa_id", str(uuid.uuid4()))
         if not empresa_id:
             raise ValueError("empresa_id é obrigatório para salvar a empresa.")
 
@@ -66,22 +68,22 @@ async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
         logger.error(f"Erro ao buscar certificados da empresa {empresa_id}: {e}")
         raise
 
-async def get_empresa(empresa_id: str) -> Optional[Dict[str, Any]]:
+async def get_empresa(cnpj: str) -> Optional[Dict[str, Any]]:
     """
-    Busca uma empresa pelo ID.
+    Busca uma empresa pelo CNPJ em vez de empresa_id.
     """
     try:
         response = (
             supabase.table("empresas")
             .select("*")
-            .eq("empresa_id", empresa_id)
+            .eq("cnpj", cnpj)  # 🔥 Mudando para buscar pelo campo correto
             .execute()
         )
 
         return response.data[0] if response.data else None
 
     except Exception as e:
-        logger.error(f"Erro ao buscar empresa {empresa_id}: {e}")
+        logger.error(f"Erro ao buscar empresa com CNPJ {cnpj}: {e}")
         raise
 
 async def save_empresa_certificados(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -108,9 +110,11 @@ async def save_empresa_certificados(data: Dict[str, Any]) -> Dict[str, Any]:
 
 async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
     """
-    Busca uma empresa pelo `access_token` para autenticação de chamadas protegidas.
+    Busca uma empresa pelo `access_token`.
     """
     try:
+        logger.info(f"🔍 Buscando empresa pelo Access Token: {access_token}")
+
         response = (
             supabase.table("empresas")
             .select("*")
@@ -118,11 +122,17 @@ async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
             .execute()
         )
 
-        return response.data[0] if response.data else None
+        if response.data:
+            logger.info(f"✅ Empresa encontrada pelo token: {response.data[0]}")
+            return response.data[0]
+
+        logger.warning(f"⚠️ Nenhuma empresa encontrada para Access Token: {access_token}")
+        return None
 
     except Exception as e:
-        logger.error(f"Erro ao buscar empresa pelo access_token: {e}")
+        logger.error(f"❌ Erro ao buscar empresa pelo Access Token: {e}")
         raise
+
 
 async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
     """

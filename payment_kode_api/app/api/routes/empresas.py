@@ -48,9 +48,9 @@ def generate_rsa_keys():
     return base64.b64encode(private_pem).decode(), base64.b64encode(public_pem).decode()
 
 
-def get_rsa_keys(empresa_id: str):
+async def get_rsa_keys(empresa_id: str):
     """Recupera as chaves RSA armazenadas no banco de dados para uma empresa específica."""
-    certificados = get_empresa_certificados(empresa_id)
+    certificados = await get_empresa_certificados(empresa_id)
     if not certificados:
         raise HTTPException(status_code=404, detail="Chaves RSA não encontradas para esta empresa.")
     return base64.b64decode(certificados['private_key_base64']), base64.b64decode(certificados['public_key_base64'])
@@ -60,10 +60,10 @@ def get_rsa_keys(empresa_id: str):
 async def create_empresa(empresa_data: EmpresaRequest):
     """Cria uma nova empresa, gera suas chaves RSA e retorna o ID e access_token."""
     try:
-        # 🔹 Adicionando log para depuração
+        # 🔹 Log para depuração
         logger.info(f"🔍 Verificando se CNPJ já está cadastrado: {empresa_data.cnpj}")
 
-        # 🔥 Adicionando `await` para evitar erro de coroutine
+        # 🔥 Corrigindo para buscar pelo CNPJ corretamente
         existing_empresa = await get_empresa(empresa_data.cnpj)
         logger.info(f"🔍 Resultado da consulta para CNPJ ({empresa_data.cnpj}): {existing_empresa}")
 
@@ -71,7 +71,7 @@ async def create_empresa(empresa_data: EmpresaRequest):
             logger.warning(f"🚨 Tentativa de criar empresa com CNPJ já existente: {empresa_data.cnpj}")
             raise HTTPException(status_code=400, detail="CNPJ já cadastrado para outra empresa.")
 
-        empresa_id = str(uuid.uuid4())
+        empresa_id = str(uuid.uuid4())  # 🔥 Garante que `empresa_id` seja um UUID válido
         access_token = secrets.token_urlsafe(32)  # 🔹 Gera um access_token seguro
         private_key, public_key = generate_rsa_keys()  # 🔹 Gera chaves RSA para a empresa
         
@@ -103,13 +103,17 @@ async def create_empresa(empresa_data: EmpresaRequest):
 @router.get("/empresa/token/{access_token}")
 async def validate_access_token(access_token: str):
     """Valida um access_token e retorna os dados da empresa associada."""
+    try:
+        # 🔥 Corrigido `await` para evitar erro de coroutine
+        empresa = await get_empresa_by_token(access_token)
 
-    # 🔥 Adicionando `await` para evitar erro de coroutine
-    empresa = await get_empresa_by_token(access_token)
+        if not empresa:
+            logger.warning(f"⚠️ Tentativa de acesso com token inválido: {access_token}")
+            raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
+        
+        logger.info(f"🔑 Access token validado com sucesso para empresa: {empresa['empresa_id']}")
+        return empresa
 
-    if not empresa:
-        logger.warning(f"⚠️ Tentativa de acesso com token inválido: {access_token}")
-        raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
-    
-    logger.info(f"🔑 Access token validado com sucesso para empresa: {empresa['empresa_id']}")
-    return empresa
+    except Exception as e:
+        logger.error(f"❌ Erro ao validar token: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao validar token.")
