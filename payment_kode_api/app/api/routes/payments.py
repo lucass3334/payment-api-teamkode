@@ -4,6 +4,13 @@ from typing import Annotated, Optional
 import uuid
 import httpx
 
+from payment_kode_api.app.database.database import (
+    get_empresa_config,
+    save_payment,
+    get_payment,
+    save_tokenized_card,
+    get_tokenized_card
+)
 from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
 from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
 from payment_kode_api.app.services.gateways.rede_client import create_rede_payment
@@ -13,8 +20,6 @@ from payment_kode_api.app.services.gateways.payment_payload_mapper import (
     map_to_rede_payload,
     map_to_asaas_credit_payload
 )
-from payment_kode_api.app.security.crypto import decrypt_card_data  # 🔹 Importação da função de descriptografia
-from payment_kode_api.app.database.database import save_payment, get_payment
 from payment_kode_api.app.services.config_service import get_empresa_credentials
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.security.auth import validate_access_token  # 🔹 Validação de access_token
@@ -28,6 +33,7 @@ AmountType = Annotated[float, Field(gt=0, decimal_places=2)]
 InstallmentsType = Annotated[int, Field(ge=1, le=12)]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
+
 class PixPaymentRequest(BaseModel):
     amount: AmountType
     chave_pix: PixKeyType
@@ -35,12 +41,26 @@ class PixPaymentRequest(BaseModel):
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
 
+
+class TokenizeCardRequest(BaseModel):
+    """Requisição para tokenizar um cartão de crédito."""
+    customer_id: str
+    card_number: str
+    expiration_month: str
+    expiration_year: str
+    security_code: str
+    cardholder_name: str
+
+
 class CreditCardPaymentRequest(BaseModel):
+    """Agora a rota de pagamento aceita `card_token` ou os dados do cartão."""
     amount: AmountType
-    encrypted_card_data: str  # 🔹 Agora os dados do cartão devem ser enviados criptografados
+    card_token: Optional[str] = None  # 🔹 Preferência pelo token
+    card_data: Optional[TokenizeCardRequest] = None  # 🔹 Se não houver token, usa os dados do cartão
     installments: InstallmentsType
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
+
 
 async def notify_user_webhook(webhook_url: str, data: dict):
     """Envia uma notificação para o webhook configurado pelo usuário."""
@@ -51,11 +71,34 @@ async def notify_user_webhook(webhook_url: str, data: dict):
         except httpx.RequestError as e:
             logger.error(f"Erro ao enviar notificação ao webhook do usuário: {e}")
 
+
+@router.post("/payment/tokenize-card")
+async def tokenize_card(
+    card_data: TokenizeCardRequest,
+    empresa: dict = Depends(validate_access_token)
+):
+    """Tokeniza os dados do cartão e retorna um token único."""
+    empresa_id = empresa["empresa_id"]
+
+    card_token = str(uuid.uuid4())  # Gera um token único
+    encrypted_card_data = str(card_data.dict())  # 🔹 Simulando criptografia
+
+    # Salva no banco
+    await save_tokenized_card({
+        "empresa_id": empresa_id,
+        "customer_id": card_data.customer_id,
+        "card_token": card_token,
+        "encrypted_card_data": encrypted_card_data
+    })
+
+    return {"card_token": card_token}
+
+
 @router.post("/payment/credit-card")
 async def create_credit_card_payment(
-    payment_data: CreditCardPaymentRequest, 
-    background_tasks: BackgroundTasks, 
-    empresa: dict = Depends(validate_access_token)  # 🔹 Valida o access_token
+    payment_data: CreditCardPaymentRequest,
+    background_tasks: BackgroundTasks,
+    empresa: dict = Depends(validate_access_token)
 ):
     """Cria um pagamento via Cartão de Crédito usando Rede como principal e Asaas como fallback."""
     empresa_id = empresa["empresa_id"]
@@ -65,17 +108,22 @@ async def create_credit_card_payment(
     if existing_payment:
         return {"status": "already_processed", "message": "Pagamento já foi processado", "transaction_id": transaction_id}
 
-    credentials = get_empresa_credentials(empresa_id)
+    credentials = await get_empresa_config(empresa_id)
     if not credentials:
         raise HTTPException(status_code=400, detail="Empresa não encontrada ou sem credenciais configuradas.")
 
-    try:
-        # 🔹 Descriptografa os dados do cartão antes de prosseguir
-        card_data = decrypt_card_data(empresa_id, payment_data.encrypted_card_data)
-
-    except Exception as e:
-        logger.error(f"❌ Erro ao descriptografar os dados do cartão: {str(e)}")
-        raise HTTPException(status_code=400, detail="Erro ao processar dados do cartão.")
+    # 🔹 Verifica se há um card_token ou se precisa usar os dados brutos do cartão
+    if payment_data.card_token:
+        card_data = await get_tokenized_card(payment_data.card_token)
+        if not card_data:
+            raise HTTPException(status_code=400, detail="Cartão não encontrado ou expirado.")
+    elif payment_data.card_data:
+        # 🔹 Se não houver token, usa os dados brutos e gera um token para reutilização futura
+        card_data = payment_data.card_data.dict()
+        token_response = await tokenize_card(payment_data.card_data, empresa)
+        card_data["card_token"] = token_response["card_token"]
+    else:
+        raise HTTPException(status_code=400, detail="É necessário fornecer um `card_token` ou `card_data`.")
 
     await save_payment({
         "empresa_id": empresa_id,
@@ -86,8 +134,8 @@ async def create_credit_card_payment(
         "webhook_url": payment_data.webhook_url
     })
 
-    # 🔹 Mapeia os dados para o formato correto antes de enviar para a Rede
-    rede_payload = map_to_rede_payload({**payment_data.dict(), **card_data})
+    # 🔹 Usa os dados recuperados do banco para montar o payload
+    rede_payload = map_to_rede_payload(card_data)
 
     try:
         logger.info(f"🚀 Tentando processar pagamento Cartão via Rede para {transaction_id}")
@@ -105,7 +153,7 @@ async def create_credit_card_payment(
 
         try:
             logger.info(f"🔄 Tentando fallback via Asaas para {transaction_id}")
-            asaas_payload = map_to_asaas_credit_payload({**payment_data.dict(), **card_data})
+            asaas_payload = map_to_asaas_credit_payload(card_data)
             response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
 
             if response and response.get("status") == "approved":

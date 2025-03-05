@@ -18,7 +18,7 @@ def get_public_key(empresa_id: str):
     """Busca a chave pública RSA da empresa no banco de dados."""
     certificados = get_empresa_certificados(empresa_id)  # 🔹 Nome da função corrigido
     if not certificados or not certificados.get("public_key_base64"):
-        raise ValueError(f"Chave pública não encontrada para empresa {empresa_id}")
+        raise ValueError(f"Chave pública não encontrada para empresa  {empresa_id}")
     
     public_key_pem = base64.b64decode(certificados["public_key_base64"])
     return serialization.load_pem_public_key(public_key_pem)

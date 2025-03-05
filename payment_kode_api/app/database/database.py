@@ -42,7 +42,8 @@ async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
                 "empresa_id": empresa_id,
                 "customer_id": customer_id,
                 "card_token": card_token,
-                "encrypted_card_data": encrypted_card_data
+                "encrypted_card_data": encrypted_card_data,
+                "expires_at": datetime.utcnow().isoformat()
             })
             .execute()
         )
@@ -56,7 +57,6 @@ async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"❌ Erro ao salvar cartão tokenizado: {e}")
         raise
-
 
 async def get_tokenized_card(card_token: str) -> Optional[Dict[str, Any]]:
     """
@@ -78,6 +78,29 @@ async def get_tokenized_card(card_token: str) -> Optional[Dict[str, Any]]:
 
     except Exception as e:
         logger.error(f"❌ Erro ao buscar cartão tokenizado: {e}")
+        raise
+
+async def delete_tokenized_card(card_token: str) -> bool:
+    """
+    Remove um cartão tokenizado do banco de dados.
+    """
+    try:
+        response = (
+            supabase.table("cartoes_tokenizados")
+            .delete()
+            .eq("card_token", card_token)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"✅ Cartão tokenizado {card_token} removido com sucesso.")
+            return True
+
+        logger.warning(f"⚠️ Nenhum cartão encontrado para exclusão: {card_token}")
+        return False
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao excluir cartão tokenizado: {e}")
         raise
 
 async def save_empresa(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,6 +161,7 @@ async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"❌ Erro ao buscar empresa pelo Access Token: {e}")
         raise
+
 async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
     """
     Obtém as configurações de uma empresa para acessar as credenciais dos gateways de pagamento.

@@ -52,12 +52,51 @@ async def get_rede_access_token(empresa_id: str, retries: int = 2):
 
     raise HTTPException(status_code=500, detail=f"Falha ao obter token da Rede para empresa {empresa_id} após {retries} tentativas")
 
+async def tokenize_rede_card(empresa_id: str, card_data: dict):
+    """
+    Tokeniza os dados do cartão na API da Rede.
+    """
+    try:
+        token = await get_rede_access_token(empresa_id)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        tokenize_url = "https://api.userede.com.br/ecomm/v1/card"
+
+        payload = {
+            "number": card_data["card_number"],
+            "expirationMonth": card_data["expiration_month"],
+            "expirationYear": card_data["expiration_year"],
+            "securityCode": card_data["security_code"],
+            "holderName": card_data["cardholder_name"]
+        }
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(tokenize_url, json=payload, headers=headers)
+            response.raise_for_status()
+            return response.json().get("cardToken")
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Erro HTTP ao tokenizar cartão na Rede: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail="Erro ao tokenizar cartão na Rede")
+
+    except httpx.RequestError as e:
+        logger.error(f"Erro de conexão ao tokenizar cartão na Rede: {e}")
+        raise HTTPException(status_code=500, detail="Erro de conexão ao tokenizar cartão na Rede")
+
+    except Exception as e:
+        logger.error(f"Erro inesperado na tokenização de cartão na Rede: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro inesperado na tokenização de cartão na Rede")
+
 async def create_rede_payment(
     empresa_id: str, 
     transaction_id: str, 
     amount: int, 
     card_data: dict, 
-    installments: int = 1
+    installments: int = 1,
+    use_token: bool = False
 ):
     """
     Cria um pagamento via Cartão de Crédito na Rede com suporte a parcelamento.
@@ -72,20 +111,32 @@ async def create_rede_payment(
 
         transaction_url = "https://api.userede.com.br/ecomm/v1/transactions"
 
-        payload = {
-            "capture": True,
-            "reference": transaction_id,
-            "amount": amount,
-            "installments": installments,
-            "kind": "credit",
-            "card": {
-                "number": card_data["card_number"],
-                "expirationMonth": card_data["expiration_month"],
-                "expirationYear": card_data["expiration_year"],
-                "securityCode": card_data["security_code"],
-                "holderName": card_data["cardholder_name"]
+        if use_token:
+            # Se o uso de token for especificado, assumimos que card_data contém o cardToken
+            payload = {
+                "capture": True,
+                "reference": transaction_id,
+                "amount": amount,
+                "installments": installments,
+                "kind": "credit",
+                "cardToken": card_data["card_token"]
             }
-        }
+        else:
+            # Se não for tokenizado, envia os dados do cartão normalmente
+            payload = {
+                "capture": True,
+                "reference": transaction_id,
+                "amount": amount,
+                "installments": installments,
+                "kind": "credit",
+                "card": {
+                    "number": card_data["card_number"],
+                    "expirationMonth": card_data["expiration_month"],
+                    "expirationYear": card_data["expiration_year"],
+                    "securityCode": card_data["security_code"],
+                    "holderName": card_data["cardholder_name"]
+                }
+            }
 
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(transaction_url, json=payload, headers=headers)
