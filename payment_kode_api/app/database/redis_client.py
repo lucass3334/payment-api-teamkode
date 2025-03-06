@@ -16,8 +16,12 @@ def create_redis_client() -> Redis:
         }
 
         if settings.REDIS_URL:
-            logger.info(f"🔄 Conectando ao Redis via URL segura: {settings.REDIS_HOST}")
-            return Redis.from_url(settings.REDIS_URL, **conn_params)
+            parsed_url = urlparse(settings.REDIS_URL)
+            use_ssl = parsed_url.scheme == "rediss"
+
+            logger.info(f"🔄 Conectando ao Redis via URL segura: {parsed_url.hostname}")
+
+            return Redis.from_url(settings.REDIS_URL, ssl=use_ssl, **conn_params)
 
         logger.info(f"🔄 Conectando ao Redis via parâmetros individuais: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
         return Redis(
@@ -26,6 +30,7 @@ def create_redis_client() -> Redis:
             username=settings.REDIS_USERNAME,
             password=settings.REDIS_PASSWORD,
             db=settings.REDIS_DB,
+            ssl=settings.REDIS_USE_SSL,
             **conn_params
         )
 
