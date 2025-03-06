@@ -6,24 +6,26 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"  # 🔹 Porta interna, Render redireciona 443 para 8080
+      - "8080:8080"  # 🔹 Porta interna, Render converte HTTPS -> 8080
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "poetry", "run", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5
     command: >
       sh -c "
       if [[ -f '/app/certificados/sicredi-cert.pem' && -f '/app/certificados/sicredi-key.pem' ]]; then
+        echo '✅ Certificados encontrados! Rodando API com SSL.';
         poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080 
         --ssl-keyfile /app/certificados/sicredi-key.pem 
         --ssl-certfile /app/certificados/sicredi-cert.pem;
       else
+        echo '⚠️ Nenhum certificado encontrado. Rodando API sem SSL.';
         poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080;
       fi"
     volumes:
@@ -32,23 +34,13 @@ services:
 
   redis:
     image: redis:7.2
-    command: >
-      sh -c "
-      if [[ -f '/app/certificados/redis-cert.pem' && -f '/app/certificados/redis-key.pem' ]]; then
-        redis-server --requirepass '${REDIS_PASSWORD}' --tls-port 6379 
-        --tls-cert-file /app/certificados/redis-cert.pem 
-        --tls-key-file /app/certificados/redis-key.pem 
-        --tls-ca-cert-file /app/certificados/redis-ca.pem;
-      else
-        redis-server --requirepass '${REDIS_PASSWORD}';
-      fi"
+    command: redis-server --requirepass "${REDIS_PASSWORD}"
     ports:
       - "6379:6379"
     env_file:
       - .env
     volumes:
       - redis_data:/data
-      - ./certs:/app/certificados  # 🔹 Mantemos compatibilidade com TLS futuro
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s

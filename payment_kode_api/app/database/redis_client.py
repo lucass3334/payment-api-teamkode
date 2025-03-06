@@ -3,30 +3,23 @@ from redis import Redis
 from urllib.parse import urlparse
 from payment_kode_api.app.core.config import settings
 from loguru import logger
-import ssl
+
 
 def create_redis_client() -> Redis:
     """Cria cliente Redis com configuração segura e tratamento de erros robusto."""
     try:
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = settings.REDIS_SSL_CERT_REQS
-
         conn_params = {
-            "ssl": settings.REDIS_USE_SSL,
-            "ssl_cert_reqs": ssl_context.verify_mode,
-            "ssl_ca_certs": None,
-            "decode_responses": True,
+            "decode_responses": True,  # Retorna strings em vez de bytes
             "socket_timeout": 5,
             "socket_connect_timeout": 5,
             "health_check_interval": 30
         }
 
         if settings.REDIS_URL:
-            logger.debug(f"Conectando via URL: {settings.REDIS_URL.split('@')[-1]}")
+            logger.info(f"🔄 Conectando ao Redis via URL segura: {settings.REDIS_HOST}")
             return Redis.from_url(settings.REDIS_URL, **conn_params)
 
-        logger.debug("Conectando via parâmetros individuais")
+        logger.info(f"🔄 Conectando ao Redis via parâmetros individuais: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
         return Redis(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
@@ -37,35 +30,45 @@ def create_redis_client() -> Redis:
         )
 
     except redis.AuthenticationError as e:
-        logger.critical(f"Falha de autenticação: {str(e)}")
+        logger.critical(f"❌ Falha de autenticação no Redis: {str(e)}")
+        raise
+    except redis.ConnectionError as e:
+        logger.error(f"❌ Erro de conexão com o Redis: {str(e)}")
+        raise
+    except redis.TimeoutError as e:
+        logger.warning(f"⚠️ Timeout ao conectar ao Redis: {str(e)}")
         raise
     except Exception as e:
-        logger.error(f"Erro na conexão com Redis: {str(e)}")
+        logger.error(f"❌ Erro inesperado ao conectar ao Redis: {str(e)}")
         raise
+
 
 _redis_client = None
 
+
 def get_redis_client() -> Redis:
-    """Getter singleton para o cliente Redis com reconexão automática."""
+    """Retorna um cliente Redis singleton para evitar reconexões desnecessárias."""
     global _redis_client
-    if not _redis_client or not _redis_client.ping():
+    if _redis_client is None:
         _redis_client = create_redis_client()
     return _redis_client
 
-def test_redis_connection() -> bool:  # ✅ Versão corrigida
+
+def test_redis_connection() -> bool:
     """Testa a conexão com Redis de forma robusta."""
     try:
         client = get_redis_client()
-        return bool(client.ping())
-    except redis.exceptions.AuthenticationError as e:
-        logger.critical(f"Autenticação falhou: {str(e)}")
-    except redis.exceptions.ConnectionError as e:
-        logger.error(f"Conexão falhou: {str(e)}")
-    except redis.exceptions.TimeoutError as e:
-        logger.warning(f"Timeout: {str(e)}")
+        return client.ping()
+    except redis.AuthenticationError as e:
+        logger.critical(f"❌ Autenticação falhou no Redis: {str(e)}")
+    except redis.ConnectionError as e:
+        logger.error(f"❌ Erro de conexão ao testar Redis: {str(e)}")
+    except redis.TimeoutError as e:
+        logger.warning(f"⚠️ Timeout ao testar conexão com Redis: {str(e)}")
     except Exception as e:
-        logger.error(f"Erro inesperado: {str(e)}")
+        logger.error(f"❌ Erro inesperado ao testar Redis: {str(e)}")
     return False
+
 
 if __name__ == "__main__":
     if test_redis_connection():
@@ -73,4 +76,4 @@ if __name__ == "__main__":
     else:
         logger.error("❌ Falha na conexão com Redis")
 
-__all__ = ["get_redis_client", "test_redis_connection"]  # ✅ Exportações explícitas
+__all__ = ["get_redis_client", "test_redis_connection"]

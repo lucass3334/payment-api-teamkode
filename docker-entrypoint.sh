@@ -32,7 +32,7 @@ fi
 log info "🔄 Aguardando Redis estar disponível..."
 RETRIES=10
 while [[ $RETRIES -gt 0 ]]; do
-    if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping | grep -q "PONG"; then
+    if redis-cli --tls -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping | grep -q "PONG"; then
         log info "✅ Redis está pronto!"
         break
     fi
