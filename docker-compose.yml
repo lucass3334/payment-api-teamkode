@@ -6,37 +6,51 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "443:443"
+      - "8080:8080"  # 🔹 Porta interna, Render redireciona 443 para 8080
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "poetry", "run", "curl", "-f", "https://localhost:443/health"]
+      test: ["CMD", "poetry", "run", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5
     command: >
-      poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 443 
-      --ssl-keyfile /app/certificados/sicredi-key.pem 
-      --ssl-certfile /app/certificados/sicredi-cert.pem
+      sh -c "
+      if [[ -f '/app/certificados/sicredi-cert.pem' && -f '/app/certificados/sicredi-key.pem' ]]; then
+        poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080 
+        --ssl-keyfile /app/certificados/sicredi-key.pem 
+        --ssl-certfile /app/certificados/sicredi-cert.pem;
+      else
+        poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080;
+      fi"
     volumes:
-      - ./certs:/app/certificados
+      - ./certs:/app/certificados  # 🔹 Mantemos o volume de certificados
     restart: always
 
   redis:
     image: redis:7.2
-    command: redis-server --requirepass "${REDIS_PASSWORD}" --tls-port 6379 --tls-cert-file /app/certificados/redis-cert.pem --tls-key-file /app/certificados/redis-key.pem --tls-ca-cert-file /app/certificados/redis-ca.pem
+    command: >
+      sh -c "
+      if [[ -f '/app/certificados/redis-cert.pem' && -f '/app/certificados/redis-key.pem' ]]; then
+        redis-server --requirepass '${REDIS_PASSWORD}' --tls-port 6379 
+        --tls-cert-file /app/certificados/redis-cert.pem 
+        --tls-key-file /app/certificados/redis-key.pem 
+        --tls-ca-cert-file /app/certificados/redis-ca.pem;
+      else
+        redis-server --requirepass '${REDIS_PASSWORD}';
+      fi"
     ports:
       - "6379:6379"
     env_file:
       - .env
     volumes:
       - redis_data:/data
-      - ./certs:/app/certificados
+      - ./certs:/app/certificados  # 🔹 Mantemos compatibilidade com TLS futuro
     healthcheck:
-      test: ["CMD", "redis-cli", "--tls", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

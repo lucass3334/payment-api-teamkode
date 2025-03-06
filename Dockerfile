@@ -57,8 +57,8 @@ RUN rm -rf /root/.cache/pip
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# 🔹 Expõe a porta 443 para comunicação segura com o Sicredi
-EXPOSE 443
+# 🔹 Expõe a porta 8080 para comunicação interna (Render converte para HTTPS)
+EXPOSE 8080
 
-# 🔹 Define o comando para rodar o Uvicorn na porta 443 com HTTPS
-CMD ["poetry", "run", "uvicorn", "payment_kode_api.app.main:app", "--host", "0.0.0.0", "--port", "443", "--ssl-keyfile", "/app/certificados/sicredi-key.pem", "--ssl-certfile", "/app/certificados/sicredi-cert.pem"]
+# 🔹 Usa o entrypoint para iniciar a API corretamente
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

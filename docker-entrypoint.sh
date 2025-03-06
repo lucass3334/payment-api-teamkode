@@ -32,7 +32,7 @@ fi
 log info "🔄 Aguardando Redis estar disponível..."
 RETRIES=10
 while [[ $RETRIES -gt 0 ]]; do
-    if redis-cli --tls -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping | grep -q "PONG"; then
+    if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping | grep -q "PONG"; then
         log info "✅ Redis está pronto!"
         break
     fi
@@ -42,7 +42,7 @@ while [[ $RETRIES -gt 0 ]]; do
 done
 
 if [[ $RETRIES -eq 0 ]]; then
-    log error "Redis não respondeu após várias tentativas!"
+    log error "❌ Redis não respondeu após várias tentativas!"
     exit 1
 fi
 
@@ -63,19 +63,20 @@ while [[ $SUPABASE_RETRIES -gt 0 ]]; do
 done
 
 if [[ $SUPABASE_RETRIES -eq 0 ]]; then
-    log error "Supabase não respondeu corretamente após várias tentativas!"
+    log error "❌ Supabase não respondeu corretamente após várias tentativas!"
     exit 1
 fi
 
-# 🔄 **Verificando se os certificados do Sicredi estão disponíveis**
+# 🔄 **Verificando se os certificados do Sicredi estão disponíveis (opcional)**
 log info "🔍 Verificando certificados do Sicredi..."
+USE_SSL=false
 
-if [[ ! -f "/app/certificados/sicredi-cert.pem" || ! -f "/app/certificados/sicredi-key.pem" ]]; then
-    log error "❌ Certificados do Sicredi não encontrados! A API não pode iniciar sem mTLS."
-    exit 1
+if [[ -f "/app/certificados/sicredi-cert.pem" && -f "/app/certificados/sicredi-key.pem" ]]; then
+    log info "✅ Certificados do Sicredi encontrados! Ativando SSL..."
+    USE_SSL=true
+else
+    log warn "⚠️ Nenhum certificado encontrado. Rodando sem SSL..."
 fi
-
-log info "✅ Certificados do Sicredi encontrados! Continuando..."
 
 # 🔥 **Tratamento de sinais para encerramento seguro**
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT
@@ -86,8 +87,12 @@ if [[ "$1" == "worker" ]]; then
     exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4
 else
     log info "🚀 Iniciando API Web..."
-    exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 443 \
-      --ssl-keyfile /app/certificados/sicredi-key.pem \
-      --ssl-certfile /app/certificados/sicredi-cert.pem \
-      --workers 4
+    
+    if [[ "$USE_SSL" == true ]]; then
+        exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080 \
+            --ssl-keyfile "/app/certificados/sicredi-key.pem" \
+            --ssl-certfile "/app/certificados/sicredi-cert.pem"
+    else
+        exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080
+    fi
 fi
