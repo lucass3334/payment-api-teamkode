@@ -6,30 +6,37 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "443:443"
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "poetry", "run", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "poetry", "run", "curl", "-f", "https://localhost:443/health"]
       interval: 10s
       timeout: 5s
       retries: 5
+    command: >
+      poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 443 
+      --ssl-keyfile /app/certificados/sicredi-key.pem 
+      --ssl-certfile /app/certificados/sicredi-cert.pem
+    volumes:
+      - ./certs:/app/certificados
     restart: always
 
   redis:
     image: redis:7.2
-    command: redis-server --requirepass "${REDIS_PASSWORD}"
+    command: redis-server --requirepass "${REDIS_PASSWORD}" --tls-port 6379 --tls-cert-file /app/certificados/redis-cert.pem --tls-key-file /app/certificados/redis-key.pem --tls-ca-cert-file /app/certificados/redis-ca.pem
     ports:
       - "6379:6379"
     env_file:
       - .env
     volumes:
       - redis_data:/data
+      - ./certs:/app/certificados
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "--tls", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

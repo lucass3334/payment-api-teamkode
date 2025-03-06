@@ -3,6 +3,12 @@ from typing import Dict, Any
 def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """Mapeia os dados do pagamento para o formato do gateway Sicredi (Pix)."""
     
+    if not data.get("chave_pix"):
+        raise ValueError("A chave Pix (chave_pix) é obrigatória para pagamentos via Pix.")
+    
+    if not data.get("txid"):
+        raise ValueError("O txid é obrigatório para pagamentos via Sicredi Pix.")
+    
     devedor = {}
     if "cpf" in data:
         devedor["cpf"] = data["cpf"]
@@ -10,6 +16,7 @@ def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         devedor["cnpj"] = data["cnpj"]
     
     return {
+        "txid": data["txid"],  # Necessário para identificação única da transação no Sicredi
         "calendario": {
             "expiracao": 900  # Tempo de expiração do QR Code em segundos (15 minutos)
         },
@@ -17,17 +24,20 @@ def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "valor": {
             "original": f"{round(data['amount'], 2):.2f}"  # Valor no formato correto (string com duas casas decimais)
         },
-        "chave": data["chave_pix"],  # 🔹 Chave Pix da empresa
-        "solicitacaoPagador": data.get("descricao", "Pagamento via Pix")
+        "chave": data["chave_pix"],  # Chave Pix da empresa
+        "solicitacaoPagador": data.get("descricao", "Pagamento via Pix")  # Descrição do pagamento
     }
 
 def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """Mapeia os dados do pagamento para o formato do gateway Asaas (Pix)."""
+    if not data.get("chave_pix"):
+        raise ValueError("A chave Pix (chave_pix) é obrigatória para pagamentos via Pix.")
+    
     return {
         "customer": data.get("customer_id", "cus_default"),
         "billingType": "PIX",
         "value": round(data["amount"], 2),  # Valor em reais (já esperado pelo Asaas)
-        "pixKey": data["chave_pix"],  # 🔹 Chave Pix
+        "pixKey": data["chave_pix"],  # Chave Pix
         "description": data.get("descricao", "Pagamento via Pix (fallback Sicredi)")
     }
 
@@ -49,7 +59,7 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     if data.get("card_token"):
-        payload["cardToken"] = data["card_token"]  # 🔹 Usa token quando suportado pela Rede
+        payload["cardToken"] = data["card_token"]  # Usa token quando suportado pela Rede
     else:
         # Se `card_token` não estiver presente, verifica e mapeia os dados do cartão
         payload.update({
@@ -79,7 +89,7 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
     }
 
     if support_tokenization and "card_token" in data:
-        # 🔹 Se a empresa e o Asaas suportarem tokenização, usa `card_token`
+        # Se a empresa e o Asaas suportarem tokenização, usa `card_token`
         payload["creditCardToken"] = data["card_token"]
     else:
         # Caso contrário, faz mapeamento completo dos dados sensíveis

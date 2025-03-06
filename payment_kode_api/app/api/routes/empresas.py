@@ -2,7 +2,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pydantic.types import StringConstraints
 from typing import Annotated
-from payment_kode_api.app.database.database import save_empresa, get_empresa, get_empresa_by_token, save_empresa_certificados, get_empresa_certificados
+from payment_kode_api.app.database.database import (
+    save_empresa, 
+    get_empresa, 
+    get_empresa_by_token, 
+    save_empresa_certificados, 
+    get_empresa_certificados
+)
 from payment_kode_api.app.utilities.logging_config import logger
 import uuid
 import secrets
@@ -53,7 +59,8 @@ async def get_rsa_keys(empresa_id: str):
     certificados = await get_empresa_certificados(empresa_id)
     if not certificados:
         raise HTTPException(status_code=404, detail="Chaves RSA não encontradas para esta empresa.")
-    return base64.b64decode(certificados['private_key_base64']), base64.b64decode(certificados['public_key_base64'])
+
+    return base64.b64decode(certificados['sicredi_cert_base64']), base64.b64decode(certificados['sicredi_key_base64'])
 
 
 @router.post("/empresa", response_model=EmpresaResponse)
@@ -84,11 +91,12 @@ async def create_empresa(empresa_data: EmpresaRequest):
             "access_token": access_token  # 🔹 Armazena o token no banco de dados
         })
         
-        await save_empresa_certificados({
-            "empresa_id": empresa_id,
-            "private_key_base64": private_key,
-            "public_key_base64": public_key
-        })
+        await save_empresa_certificados(
+            empresa_id=empresa_id,
+            sicredi_cert_base64=private_key,
+            sicredi_key_base64=public_key,
+            sicredi_ca_base64=None  
+        )
         
         logger.info(f"✅ Empresa criada com sucesso: {empresa_id} - {empresa_data.nome}")
         return {"empresa_id": empresa_id, "access_token": access_token}
@@ -104,7 +112,6 @@ async def create_empresa(empresa_data: EmpresaRequest):
 async def validate_access_token(access_token: str):
     """Valida um access_token e retorna os dados da empresa associada."""
     try:
-        # 🔥 Corrigido `await` para evitar erro de coroutine
         empresa = await get_empresa_by_token(access_token)
 
         if not empresa:

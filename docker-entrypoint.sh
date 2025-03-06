@@ -32,7 +32,7 @@ fi
 log info "🔄 Aguardando Redis estar disponível..."
 RETRIES=10
 while [[ $RETRIES -gt 0 ]]; do
-    if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --tls --user "$REDIS_USERNAME" --pass "$REDIS_PASSWORD" ping | grep -q "PONG"; then
+    if redis-cli --tls -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping | grep -q "PONG"; then
         log info "✅ Redis está pronto!"
         break
     fi
@@ -67,6 +67,16 @@ if [[ $SUPABASE_RETRIES -eq 0 ]]; then
     exit 1
 fi
 
+# 🔄 **Verificando se os certificados do Sicredi estão disponíveis**
+log info "🔍 Verificando certificados do Sicredi..."
+
+if [[ ! -f "/app/certificados/sicredi-cert.pem" || ! -f "/app/certificados/sicredi-key.pem" ]]; then
+    log error "❌ Certificados do Sicredi não encontrados! A API não pode iniciar sem mTLS."
+    exit 1
+fi
+
+log info "✅ Certificados do Sicredi encontrados! Continuando..."
+
 # 🔥 **Tratamento de sinais para encerramento seguro**
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT
 
@@ -76,5 +86,8 @@ if [[ "$1" == "worker" ]]; then
     exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4
 else
     log info "🚀 Iniciando API Web..."
-    exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 443 \
+      --ssl-keyfile /app/certificados/sicredi-key.pem \
+      --ssl-certfile /app/certificados/sicredi-cert.pem \
+      --workers 4
 fi

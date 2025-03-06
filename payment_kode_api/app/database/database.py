@@ -267,3 +267,69 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
     except Exception as e:
         logger.error(f"❌ Erro ao atualizar status do pagamento para empresa {empresa_id}, transaction_id {transaction_id}: {e}")
         raise
+async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Recupera os certificados da empresa armazenados na tabela `empresas_certificados`.
+    Retorna os certificados em formato Base64.
+    """
+    try:
+        response = (
+            supabase.table("empresas_certificados")
+            .select("sicredi_cert_base64, sicredi_key_base64, sicredi_ca_base64")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"✅ Certificados recuperados para empresa {empresa_id}")
+            return response.data[0]
+
+        logger.warning(f"⚠️ Nenhum certificado encontrado para a empresa {empresa_id}")
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao recuperar certificados da empresa {empresa_id}: {e}")
+        raise
+async def save_empresa_certificados(empresa_id: str, sicredi_cert_base64: str, sicredi_key_base64: str, sicredi_ca_base64: str) -> Dict[str, Any]:
+    """
+    Salva ou atualiza os certificados de uma empresa na tabela `empresas_certificados`.
+    """
+    try:
+        existing_cert = (
+            supabase.table("empresas_certificados")
+            .select("id")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+
+        data = {
+            "empresa_id": empresa_id,
+            "sicredi_cert_base64": sicredi_cert_base64,
+            "sicredi_key_base64": sicredi_key_base64,
+            "sicredi_ca_base64": sicredi_ca_base64,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        if existing_cert.data:
+            # Se já existe um registro, atualiza os certificados
+            response = (
+                supabase.table("empresas_certificados")
+                .update(data)
+                .eq("empresa_id", empresa_id)
+                .execute()
+            )
+            logger.info(f"✅ Certificados da empresa {empresa_id} atualizados.")
+        else:
+            # Se não existe, cria um novo registro
+            response = (
+                supabase.table("empresas_certificados")
+                .insert(data)
+                .execute()
+            )
+            logger.info(f"✅ Certificados da empresa {empresa_id} salvos.")
+
+        return response.data[0] if response.data else {}
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao salvar certificados da empresa {empresa_id}: {e}")
+        raise

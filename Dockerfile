@@ -9,7 +9,7 @@ ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=UTF-8
 ENV PATH="/root/.local/bin:$PATH"
-ENV REDIS_SSL_CERT_REQS="CERT_NONE"  
+ENV REDIS_SSL_CERT_REQS="CERT_NONE"
 
 # Instala dependências de sistema necessárias
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -41,6 +41,9 @@ RUN poetry install --no-interaction --no-ansi --no-root
 # Copia TODO o código corretamente (agora depois da instalação das dependências)
 COPY . /app/
 
+# 🔹 Cria diretório para armazenar certificados mTLS
+RUN mkdir -p /app/certificados && chmod 700 /app/certificados
+
 # Ajusta permissões do diretório de scripts
 RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
@@ -54,11 +57,8 @@ RUN rm -rf /root/.cache/pip
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Expõe a porta do FastAPI
-EXPOSE 8000
+# 🔹 Expõe a porta 443 para comunicação segura com o Sicredi
+EXPOSE 443
 
-# Define o entrypoint correto
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
-
-# Comando para iniciar a aplicação
-CMD ["poetry", "run", "uvicorn", "payment_kode_api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 🔹 Define o comando para rodar o Uvicorn na porta 443 com HTTPS
+CMD ["poetry", "run", "uvicorn", "payment_kode_api.app.main:app", "--host", "0.0.0.0", "--port", "443", "--ssl-keyfile", "/app/certificados/sicredi-key.pem", "--ssl-certfile", "/app/certificados/sicredi-cert.pem"]

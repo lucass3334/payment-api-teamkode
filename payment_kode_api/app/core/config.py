@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     # 🔹 Configuração do ambiente do Sicredi
     SICREDI_ENV: str = Field("production", env="SICREDI_ENV")
+    SICREDI_API_URL: str = Field("https://api-pix.sicredi.com.br", env="SICREDI_API_URL")  # 🔹 Agora carregando do .env
 
     # 🔹 Depuração
     DEBUG: bool = Field(False, env="DEBUG")

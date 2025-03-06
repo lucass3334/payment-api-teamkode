@@ -165,3 +165,59 @@ async def create_credit_card_payment(
         except Exception as fallback_error:
             logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Rede e Asaas")
+@router.post("/payment/pix")
+async def create_pix_payment(
+    payment_data: PixPaymentRequest,
+    empresa: dict = Depends(validate_access_token)
+):
+    """Cria um pagamento via Pix usando Sicredi como principal e Asaas como fallback."""
+    empresa_id = empresa["empresa_id"]
+    transaction_id = payment_data.transaction_id or str(uuid.uuid4())
+
+    existing_payment = await get_payment(transaction_id, empresa_id)
+    if existing_payment:
+        return {"status": "already_processed", "message": "Pagamento já foi processado", "transaction_id": transaction_id}
+
+    credentials = await get_empresa_config(empresa_id)
+    if not credentials:
+        raise HTTPException(status_code=400, detail="Empresa não encontrada ou sem credenciais configuradas.")
+
+    await save_payment({
+        "empresa_id": empresa_id,
+        "transaction_id": transaction_id,
+        "amount": payment_data.amount,
+        "payment_type": "pix",
+        "status": "pending",
+        "webhook_url": payment_data.webhook_url
+    })
+
+    sicredi_payload = map_to_sicredi_payload(payment_data.dict())
+
+    try:
+        logger.info(f"🚀 Tentando processar pagamento Pix via Sicredi para {transaction_id}")
+        response = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
+
+        if response and response.get("status") == "approved":
+            logger.info(f"✅ Pagamento Pix via Sicredi aprovado para {transaction_id}")
+            return {"status": "approved", "message": "Pagamento aprovado via Sicredi", "transaction_id": transaction_id}
+
+        logger.warning(f"⚠️ Pagamento via Sicredi falhou para {transaction_id}. Tentando fallback via Asaas.")
+        raise Exception("Erro desconhecido no Sicredi")
+
+    except Exception as e:
+        logger.error(f"❌ Erro no gateway Sicredi para {transaction_id}: {str(e)}")
+
+        try:
+            logger.info(f"🔄 Tentando fallback via Asaas para {transaction_id}")
+            asaas_payload = map_to_asaas_pix_payload(payment_data.dict())
+            response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
+
+            if response and response.get("status") == "approved":
+                logger.info(f"✅ Pagamento Pix via Asaas aprovado para {transaction_id}")
+                return {"status": "approved", "message": "Sicredi falhou, usando Asaas como fallback", "transaction_id": transaction_id}
+
+            raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
+
+        except Exception as fallback_error:
+            logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
+            raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
