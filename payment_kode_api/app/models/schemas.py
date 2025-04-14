@@ -1,10 +1,11 @@
 from pydantic import BaseModel, StringConstraints, condecimal
 from typing import Annotated, Optional, Dict
+from decimal import Decimal  # ✅ Importação necessária para usar Decimal corretamente
 import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[float, condecimal(gt=0, decimal_places=2)]
+AmountType = Annotated[Decimal, condecimal(gt=0, decimal_places=2)]  # ✅ Corrigido: agora usa Decimal
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
 
 class CustomerInfo(BaseModel):
@@ -52,7 +53,7 @@ class PaymentSchema(BaseModel):
     """
     Estrutura para criação e consulta de pagamentos.
     """
-    empresa_id: uuid.UUID  # ✅ Usa `uuid.UUID` diretamente
+    empresa_id: uuid.UUID
     transaction_id: TransactionIDType
     amount: AmountType
     description: Annotated[str, StringConstraints(min_length=3, max_length=255)]
