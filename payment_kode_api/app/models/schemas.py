@@ -1,11 +1,11 @@
-from pydantic import BaseModel, StringConstraints, condecimal
+from pydantic import BaseModel, StringConstraints, condecimal, field_validator
 from typing import Annotated, Optional, Dict
-from decimal import Decimal  # ✅ Importação necessária para usar Decimal corretamente
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[Decimal, condecimal(gt=0, decimal_places=2)]  # ✅ Corrigido: agora usa Decimal
+AmountType = Annotated[Decimal, condecimal(gt=0, decimal_places=2)]  # ✅ Aceita e valida valores monetários
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
 
 class CustomerInfo(BaseModel):
@@ -61,3 +61,14 @@ class PaymentSchema(BaseModel):
     status: Optional[StatusType] = "pending"
     customer: CustomerInfo
     webhook_url: Optional[str] = None  # Webhook opcional para notificações externas
+
+    @field_validator('amount', mode='before')
+    @classmethod
+    def normalize_amount(cls, v):
+        """
+        Converte o valor recebido para Decimal com 2 casas decimais,
+        aceitando int, float ou string.
+        """
+        if isinstance(v, (int, float, str)):
+            return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return v
