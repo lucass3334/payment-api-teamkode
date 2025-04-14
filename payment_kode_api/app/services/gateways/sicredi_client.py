@@ -4,7 +4,7 @@ import asyncio
 from fastapi import HTTPException
 from ...utilities.logging_config import logger
 from ...database.database import update_payment_status
-from ...database.redis_client import get_redis_client  # 🔹 Agora utilizamos Redis
+from ...database.redis_client import get_redis_client
 from ..config_service import get_empresa_credentials, create_temp_cert_files
 
 
@@ -13,10 +13,9 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     
     redis = get_redis_client()
 
-    # 🔹 Verifica se há um token válido armazenado no Redis
     cached_token = redis.get(f"sicredi_token:{empresa_id}")
     if cached_token:
-        return cached_token  # 🔥 Retorna o token armazenado
+        return cached_token
 
     credentials = get_empresa_credentials(empresa_id)
     if not credentials:
@@ -28,7 +27,6 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     sicredi_env = credentials.get("sicredi_env", "production").lower()
 
     auth_url = "https://api-h.sicredi.com.br/oauth/token" if sicredi_env == "homologation" else "https://api-pix.sicredi.com.br/oauth/token"
-
     auth_header = base64.b64encode(f"{sicredi_client_id}:{sicredi_client_secret}".encode()).decode()
 
     headers = {
@@ -41,27 +39,30 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
-    async with httpx.AsyncClient(cert=(cert_files["cert"], cert_files["key"]), 
-                                 verify=cert_files["ca"], timeout=10) as client:
-        for attempt in range(retries):
-            try:
-                response = await client.post(auth_url, data=data, headers=headers)
-                response.raise_for_status()
-                token_data = response.json()
+    try:
+        async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+                                     verify=cert_files["sicredi_ca_base64"], timeout=10) as client:
+            for attempt in range(retries):
+                try:
+                    response = await client.post(auth_url, data=data, headers=headers)
+                    response.raise_for_status()
+                    token_data = response.json()
 
-                access_token = token_data.get("access_token")
-                expires_in = token_data.get("expires_in", 3600)  # Padrão: 1 hora
+                    access_token = token_data.get("access_token")
+                    expires_in = token_data.get("expires_in", 3600)
 
-                if access_token:
-                    redis.setex(f"sicredi_token:{empresa_id}", expires_in - 60, access_token)  # 🔥 Salva no Redis com expiração
-                    return access_token
+                    if access_token:
+                        redis.setex(f"sicredi_token:{empresa_id}", expires_in - 60, access_token)
+                        return access_token
 
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Erro HTTP na autenticação do Sicredi: {e.response.status_code} - {e.response.text}")
-                if e.response.status_code in {401, 403}:  # Credenciais inválidas
-                    raise
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"Erro HTTP na autenticação do Sicredi: {e.response.status_code} - {e.response.text}")
+                    if e.response.status_code in {401, 403}:
+                        raise
 
-            await asyncio.sleep(2)
+                await asyncio.sleep(2)
+    finally:
+        cert_files["cleanup"]()
 
     raise RuntimeError(f"Falha ao obter token do Sicredi para empresa {empresa_id}")
 
@@ -90,29 +91,32 @@ async def create_sicredi_pix_payment(empresa_id: str, amount: float, chave_pix: 
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
-    async with httpx.AsyncClient(cert=(cert_files["cert"], cert_files["key"]), 
-                                 verify=cert_files["ca"], timeout=15) as client:
-        try:
-            response = await client.post(f"{base_url}/cob", json=payload, headers=headers)
-            response.raise_for_status()
-            response_data = response.json()
+    try:
+        async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+                                     verify=cert_files["sicredi_ca_base64"], timeout=15) as client:
+            try:
+                response = await client.post(f"{base_url}/cob", json=payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
 
-            await register_sicredi_webhook(empresa_id, chave_pix)
+                await register_sicredi_webhook(empresa_id, chave_pix)
 
-            return {
-                "qr_code": response_data.get("pixCopiaECola"),
-                "pix_link": response_data.get("location"),
-                "status": response_data.get("status"),
-                "expiration": response_data["calendario"]["expiracao"]
-            }
+                return {
+                    "qr_code": response_data.get("pixCopiaECola"),
+                    "pix_link": response_data.get("location"),
+                    "status": response_data.get("status"),
+                    "expiration": response_data["calendario"]["expiracao"]
+                }
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro HTTP ao criar pagamento Pix no Sicredi: {e.response.status_code} - {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento via Sicredi")
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Erro HTTP ao criar pagamento Pix no Sicredi: {e.response.status_code} - {e.response.text}")
+                raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento via Sicredi")
 
-        except httpx.RequestError as e:
-            logger.error(f"Erro de conexão ao criar pagamento Pix no Sicredi: {e}")
-            raise HTTPException(status_code=500, detail="Falha de conexão com o Sicredi")
+            except httpx.RequestError as e:
+                logger.error(f"Erro de conexão ao criar pagamento Pix no Sicredi: {e}")
+                raise HTTPException(status_code=500, detail="Falha de conexão com o Sicredi")
+    finally:
+        cert_files["cleanup"]()
 
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
@@ -139,21 +143,23 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
-    async with httpx.AsyncClient(cert=(cert_files["cert"], cert_files["key"]), 
-                                 verify=cert_files["ca"], timeout=10) as client:
-        # 🔹 Verifica se já existe um webhook cadastrado
-        response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
-        if response.status_code == 200:
-            logger.info(f"Webhook já cadastrado para chave {chave_pix}, evitando duplicação.")
-            return
+    try:
+        async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+                                     verify=cert_files["sicredi_ca_base64"], timeout=10) as client:
+            response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
+            if response.status_code == 200:
+                logger.info(f"Webhook já cadastrado para chave {chave_pix}, evitando duplicação.")
+                return
 
-        payload = {"webhookUrl": webhook_pix}
+            payload = {"webhookUrl": webhook_pix}
 
-        try:
-            response = await client.put(f"{base_url}/webhook/{chave_pix}", json=payload, headers=headers)
-            response.raise_for_status()
-            logger.info(f"Webhook registrado com sucesso para chave {chave_pix}")
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro ao registrar webhook: {e.response.status_code} - {e.response.text}")
-            raise
+            try:
+                response = await client.put(f"{base_url}/webhook/{chave_pix}", json=payload, headers=headers)
+                response.raise_for_status()
+                logger.info(f"Webhook registrado com sucesso para chave {chave_pix}")
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Erro ao registrar webhook: {e.response.status_code} - {e.response.text}")
+                raise
+    finally:
+        cert_files["cleanup"]()

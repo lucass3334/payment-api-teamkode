@@ -1,6 +1,7 @@
 import base64
 import tempfile
 import logging
+import os
 from ..database.database import get_empresa_config, get_empresa_certificados
 
 # Configuração do Logger
@@ -15,7 +16,7 @@ def get_empresa_credentials(empresa_id: str):
         config = get_empresa_config(empresa_id)
         if not config:
             logger.error(f"Configuração da empresa {empresa_id} não encontrada.")
-            return None  # Evita exceção direta e permite tratamento no código chamador
+            return None
 
         certificados = get_empresa_certificados(empresa_id) or {}
 
@@ -31,7 +32,6 @@ def get_empresa_credentials(empresa_id: str):
             "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),
         }
 
-        # Loga certificados ausentes
         missing_certs = [key for key in ["sicredi_cert_base64", "sicredi_key_base64", "sicredi_ca_base64"] if not credentials.get(key)]
         if missing_certs:
             logger.warning(f"Empresa {empresa_id} está sem os certificados: {missing_certs}")
@@ -46,6 +46,7 @@ def get_empresa_credentials(empresa_id: str):
 def create_temp_cert_files(empresa_id: str):
     """
     Gera arquivos temporários para os certificados mTLS do Sicredi.
+    Retorna um dicionário com os caminhos dos arquivos e uma função 'cleanup' para excluir depois.
     """
     try:
         credentials = get_empresa_credentials(empresa_id)
@@ -63,7 +64,7 @@ def create_temp_cert_files(empresa_id: str):
             cert_data = credentials.get(key)
             if not cert_data:
                 logger.warning(f"Empresa {empresa_id} está sem o certificado {key}.")
-                continue  # Continua ao invés de quebrar o fluxo inteiro
+                continue
 
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=filename, mode="wb") as temp_file:
@@ -77,6 +78,17 @@ def create_temp_cert_files(empresa_id: str):
 
         if len(temp_files) < 3:
             raise ValueError(f"Nem todos os certificados foram criados corretamente para empresa {empresa_id}")
+
+        # 🔐 Função interna para remover os arquivos após uso
+        def cleanup():
+            for path in temp_files.values():
+                try:
+                    os.remove(path)
+                    logger.info(f"Arquivo temporário removido: {path}")
+                except Exception as e:
+                    logger.warning(f"Erro ao remover arquivo temporário {path}: {e}")
+
+        temp_files["cleanup"] = cleanup  # 🔹 Adiciona função ao dicionário
 
         return temp_files
 
