@@ -5,7 +5,6 @@ import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[Decimal, condecimal(gt=0, decimal_places=2)]  # ✅ Aceita e valida valores monetários
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
 
 class CustomerInfo(BaseModel):
@@ -55,7 +54,7 @@ class PaymentSchema(BaseModel):
     """
     empresa_id: uuid.UUID
     transaction_id: TransactionIDType
-    amount: AmountType
+    amount: Decimal  # 🔧 Corrigido para usar Decimal direto
     description: Annotated[str, StringConstraints(min_length=3, max_length=255)]
     payment_type: Annotated[str, StringConstraints(min_length=3, max_length=15)]  # "pix" ou "credit_card"
     status: Optional[StatusType] = "pending"
@@ -69,6 +68,11 @@ class PaymentSchema(BaseModel):
         Converte o valor recebido para Decimal com 2 casas decimais,
         aceitando int, float ou string.
         """
-        if isinstance(v, (int, float, str)):
-            return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        return v
+        try:
+            decimal_value = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except Exception as e:
+            raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
+
+        if decimal_value <= 0:
+            raise ValueError("O valor de 'amount' deve ser maior que 0.")
+        return decimal_value

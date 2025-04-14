@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Annotated, Optional
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 import httpx
 
@@ -29,17 +30,27 @@ router = APIRouter()
 # Tipagens para validação
 PixKeyType = Annotated[str, Field(min_length=5, max_length=150)]
 TransactionIDType = Annotated[str, Field(min_length=6, max_length=35)]
-AmountType = Annotated[float, Field(gt=0, decimal_places=2)]
 InstallmentsType = Annotated[int, Field(ge=1, le=12)]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
 
 class PixPaymentRequest(BaseModel):
-    amount: AmountType
+    amount: Decimal
     chave_pix: PixKeyType
     txid: TransactionIDType
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def normalize_amount(cls, v):
+        try:
+            decimal_value = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if decimal_value <= 0:
+                raise ValueError("O valor de 'amount' deve ser maior que 0.")
+            return decimal_value
+        except Exception as e:
+            raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
 
 class TokenizeCardRequest(BaseModel):
@@ -54,12 +65,23 @@ class TokenizeCardRequest(BaseModel):
 
 class CreditCardPaymentRequest(BaseModel):
     """Agora a rota de pagamento aceita `card_token` ou os dados do cartão."""
-    amount: AmountType
+    amount: Decimal
     card_token: Optional[str] = None  # 🔹 Preferência pelo token
     card_data: Optional[TokenizeCardRequest] = None  # 🔹 Se não houver token, usa os dados do cartão
     installments: InstallmentsType
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def normalize_amount(cls, v):
+        try:
+            decimal_value = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if decimal_value <= 0:
+                raise ValueError("O valor de 'amount' deve ser maior que 0.")
+            return decimal_value
+        except Exception as e:
+            raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
 
 async def notify_user_webhook(webhook_url: str, data: dict):
@@ -83,7 +105,6 @@ async def tokenize_card(
     card_token = str(uuid.uuid4())  # Gera um token único
     encrypted_card_data = str(card_data.dict())  # 🔹 Simulando criptografia
 
-    # Salva no banco
     await save_tokenized_card({
         "empresa_id": empresa_id,
         "customer_id": card_data.customer_id,
@@ -100,7 +121,6 @@ async def create_credit_card_payment(
     background_tasks: BackgroundTasks,
     empresa: dict = Depends(validate_access_token)
 ):
-    """Cria um pagamento via Cartão de Crédito usando Rede como principal e Asaas como fallback."""
     empresa_id = empresa["empresa_id"]
     transaction_id = payment_data.transaction_id or str(uuid.uuid4())
 
@@ -112,13 +132,11 @@ async def create_credit_card_payment(
     if not credentials:
         raise HTTPException(status_code=400, detail="Empresa não encontrada ou sem credenciais configuradas.")
 
-    # 🔹 Verifica se há um card_token ou se precisa usar os dados brutos do cartão
     if payment_data.card_token:
         card_data = await get_tokenized_card(payment_data.card_token)
         if not card_data:
             raise HTTPException(status_code=400, detail="Cartão não encontrado ou expirado.")
     elif payment_data.card_data:
-        # 🔹 Se não houver token, usa os dados brutos e gera um token para reutilização futura
         card_data = payment_data.card_data.dict()
         token_response = await tokenize_card(payment_data.card_data, empresa)
         card_data["card_token"] = token_response["card_token"]
@@ -134,7 +152,6 @@ async def create_credit_card_payment(
         "webhook_url": payment_data.webhook_url
     })
 
-    # 🔹 Usa os dados recuperados do banco para montar o payload
     rede_payload = map_to_rede_payload(card_data)
 
     try:
@@ -165,12 +182,13 @@ async def create_credit_card_payment(
         except Exception as fallback_error:
             logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Rede e Asaas")
+
+
 @router.post("/payment/pix")
 async def create_pix_payment(
     payment_data: PixPaymentRequest,
     empresa: dict = Depends(validate_access_token)
 ):
-    """Cria um pagamento via Pix usando Sicredi como principal e Asaas como fallback."""
     empresa_id = empresa["empresa_id"]
     transaction_id = payment_data.transaction_id or str(uuid.uuid4())
 
