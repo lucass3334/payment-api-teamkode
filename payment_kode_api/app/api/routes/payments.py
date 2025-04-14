@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field, field_validator
 from typing import Annotated, Optional
 from decimal import Decimal, ROUND_HALF_UP
-import uuid
+from uuid import UUID, uuid4
 import httpx
 
 from payment_kode_api.app.database.database import (
@@ -29,7 +29,7 @@ router = APIRouter()
 
 # Tipagens para validação
 PixKeyType = Annotated[str, Field(min_length=5, max_length=150)]
-TransactionIDType = Annotated[str, Field(min_length=6, max_length=35)]
+TransactionIDType = Annotated[str, Field(min_length=6, max_length=42)]
 InstallmentsType = Annotated[int, Field(ge=1, le=12)]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
@@ -122,8 +122,7 @@ async def create_credit_card_payment(
     empresa: dict = Depends(validate_access_token)
 ):
     empresa_id = empresa["empresa_id"]
-    transaction_id = payment_data.transaction_id or str(uuid.uuid4())
-
+    transaction_id = str(payment_data.transaction_id or uuid4())
     existing_payment = await get_payment(transaction_id, empresa_id)
     if existing_payment:
         return {"status": "already_processed", "message": "Pagamento já foi processado", "transaction_id": transaction_id}
@@ -190,7 +189,8 @@ async def create_pix_payment(
     empresa: dict = Depends(validate_access_token)
 ):
     empresa_id = empresa["empresa_id"]
-    transaction_id = payment_data.transaction_id or str(uuid.uuid4())
+    transaction_id = str(payment_data.transaction_id or uuid4())
+
 
     existing_payment = await get_payment(transaction_id, empresa_id)
     if existing_payment:
