@@ -1,4 +1,5 @@
 import httpx
+from decimal import Decimal  # ✅ Corrigido
 import base64
 import asyncio
 from fastapi import HTTPException
@@ -67,7 +68,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     raise RuntimeError(f"Falha ao obter token do Sicredi para empresa {empresa_id}")
 
 
-async def create_sicredi_pix_payment(empresa_id: str, amount: float, chave_pix: str, txid: str):
+async def create_sicredi_pix_payment(empresa_id: str, amount: Decimal, chave_pix: str, txid: str):  # ✅ Corrigido
     """Cria um pagamento Pix no Sicredi com autenticação mTLS."""
 
     token = await get_access_token(empresa_id)
