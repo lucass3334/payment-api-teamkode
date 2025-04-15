@@ -2,9 +2,13 @@ import os
 from supabase import create_client, Client
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.utilities.logging_config import logger
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import uuid
+from decimal import Decimal
+
+
+datetime.now(timezone.utc)
 
 # Lista de status válidos para pagamentos
 VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
@@ -43,7 +47,7 @@ async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
                 "customer_id": customer_id,
                 "card_token": card_token,
                 "encrypted_card_data": encrypted_card_data,
-                "expires_at": datetime.utcnow().isoformat()
+                "expires_at": datetime.now(timezone.utc).isoformat()
             })
             .execute()
         )
@@ -196,20 +200,18 @@ async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
         if existing_payment:
             logger.info(f"ℹ️ Transação já processada para empresa {empresa_id}: {transaction_id}")
             return existing_payment
+        
+        sanitized_data = {
+            k: float(v) if isinstance(v, Decimal) else v
+                for k, v in data.items()
+}
 
         new_payment = {
-            **data,
-            "status": "pending",
-            "installments": data.get("installments", 1),
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-        new_payment = {
-            **data,
-            "status": "pending",
-            "installments": data.get("installments", 1),
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+                **sanitized_data,
+                "status": "pending",
+                "installments": sanitized_data.get("installments", 1),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
                                 }
 
     # Garante que 'txid' será persistido, se existir
@@ -258,7 +260,7 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
 
         update_data = {
             "status": status,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
 
         response = (
@@ -319,7 +321,7 @@ async def save_empresa_certificados(empresa_id: str, sicredi_cert_base64: str, s
             "sicredi_cert_base64": sicredi_cert_base64,
             "sicredi_key_base64": sicredi_key_base64,
             "sicredi_ca_base64": sicredi_ca_base64,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
 
         if existing_cert.data:
