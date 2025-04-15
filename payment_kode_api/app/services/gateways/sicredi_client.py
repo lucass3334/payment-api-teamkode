@@ -37,7 +37,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     }
     data = {"grant_type": "client_credentials", "scope": "cob.read cob.write pix.read"}
 
-    cert_files = create_temp_cert_files(empresa_id)
+    cert_files = await create_temp_cert_files(empresa_id)
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
@@ -95,7 +95,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    cert_files = create_temp_cert_files(empresa_id)
+    cert_files = await create_temp_cert_files(empresa_id)
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
@@ -147,7 +147,7 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         "Content-Type": "application/json"
     }
 
-    cert_files = create_temp_cert_files(empresa_id)
+    cert_files = await create_temp_cert_files(empresa_id)
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
