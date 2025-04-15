@@ -6,6 +6,7 @@ from ..database.database import get_empresa_config, get_empresa_certificados
 
 logger = logging.getLogger(__name__)
 
+
 async def get_empresa_credentials(empresa_id: str):
     """
     Retorna todas as credenciais da empresa para os serviços Sicredi, Rede e Asaas.
@@ -28,14 +29,14 @@ async def get_empresa_credentials(empresa_id: str):
             "rede_api_key": config.get("rede_api_key"),
             "sicredi_cert_base64": certificados.get("sicredi_cert_base64"),
             "sicredi_key_base64": certificados.get("sicredi_key_base64"),
-            "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),
-            "webhook_pix": config.get("webhook_pix"),  # ✅ Garantir presença disso também
+            "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),  # ⚠️ ainda disponível, mas não mais usado
+            "webhook_pix": config.get("webhook_pix"),
             "sicredi_env": config.get("sicredi_env", "production")
         }
 
-        missing_certs = [key for key in ["sicredi_cert_base64", "sicredi_key_base64", "sicredi_ca_base64"] if not credentials.get(key)]
+        missing_certs = [key for key in ["sicredi_cert_base64", "sicredi_key_base64"] if not credentials.get(key)]
         if missing_certs:
-            logger.warning(f"Empresa {empresa_id} está sem os certificados: {missing_certs}")
+            logger.warning(f"Empresa {empresa_id} está sem os certificados obrigatórios: {missing_certs}")
 
         return credentials
 
@@ -54,14 +55,13 @@ async def create_temp_cert_files(empresa_id: str):
         if not credentials:
             raise ValueError(f"Credenciais não encontradas para empresa {empresa_id}")
 
-        required_certs = {
+        cert_keys = {
             "sicredi_cert_base64": "sicredi-cert.pem",
-            "sicredi_key_base64": "sicredi-key.pem",
-            "sicredi_ca_base64": "sicredi-ca.pem"
+            "sicredi_key_base64": "sicredi-key.pem"
         }
 
         temp_files = {}
-        for key, filename in required_certs.items():
+        for key, filename in cert_keys.items():
             cert_data = credentials.get(key)
             if not cert_data:
                 logger.warning(f"Empresa {empresa_id} está sem o certificado {key}.")
@@ -76,8 +76,8 @@ async def create_temp_cert_files(empresa_id: str):
             except Exception as cert_error:
                 logger.error(f"Erro ao processar {filename} para empresa {empresa_id}: {str(cert_error)}")
 
-        if len(temp_files) < 3:
-            raise ValueError(f"Nem todos os certificados foram criados corretamente para empresa {empresa_id}")
+        if len(temp_files) < 2:
+            raise ValueError(f"Certificados de cliente insuficientes para empresa {empresa_id}")
 
         def cleanup():
             for path in temp_files.values():

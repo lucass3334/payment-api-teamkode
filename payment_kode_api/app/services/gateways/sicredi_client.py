@@ -1,4 +1,5 @@
 import httpx
+import certifi  # ✅ necessário para usar a truststore padrão
 from decimal import Decimal
 import base64
 import asyncio
@@ -47,8 +48,11 @@ async def get_access_token(empresa_id: str, retries: int = 2):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
-        async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
-                                     verify=cert_files["sicredi_ca_base64"], timeout=10) as client:
+        async with httpx.AsyncClient(
+            cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+            verify=certifi.where(),
+            timeout=10
+        ) as client:
             for attempt in range(retries):
                 try:
                     response = await client.post(auth_url, data=data, headers=headers)
@@ -112,8 +116,11 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
-        async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
-                                     verify=cert_files["sicredi_ca_base64"], timeout=15) as client:
+        async with httpx.AsyncClient(
+            cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+            verify=certifi.where(),
+            timeout=15
+        ) as client:
             try:
                 response = await client.post(f"{base_url}/cob", json=body, headers=headers)
                 response.raise_for_status()
@@ -171,8 +178,11 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
-        async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
-                                     verify=cert_files["sicredi_ca_base64"], timeout=10) as client:
+        async with httpx.AsyncClient(
+            cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+            verify=certifi.where(),
+            timeout=10
+        ) as client:
             response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
             if response.status_code == 200:
                 logger.info(f"Webhook já cadastrado para chave {chave_pix}, evitando duplicação.")
