@@ -17,11 +17,10 @@ def create_redis_client() -> Redis:
 
         if settings.REDIS_URL:
             parsed_url = urlparse(settings.REDIS_URL)
-            use_ssl = parsed_url.scheme == "rediss"
 
             logger.info(f"🔄 Conectando ao Redis via URL segura: {parsed_url.hostname}")
 
-            return Redis.from_url(settings.REDIS_URL, ssl=use_ssl, **conn_params)
+            return Redis.from_url(settings.REDIS_URL, **conn_params)
 
         logger.info(f"🔄 Conectando ao Redis via parâmetros individuais: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
         return Redis(
