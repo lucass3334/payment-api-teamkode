@@ -1,5 +1,5 @@
 import httpx
-from decimal import Decimal  # ✅ Corrigido
+from decimal import Decimal
 import base64
 import asyncio
 from fastapi import HTTPException
@@ -19,7 +19,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     if cached_token:
         return cached_token
 
-    credentials = get_empresa_credentials(empresa_id)
+    credentials = await get_empresa_credentials(empresa_id)
     if not credentials:
         logger.error(f"Credenciais do Sicredi não encontradas para empresa {empresa_id}")
         raise ValueError(f"Credenciais do Sicredi não encontradas para empresa {empresa_id}")
@@ -73,7 +73,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     """Cria um pagamento Pix no Sicredi com autenticação mTLS."""
 
     token = await get_access_token(empresa_id)
-    credentials = get_empresa_credentials(empresa_id)
+    credentials = await get_empresa_credentials(empresa_id)
 
     sicredi_env = credentials.get("sicredi_env", "production").lower()
     base_url = "https://api-h.sicredi.com.br/api/v2" if sicredi_env == "homologation" else "https://api-pix.sicredi.com.br/api/v2"
@@ -83,17 +83,17 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         "Content-Type": "application/json"
     }
     body = {
-    "calendario": {"expiracao": 900},
-    "chave": payload["chave"],
-    "valor": {"original": payload["valor"]["original"]},
-    "txid": payload["txid"]
-        }
+        "calendario": {"expiracao": 900},
+        "chave": payload["chave"],
+        "valor": {"original": payload["valor"]["original"]},
+        "txid": payload["txid"]
+    }
 
     if "devedor" in payload:
         body["devedor"] = payload["devedor"]
 
     if "solicitacaoPagador" in payload:
-         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
+        body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
     cert_files = create_temp_cert_files(empresa_id)
     if not all(cert_files.values()):
@@ -108,7 +108,6 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
                 response_data = response.json()
 
                 await register_sicredi_webhook(empresa_id, payload["chave"])
-
 
                 return {
                     "qr_code": response_data.get("pixCopiaECola"),
@@ -131,7 +130,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     """Registra o webhook do Sicredi apenas se ainda não estiver cadastrado."""
 
-    credentials = get_empresa_credentials(empresa_id)
+    credentials = await get_empresa_credentials(empresa_id)
     webhook_pix = credentials.get("webhook_pix")
 
     if not webhook_pix:
