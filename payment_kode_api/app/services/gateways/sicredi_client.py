@@ -14,7 +14,6 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     """Obtém um token OAuth2 para a API Pix do Sicredi, reutilizando via Redis."""
     
     redis = get_redis_client()
-
     cached_token = redis.get(f"sicredi_token:{empresa_id}")
     if cached_token:
         return cached_token
@@ -28,7 +27,11 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     sicredi_client_secret = credentials["sicredi_client_secret"]
     sicredi_env = credentials.get("sicredi_env", "production").lower()
 
-    auth_url = "https://api-h.sicredi.com.br/oauth/token" if sicredi_env == "homologation" else "https://api-pix.sicredi.com.br/oauth/token"
+    auth_url = (
+        "https://api-h.sicredi.com.br/oauth/token"
+        if sicredi_env == "homologation"
+        else "https://api-pix.sicredi.com.br/oauth/token"
+    )
     auth_header = base64.b64encode(f"{sicredi_client_id}:{sicredi_client_secret}".encode()).decode()
 
     headers = {
@@ -38,6 +41,8 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     data = {"grant_type": "client_credentials", "scope": "cob.read cob.write pix.read"}
 
     cert_files = await create_temp_cert_files(empresa_id)
+    cleanup = cert_files.pop("cleanup", None)  # ✅ importante
+
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
@@ -64,7 +69,8 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
                 await asyncio.sleep(2)
     finally:
-        cert_files["cleanup"]()
+        if cleanup:
+            cleanup()
 
     raise RuntimeError(f"Falha ao obter token do Sicredi para empresa {empresa_id}")
 
@@ -76,7 +82,11 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     credentials = await get_empresa_credentials(empresa_id)
 
     sicredi_env = credentials.get("sicredi_env", "production").lower()
-    base_url = "https://api-h.sicredi.com.br/api/v2" if sicredi_env == "homologation" else "https://api-pix.sicredi.com.br/api/v2"
+    base_url = (
+        "https://api-h.sicredi.com.br/api/v2"
+        if sicredi_env == "homologation"
+        else "https://api-pix.sicredi.com.br/api/v2"
+    )
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -96,6 +106,8 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
     cert_files = await create_temp_cert_files(empresa_id)
+    cleanup = cert_files.pop("cleanup", None)  # ✅ importante
+
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
@@ -124,7 +136,8 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
                 logger.error(f"Erro de conexão ao criar pagamento Pix no Sicredi: {e}")
                 raise HTTPException(status_code=500, detail="Falha de conexão com o Sicredi")
     finally:
-        cert_files["cleanup"]()
+        if cleanup:
+            cleanup()
 
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
@@ -140,7 +153,11 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     token = await get_access_token(empresa_id)
 
     sicredi_env = credentials.get("sicredi_env", "production").lower()
-    base_url = "https://api-h.sicredi.com.br/api/v2" if sicredi_env == "homologation" else "https://api-pix.sicredi.com.br/api/v2"
+    base_url = (
+        "https://api-h.sicredi.com.br/api/v2"
+        if sicredi_env == "homologation"
+        else "https://api-pix.sicredi.com.br/api/v2"
+    )
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -148,6 +165,8 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     }
 
     cert_files = await create_temp_cert_files(empresa_id)
+    cleanup = cert_files.pop("cleanup", None)  # ✅ importante
+
     if not all(cert_files.values()):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
@@ -170,4 +189,5 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
                 logger.error(f"Erro ao registrar webhook: {e.response.status_code} - {e.response.text}")
                 raise
     finally:
-        cert_files["cleanup"]()
+        if cleanup:
+            cleanup()
