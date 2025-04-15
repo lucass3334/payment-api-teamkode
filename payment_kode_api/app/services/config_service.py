@@ -4,21 +4,20 @@ import logging
 import os
 from ..database.database import get_empresa_config, get_empresa_certificados
 
-# Configuração do Logger
 logger = logging.getLogger(__name__)
 
-def get_empresa_credentials(empresa_id: str):
+async def get_empresa_credentials(empresa_id: str):
     """
     Retorna todas as credenciais da empresa para os serviços Sicredi, Rede e Asaas.
     Combina dados de configuração e certificados de tabelas diferentes.
     """
     try:
-        config = get_empresa_config(empresa_id)
+        config = await get_empresa_config(empresa_id)
         if not config:
             logger.error(f"Configuração da empresa {empresa_id} não encontrada.")
             return None
 
-        certificados = get_empresa_certificados(empresa_id) or {}
+        certificados = await get_empresa_certificados(empresa_id) or {}
 
         credentials = {
             "asaas_api_key": config.get("asaas_api_key"),
@@ -30,6 +29,8 @@ def get_empresa_credentials(empresa_id: str):
             "sicredi_cert_base64": certificados.get("sicredi_cert_base64"),
             "sicredi_key_base64": certificados.get("sicredi_key_base64"),
             "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),
+            "webhook_pix": config.get("webhook_pix"),  # ✅ Garantir presença disso também
+            "sicredi_env": config.get("sicredi_env", "production")
         }
 
         missing_certs = [key for key in ["sicredi_cert_base64", "sicredi_key_base64", "sicredi_ca_base64"] if not credentials.get(key)]
@@ -43,13 +44,13 @@ def get_empresa_credentials(empresa_id: str):
         return None
 
 
-def create_temp_cert_files(empresa_id: str):
+async def create_temp_cert_files(empresa_id: str):
     """
     Gera arquivos temporários para os certificados mTLS do Sicredi.
     Retorna um dicionário com os caminhos dos arquivos e uma função 'cleanup' para excluir depois.
     """
     try:
-        credentials = get_empresa_credentials(empresa_id)
+        credentials = await get_empresa_credentials(empresa_id)
         if not credentials:
             raise ValueError(f"Credenciais não encontradas para empresa {empresa_id}")
 
@@ -72,14 +73,12 @@ def create_temp_cert_files(empresa_id: str):
                     temp_file.flush()
                     temp_files[key] = temp_file.name
                     logger.info(f"Arquivo {filename} criado temporariamente para empresa {empresa_id}")
-
             except Exception as cert_error:
                 logger.error(f"Erro ao processar {filename} para empresa {empresa_id}: {str(cert_error)}")
 
         if len(temp_files) < 3:
             raise ValueError(f"Nem todos os certificados foram criados corretamente para empresa {empresa_id}")
 
-        # 🔐 Função interna para remover os arquivos após uso
         def cleanup():
             for path in temp_files.values():
                 try:
@@ -88,8 +87,7 @@ def create_temp_cert_files(empresa_id: str):
                 except Exception as e:
                     logger.warning(f"Erro ao remover arquivo temporário {path}: {e}")
 
-        temp_files["cleanup"] = cleanup  # 🔹 Adiciona função ao dicionário
-
+        temp_files["cleanup"] = cleanup
         return temp_files
 
     except Exception as e:
