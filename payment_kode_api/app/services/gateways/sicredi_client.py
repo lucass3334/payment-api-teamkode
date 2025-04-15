@@ -7,6 +7,7 @@ from ...utilities.logging_config import logger
 from ...database.database import update_payment_status
 from ...database.redis_client import get_redis_client
 from ..config_service import get_empresa_credentials, create_temp_cert_files
+from typing import Any
 
 
 async def get_access_token(empresa_id: str, retries: int = 2):
@@ -68,7 +69,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     raise RuntimeError(f"Falha ao obter token do Sicredi para empresa {empresa_id}")
 
 
-async def create_sicredi_pix_payment(empresa_id: str, amount: Decimal, chave_pix: str, txid: str):  # ✅ Corrigido
+async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     """Cria um pagamento Pix no Sicredi com autenticação mTLS."""
 
     token = await get_access_token(empresa_id)
@@ -81,12 +82,18 @@ async def create_sicredi_pix_payment(empresa_id: str, amount: Decimal, chave_pix
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "calendario": {"expiracao": 900},
-        "chave": chave_pix,
-        "valor": {"original": f"{amount:.2f}"},
-        "txid": txid
-    }
+    body = {
+    "calendario": {"expiracao": 900},
+    "chave": payload["chave"],
+    "valor": {"original": payload["valor"]["original"]},
+    "txid": payload["txid"]
+        }
+
+    if "devedor" in payload:
+        body["devedor"] = payload["devedor"]
+
+    if "solicitacaoPagador" in payload:
+         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
     cert_files = create_temp_cert_files(empresa_id)
     if not all(cert_files.values()):
@@ -96,11 +103,12 @@ async def create_sicredi_pix_payment(empresa_id: str, amount: Decimal, chave_pix
         async with httpx.AsyncClient(cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
                                      verify=cert_files["sicredi_ca_base64"], timeout=15) as client:
             try:
-                response = await client.post(f"{base_url}/cob", json=payload, headers=headers)
+                response = await client.post(f"{base_url}/cob", json=body, headers=headers)
                 response.raise_for_status()
                 response_data = response.json()
 
-                await register_sicredi_webhook(empresa_id, chave_pix)
+                await register_sicredi_webhook(empresa_id, payload["chave"])
+
 
                 return {
                     "qr_code": response_data.get("pixCopiaECola"),
