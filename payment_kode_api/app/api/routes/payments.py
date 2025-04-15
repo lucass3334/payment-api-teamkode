@@ -23,13 +23,13 @@ from payment_kode_api.app.services.gateways.payment_payload_mapper import (
 )
 from payment_kode_api.app.services.config_service import get_empresa_credentials
 from payment_kode_api.app.utilities.logging_config import logger
-from payment_kode_api.app.security.auth import validate_access_token  # 🔹 Validação de access_token
+from payment_kode_api.app.security.auth import validate_access_token
 
 router = APIRouter()
 
 # Tipagens para validação
 PixKeyType = Annotated[str, Field(min_length=5, max_length=150)]
-TransactionIDType = Annotated[str, Field(min_length=6, max_length=42)]
+TransactionIDType = Annotated[UUID, Field()]
 InstallmentsType = Annotated[int, Field(ge=1, le=12)]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
@@ -37,7 +37,7 @@ EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 class PixPaymentRequest(BaseModel):
     amount: Decimal
     chave_pix: PixKeyType
-    txid: TransactionIDType
+    txid: str
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
 
@@ -54,7 +54,6 @@ class PixPaymentRequest(BaseModel):
 
 
 class TokenizeCardRequest(BaseModel):
-    """Requisição para tokenizar um cartão de crédito."""
     customer_id: str
     card_number: str
     expiration_month: str
@@ -64,10 +63,9 @@ class TokenizeCardRequest(BaseModel):
 
 
 class CreditCardPaymentRequest(BaseModel):
-    """Agora a rota de pagamento aceita `card_token` ou os dados do cartão."""
     amount: Decimal
-    card_token: Optional[str] = None  # 🔹 Preferência pelo token
-    card_data: Optional[TokenizeCardRequest] = None  # 🔹 Se não houver token, usa os dados do cartão
+    card_token: Optional[str] = None
+    card_data: Optional[TokenizeCardRequest] = None
     installments: InstallmentsType
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
@@ -85,7 +83,6 @@ class CreditCardPaymentRequest(BaseModel):
 
 
 async def notify_user_webhook(webhook_url: str, data: dict):
-    """Envia uma notificação para o webhook configurado pelo usuário."""
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(webhook_url, json=data, timeout=5)
@@ -99,11 +96,9 @@ async def tokenize_card(
     card_data: TokenizeCardRequest,
     empresa: dict = Depends(validate_access_token)
 ):
-    """Tokeniza os dados do cartão e retorna um token único."""
     empresa_id = empresa["empresa_id"]
-
-    card_token = str(uuid.uuid4())  # Gera um token único
-    encrypted_card_data = str(card_data.dict())  # 🔹 Simulando criptografia
+    card_token = str(uuid4())
+    encrypted_card_data = str(card_data.dict())
 
     await save_tokenized_card({
         "empresa_id": empresa_id,
@@ -123,6 +118,7 @@ async def create_credit_card_payment(
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
+
     existing_payment = await get_payment(transaction_id, empresa_id)
     if existing_payment:
         return {"status": "already_processed", "message": "Pagamento já foi processado", "transaction_id": transaction_id}
@@ -190,7 +186,6 @@ async def create_pix_payment(
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
-
 
     existing_payment = await get_payment(transaction_id, empresa_id)
     if existing_payment:
