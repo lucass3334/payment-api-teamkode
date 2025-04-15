@@ -54,6 +54,8 @@ class PaymentSchema(BaseModel):
     """
     empresa_id: uuid.UUID
     transaction_id: TransactionIDType
+    txid: Optional[Annotated[str, StringConstraints(min_length=4, max_length=35)]] = None
+    # txid é opcional, mas se fornecido deve ter entre 4 e 35 caracteres
     amount: Decimal  # 🔧 Corrigido para usar Decimal direto
     description: Annotated[str, StringConstraints(min_length=3, max_length=255)]
     payment_type: Annotated[str, StringConstraints(min_length=3, max_length=15)]  # "pix" ou "credit_card"

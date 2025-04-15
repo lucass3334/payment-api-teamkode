@@ -204,6 +204,18 @@ async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
         }
+        new_payment = {
+            **data,
+            "status": "pending",
+            "installments": data.get("installments", 1),
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+                                }
+
+    # Garante que 'txid' será persistido, se existir
+        if "txid" in data:
+            new_payment["txid"] = data["txid"]
+
 
         response = supabase.table("payments").insert(new_payment).execute()
 

@@ -4,6 +4,7 @@ from typing import Annotated, Optional
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
 import httpx
+import secrets
 
 from payment_kode_api.app.database.database import (
     get_empresa_config,
@@ -34,10 +35,14 @@ InstallmentsType = Annotated[int, Field(ge=1, le=12)]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
 
+def generate_txid() -> str:
+    return f"trx_{secrets.token_hex(12)}"[:35]
+
+
 class PixPaymentRequest(BaseModel):
     amount: Decimal
     chave_pix: PixKeyType
-    txid: str
+    txid: Optional[str] = None
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
 
@@ -157,7 +162,6 @@ async def create_credit_card_payment(
             logger.info(f"✅ Pagamento Cartão via Rede aprovado para {transaction_id}")
             return {"status": "approved", "message": "Pagamento aprovado via Rede", "transaction_id": transaction_id}
 
-        logger.warning(f"⚠️ Pagamento via Rede falhou para {transaction_id}. Tentando fallback via Asaas.")
         raise Exception("Erro desconhecido na Rede")
 
     except Exception as e:
@@ -186,6 +190,7 @@ async def create_pix_payment(
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
+    txid = payment_data.txid or generate_txid()
 
     existing_payment = await get_payment(transaction_id, empresa_id)
     if existing_payment:
@@ -201,20 +206,19 @@ async def create_pix_payment(
         "amount": payment_data.amount,
         "payment_type": "pix",
         "status": "pending",
-        "webhook_url": payment_data.webhook_url
+        "webhook_url": payment_data.webhook_url,
+        "txid": txid
     })
 
-    sicredi_payload = map_to_sicredi_payload(payment_data.dict())
+    sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
 
     try:
-        logger.info(f"🚀 Tentando processar pagamento Pix via Sicredi para {transaction_id}")
+        logger.info(f"🚀 Tentando processar pagamento Pix via Sicredi para {transaction_id} com txid {txid}")
         response = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
         if response and response.get("status") == "approved":
-            logger.info(f"✅ Pagamento Pix via Sicredi aprovado para {transaction_id}")
             return {"status": "approved", "message": "Pagamento aprovado via Sicredi", "transaction_id": transaction_id}
 
-        logger.warning(f"⚠️ Pagamento via Sicredi falhou para {transaction_id}. Tentando fallback via Asaas.")
         raise Exception("Erro desconhecido no Sicredi")
 
     except Exception as e:
@@ -222,12 +226,11 @@ async def create_pix_payment(
 
         try:
             logger.info(f"🔄 Tentando fallback via Asaas para {transaction_id}")
-            asaas_payload = map_to_asaas_pix_payload(payment_data.dict())
+            asaas_payload = map_to_asaas_pix_payload({**payment_data.dict(), "txid": txid})
             response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
 
             if response and response.get("status") == "approved":
-                logger.info(f"✅ Pagamento Pix via Asaas aprovado para {transaction_id}")
-                return {"status": "approved", "message": "Sicredi falhou, usando Asaas como fallback", "transaction_id": transaction_id}
+                return {"status": "approved", "message": "Sicredi falhou, Asaas aprovado", "transaction_id": transaction_id}
 
             raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
 

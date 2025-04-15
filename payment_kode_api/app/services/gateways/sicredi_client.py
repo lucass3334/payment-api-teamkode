@@ -83,7 +83,7 @@ async def create_sicredi_pix_payment(empresa_id: str, amount: Decimal, chave_pix
     }
     payload = {
         "calendario": {"expiracao": 900},
-        "devedor": {"chave": chave_pix},
+        "chave": chave_pix,
         "valor": {"original": f"{amount:.2f}"},
         "txid": txid
     }
