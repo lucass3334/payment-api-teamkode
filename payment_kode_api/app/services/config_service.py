@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 async def get_empresa_credentials(empresa_id: str):
     """
-    Retorna todas as credenciais da empresa, incluindo chaves e certificados.
+    Recupera as credenciais completas da empresa para uso em integrações com Sicredi, Rede e Asaas.
     """
     try:
         config = await get_empresa_config(empresa_id)
@@ -30,12 +30,15 @@ async def get_empresa_credentials(empresa_id: str):
             "sicredi_key_base64": certificados.get("sicredi_key_base64"),
             "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),  # opcional
             "webhook_pix": config.get("webhook_pix"),
-            "sicredi_env": config.get("sicredi_env", "production")
+            "sicredi_env": config.get("sicredi_env", "production"),
         }
 
         missing = [k for k in ["sicredi_cert_base64", "sicredi_key_base64"] if not credentials.get(k)]
         if missing:
             logger.warning(f"⚠️ Certificados ausentes para empresa {empresa_id}: {missing}")
+
+        logger.debug(f"🔐 Credenciais recuperadas para empresa {empresa_id}: "
+                     f"{[k for k, v in credentials.items() if v is not None]}")
 
         return credentials
 
@@ -46,36 +49,37 @@ async def get_empresa_credentials(empresa_id: str):
 
 async def create_temp_cert_files(empresa_id: str):
     """
-    Gera arquivos temporários com os certificados da empresa em disco e retorna seus caminhos.
-    Inclui função de limpeza automática dos arquivos após uso.
+    Gera arquivos temporários de certificados (.pem) a partir de strings base64.
+    Retorna os caminhos desses arquivos e uma função 'cleanup' para removê-los.
     """
     try:
         credentials = await get_empresa_credentials(empresa_id)
         if not credentials:
-            raise ValueError(f"❌ Credenciais ausentes para empresa {empresa_id}")
+            raise ValueError(f"❌ Credenciais não encontradas para empresa {empresa_id}")
 
         mapping = {
             "cert_path": ("sicredi_cert_base64", "sicredi-cert.pem"),
-            "key_path": ("sicredi_key_base64", "sicredi-key.pem")
+            "key_path": ("sicredi_key_base64", "sicredi-key.pem"),
         }
 
         temp_files = {}
 
-        for key_name, (encoded_key, filename) in mapping.items():
-            cert_data = credentials.get(encoded_key)
-            if not cert_data:
-                logger.warning(f"⚠️ Certificado {encoded_key} ausente para empresa {empresa_id}")
+        for key_name, (b64_key, filename) in mapping.items():
+            encoded_data = credentials.get(b64_key)
+            if not encoded_data:
+                logger.warning(f"⚠️ Certificado {b64_key} ausente para empresa {empresa_id}")
                 continue
 
             try:
-                decoded = base64.b64decode(cert_data).decode("utf-8")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f"-{filename}", mode="wt", encoding="utf-8") as tmp:
-                    tmp.write(decoded)
-                    tmp.flush()
-                    temp_files[key_name] = tmp.name
-                    logger.info(f"📄 {filename} criado para empresa {empresa_id}: {tmp.name}")
-            except Exception as cert_error:
-                logger.error(f"❌ Erro ao processar {filename} da empresa {empresa_id}: {cert_error}")
+                decoded = base64.b64decode(encoded_data).decode("utf-8")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f"-{filename}", mode="wt", encoding="utf-8") as temp:
+                    temp.write(decoded)
+                    temp.flush()
+                    temp_files[key_name] = temp.name
+                    logger.info(f"📄 Certificado {filename} salvo temporariamente: {temp.name}")
+                    logger.debug(f"📄 Conteúdo de {filename} (início):\n{decoded[:300]}")
+            except Exception as decode_error:
+                logger.error(f"❌ Falha ao processar {filename} da empresa {empresa_id}: {decode_error}")
 
         if "cert_path" not in temp_files or "key_path" not in temp_files:
             raise ValueError(f"❌ Certificados insuficientes para empresa {empresa_id}")
@@ -87,11 +91,11 @@ async def create_temp_cert_files(empresa_id: str):
                         os.remove(path)
                         logger.info(f"🧹 Certificado temporário removido: {path}")
                     except Exception as e:
-                        logger.warning(f"⚠️ Falha ao remover {path}: {e}")
+                        logger.warning(f"⚠️ Erro ao tentar remover {path}: {e}")
 
         temp_files["cleanup"] = cleanup
         return temp_files
 
     except Exception as e:
-        logger.error(f"❌ Falha ao gerar arquivos temporários para empresa {empresa_id}: {str(e)}")
+        logger.error(f"❌ Erro ao gerar arquivos temporários para empresa {empresa_id}: {str(e)}")
         return None
