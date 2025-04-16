@@ -34,9 +34,16 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
     headers = {
         "Authorization": f"Basic {auth_header}",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json"
     }
-    data = {"grant_type": "client_credentials", "scope": "cob.read cob.write pix.read"}
+
+    params = {
+        "grant_type": "client_credentials",
+        "scope": "cob.read cob.write pix.read"
+    }
 
     cert_files = await create_temp_cert_files(empresa_id)
     cleanup = cert_files.pop("cleanup", None)
@@ -53,7 +60,11 @@ async def get_access_token(empresa_id: str, retries: int = 2):
         ) as client:
             for attempt in range(retries):
                 try:
-                    response = await client.post(auth_url, data=data, headers=headers)
+                    logger.info(f"🔍 Requisição OAuth Sicredi: {auth_url}")
+                    logger.debug(f"🔍 Headers: {headers}")
+                    logger.debug(f"🔍 Params: {params}")
+
+                    response = await client.post(auth_url, headers=headers, params=params)
                     response.raise_for_status()
                     token_data = response.json()
 
@@ -65,7 +76,10 @@ async def get_access_token(empresa_id: str, retries: int = 2):
                         return access_token
 
                 except httpx.HTTPStatusError as e:
-                    logger.error(f"Erro HTTP na autenticação do Sicredi: {e.response.status_code} - {e.response.text}")
+                    logger.error(f"❌ HTTP {e.response.status_code} na autenticação Sicredi")
+                    logger.debug(f"❌ Headers enviados: {e.request.headers}")
+                    logger.debug(f"❌ URL requisitada: {e.request.url}")
+                    logger.debug(f"❌ Corpo da resposta: {e.response.text}")
                     if e.response.status_code in {401, 403}:
                         raise
 
@@ -119,6 +133,10 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
             timeout=timeout
         ) as client:
             try:
+                logger.info(f"📤 Enviando cobrança para Sicredi: {base_url}/cob")
+                logger.debug(f"📦 Body: {body}")
+                logger.debug(f"📥 Headers: {headers}")
+
                 response = await client.post(f"{base_url}/cob", json=body, headers=headers)
                 response.raise_for_status()
                 response_data = response.json()
@@ -133,11 +151,13 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
                 }
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"Erro HTTP ao criar pagamento Pix no Sicredi: {e.response.status_code} - {e.response.text}")
+                logger.error(f"❌ Erro HTTP ao criar cobrança: {e.response.status_code}")
+                logger.debug(f"❌ URL requisitada: {e.request.url}")
+                logger.debug(f"❌ Resposta: {e.response.text}")
                 raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento via Sicredi")
 
             except httpx.RequestError as e:
-                logger.error(f"Erro de conexão ao criar pagamento Pix no Sicredi: {e}")
+                logger.error(f"❌ Falha de conexão com Sicredi: {e}")
                 raise HTTPException(status_code=500, detail="Falha de conexão com o Sicredi")
     finally:
         if cleanup:
@@ -179,20 +199,26 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
             verify=certifi.where(),
             timeout=timeout
         ) as client:
+            logger.info(f"🔍 Verificando se webhook já está cadastrado: {base_url}/webhook/{chave_pix}")
             response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
+
             if response.status_code == 200:
-                logger.info(f"Webhook já cadastrado para chave {chave_pix}, evitando duplicação.")
+                logger.info(f"✅ Webhook já existente para chave {chave_pix}")
                 return
 
             payload = {"webhookUrl": webhook_pix}
+            logger.info(f"📤 Registrando webhook para chave {chave_pix}")
+            logger.debug(f"📦 Payload: {payload}")
 
             try:
                 response = await client.put(f"{base_url}/webhook/{chave_pix}", json=payload, headers=headers)
                 response.raise_for_status()
-                logger.info(f"Webhook registrado com sucesso para chave {chave_pix}")
+                logger.info(f"✅ Webhook registrado com sucesso para {chave_pix}")
                 return response.json()
             except httpx.HTTPStatusError as e:
-                logger.error(f"Erro ao registrar webhook: {e.response.status_code} - {e.response.text}")
+                logger.error(f"❌ Falha ao registrar webhook: {e.response.status_code}")
+                logger.debug(f"❌ URL requisitada: {e.request.url}")
+                logger.debug(f"❌ Resposta: {e.response.text}")
                 raise
     finally:
         if cleanup:
