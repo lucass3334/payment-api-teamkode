@@ -1,10 +1,12 @@
 import base64
-import tempfile
 import logging
 import os
 from ..database.database import get_empresa_config, get_empresa_certificados
 
 logger = logging.getLogger(__name__)
+
+# Caminho base persistente no disco do Render
+BASE_CERT_DIR = "/data/certificados"
 
 
 async def get_empresa_credentials(empresa_id: str):
@@ -49,53 +51,54 @@ async def get_empresa_credentials(empresa_id: str):
 
 async def create_temp_cert_files(empresa_id: str):
     """
-    Gera arquivos temporários de certificados (.pem) a partir de strings base64.
-    Retorna os caminhos desses arquivos e uma função 'cleanup' para removê-los.
+    Gera arquivos de certificado persistentes em /data/certificados/<empresa_id>.
+    Retorna os caminhos dos arquivos e uma função dummy de cleanup.
     """
     try:
         credentials = await get_empresa_credentials(empresa_id)
         if not credentials:
             raise ValueError(f"❌ Credenciais não encontradas para empresa {empresa_id}")
 
+        empresa_path = os.path.join(BASE_CERT_DIR, empresa_id)
+        os.makedirs(empresa_path, exist_ok=True)
+
         mapping = {
             "cert_path": ("sicredi_cert_base64", "sicredi-cert.pem"),
             "key_path": ("sicredi_key_base64", "sicredi-key.pem"),
         }
 
-        temp_files = {}
+        file_paths = {}
 
-        for key_name, (b64_key, filename) in mapping.items():
-            encoded_data = credentials.get(b64_key)
-            if not encoded_data:
-                logger.warning(f"⚠️ Certificado {b64_key} ausente para empresa {empresa_id}")
+        for key, (cred_key, filename) in mapping.items():
+            b64_data = credentials.get(cred_key)
+            full_path = os.path.join(empresa_path, filename)
+
+            if not b64_data:
+                logger.warning(f"⚠️ {cred_key} ausente para empresa {empresa_id}")
                 continue
 
-            try:
-                decoded = base64.b64decode(encoded_data).decode("utf-8")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f"-{filename}", mode="wt", encoding="utf-8") as temp:
-                    temp.write(decoded)
-                    temp.flush()
-                    temp_files[key_name] = temp.name
-                    logger.info(f"📄 Certificado {filename} salvo temporariamente: {temp.name}")
+            if not os.path.exists(full_path):
+                try:
+                    decoded = base64.b64decode(b64_data).decode("utf-8")
+                    with open(full_path, "w", encoding="utf-8") as f:
+                        f.write(decoded)
+                    logger.info(f"📄 Certificado salvo em: {full_path}")
                     logger.debug(f"📄 Conteúdo de {filename} (início):\n{decoded[:300]}")
-            except Exception as decode_error:
-                logger.error(f"❌ Falha ao processar {filename} da empresa {empresa_id}: {decode_error}")
+                except Exception as e:
+                    logger.error(f"❌ Falha ao salvar {filename} da empresa {empresa_id}: {e}")
+                    raise
 
-        if "cert_path" not in temp_files or "key_path" not in temp_files:
+            file_paths[key] = full_path
+
+        if "cert_path" not in file_paths or "key_path" not in file_paths:
             raise ValueError(f"❌ Certificados insuficientes para empresa {empresa_id}")
 
         def cleanup():
-            for path in temp_files.values():
-                if isinstance(path, str):
-                    try:
-                        os.remove(path)
-                        logger.info(f"🧹 Certificado temporário removido: {path}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Erro ao tentar remover {path}: {e}")
+            logger.debug("🧹 Nenhum cleanup necessário — certificados persistem em disco.")
 
-        temp_files["cleanup"] = cleanup
-        return temp_files
+        file_paths["cleanup"] = cleanup
+        return file_paths
 
     except Exception as e:
-        logger.error(f"❌ Erro ao gerar arquivos temporários para empresa {empresa_id}: {str(e)}")
+        logger.error(f"❌ Erro ao preparar certificados para empresa {empresa_id}: {str(e)}")
         return None

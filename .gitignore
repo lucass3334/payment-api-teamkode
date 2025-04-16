@@ -35,3 +35,6 @@ certs/
 *.key
 *.crt
 *.pem
+
+/app/certificados/
+# Ignorar arquivos de configuração do Docker

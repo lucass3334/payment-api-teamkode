@@ -1,7 +1,7 @@
 #!/bin/bash
-set -e  # Faz o script falhar imediatamente se um comando falhar
+set -e  # Faz o script falhar imediatamente se algum comando falhar
 
-# Função de log com timestamps e cores
+# 🧾 Função auxiliar de log com timestamp e cores para diferentes níveis
 log() {
     local GREEN="\033[0;32m"
     local YELLOW="\033[0;33m"
@@ -18,17 +18,17 @@ log() {
 
 log info "🔄 Inicializando entrypoint..."
 
-# ✅ Garante que os arquivos críticos tenham permissões corretas
+# ✅ Garante permissões para arquivos críticos
 chmod +x /app/docker-entrypoint.sh
 chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
-# ✅ Verifica se as variáveis de ambiente estão carregadas
+# 🔒 Verifica se as variáveis de ambiente obrigatórias estão definidas
 if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_KEY" ]]; then
     log error "SUPABASE_URL ou SUPABASE_KEY não foram definidas!"
     exit 1
 fi
 
-# 🔄 **Aguarda o Redis estar pronto**
+# 🕵️ Aguarda o Redis estar disponível antes de iniciar o app
 log info "🔄 Aguardando Redis estar disponível..."
 RETRIES=10
 while [[ $RETRIES -gt 0 ]]; do
@@ -46,7 +46,7 @@ if [[ $RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 🔄 **Verificando conexão com Supabase**
+# 🕵️ Verifica a conectividade com a Supabase
 log info "🔄 Verificando conexão com Supabase..."
 SUPABASE_RETRIES=6
 while [[ $SUPABASE_RETRIES -gt 0 ]]; do
@@ -67,32 +67,18 @@ if [[ $SUPABASE_RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 🔄 **Verificando se os certificados do Sicredi estão disponíveis (opcional)**
-log info "🔍 Verificando certificados do Sicredi..."
-USE_SSL=false
+# 📁 Não há mais verificação de certificados fixos na pasta /app/certificados
+#    Agora os certificados são verificados dinamicamente por empresa no runtime
+log info "📁 Verificação de certificados Sicredi será feita por empresa em runtime (via disco). Nenhum arquivo fixo será validado no boot."
 
-if [[ -f "/app/certificados/sicredi-cert.pem" && -f "/app/certificados/sicredi-key.pem" ]]; then
-    log info "✅ Certificados do Sicredi encontrados! Ativando SSL..."
-    USE_SSL=true
-else
-    log warn "⚠️ Nenhum certificado encontrado. Rodando sem SSL..."
-fi
-
-# 🔥 **Tratamento de sinais para encerramento seguro**
+# 🧼 Garante encerramento limpo ao receber sinais de interrupção
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT
 
-# 🔥 **Inicia o serviço corretamente**
+# 🚀 Inicializa o serviço de acordo com o tipo de container
 if [[ "$1" == "worker" ]]; then
     log info "🚀 Iniciando Celery Worker..."
     exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4
 else
     log info "🚀 Iniciando API Web..."
-    
-    if [[ "$USE_SSL" == true ]]; then
-        exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080 \
-            --ssl-keyfile "/app/certificados/sicredi-key.pem" \
-            --ssl-certfile "/app/certificados/sicredi-cert.pem"
-    else
-        exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080
-    fi
+    exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080
 fi

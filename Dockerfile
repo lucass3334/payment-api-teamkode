@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala o Poetry corretamente e garante que está atualizado
+# Instala o Poetry corretamente
 RUN curl -sSL https://install.python-poetry.org | python3 - \
     && /root/.local/bin/poetry self update \
     && /root/.local/bin/poetry --version  
@@ -30,36 +30,37 @@ RUN curl -sSL https://install.python-poetry.org | python3 - \
 # Configura Poetry para não criar ambientes virtuais
 RUN poetry config virtualenvs.create false
 
-# Copia apenas os arquivos de dependências para otimizar cache
+# Copia arquivos de dependência
 COPY pyproject.toml poetry.lock /app/
-
-# ✅ Copia o README.md para evitar erro no Poetry
 COPY README.md /app/
 
-# Instala dependências do projeto via Poetry (sem instalar o próprio projeto)
+# Instala dependências do projeto
 RUN poetry install --no-interaction --no-ansi --no-root  
 
-# Copia TODO o código corretamente (agora depois da instalação das dependências)
+# Copia TODO o código depois de instalar dependências
 COPY . /app/
 
-# 🔹 Cria diretório para armazenar certificados mTLS
-RUN mkdir -p /app/certificados && chmod 700 /app/certificados
+# 🔒 Cria pasta para armazenar os certificados por empresa
+RUN mkdir -p /app/certificados && chmod -R 700 /app/certificados
 
-# Ajusta permissões do diretório de scripts
+# (Opcional) Permitir subpastas por empresa depois, por segurança
+# No código, cada empresa salva seus .pem em: /app/certificados/{empresa_id}/
+
+# Ajusta permissões em scripts internos
 RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
-# Adiciona o diretório `/app` ao PYTHONPATH
+# Define PYTHONPATH
 ENV PYTHONPATH="/app"
 
-# Remove arquivos temporários
+# Remove cache desnecessário do pip
 RUN rm -rf /root/.cache/pip
 
-# 🔹 Copia o script de entrypoint e torna executável
+# Copia script de entrada e torna executável
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# 🔹 Expõe a porta 8080 para comunicação interna (Render converte para HTTPS)
+# Expõe porta para o Render
 EXPOSE 8080
 
-# 🔹 Usa o entrypoint para iniciar a API corretamente
+# Usa entrypoint para iniciar o app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
