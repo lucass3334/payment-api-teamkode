@@ -22,6 +22,17 @@ log info "🔄 Inicializando entrypoint..."
 chmod +x /app/docker-entrypoint.sh
 chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
+# 🔐 Garante que o diretório /data/certificados exista e esteja gravável
+if [[ ! -d "/data/certificados" ]]; then
+    log warn "📂 Diretório /data/certificados não encontrado. Criando agora..."
+    mkdir -p /data/certificados || {
+        log error "❌ Falha ao criar /data/certificados. Verifique permissões no disco persistente."
+        exit 1
+    }
+else
+    log info "📂 Diretório /data/certificados encontrado com sucesso!"
+fi
+
 # 🔒 Verifica se as variáveis de ambiente obrigatórias estão definidas
 if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_KEY" ]]; then
     log error "SUPABASE_URL ou SUPABASE_KEY não foram definidas!"
@@ -51,7 +62,7 @@ log info "🔄 Verificando conexão com Supabase..."
 SUPABASE_RETRIES=6
 while [[ $SUPABASE_RETRIES -gt 0 ]]; do
     SUPABASE_STATUS=$(curl -s -o response.json -w "%{http_code}" "$SUPABASE_URL/rest/v1/" --header "apikey: $SUPABASE_KEY")
-    
+
     if [[ "$SUPABASE_STATUS" -eq 200 ]] && [[ -s response.json ]] && grep -q "swagger" response.json; then
         log info "✅ Supabase está acessível!"
         break
@@ -67,9 +78,8 @@ if [[ $SUPABASE_RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 📁 Não há mais verificação de certificados fixos na pasta /app/certificados
-#    Agora os certificados são verificados dinamicamente por empresa no runtime
-log info "📁 Verificação de certificados Sicredi será feita por empresa em runtime (via disco). Nenhum arquivo fixo será validado no boot."
+# 📁 Confirmação final sobre certificado por empresa
+log info "📁 Certificados Sicredi serão gerados dinamicamente por empresa no disco persistente em /data/certificados."
 
 # 🧼 Garante encerramento limpo ao receber sinais de interrupção
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT

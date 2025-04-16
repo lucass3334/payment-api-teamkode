@@ -40,13 +40,10 @@ RUN poetry install --no-interaction --no-ansi --no-root
 # Copia TODO o código depois de instalar dependências
 COPY . /app/
 
-# 🔒 Cria pasta para armazenar os certificados por empresa
-RUN mkdir -p /app/certificados && chmod -R 700 /app/certificados
+# 🔒 Cria pasta no volume persistente (Render garante o /data)
+RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados
 
-# (Opcional) Permitir subpastas por empresa depois, por segurança
-# No código, cada empresa salva seus .pem em: /app/certificados/{empresa_id}/
-
-# Ajusta permissões em scripts internos
+# Permissões em scripts internos
 RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
 # Define PYTHONPATH

@@ -5,7 +5,7 @@ from ..database.database import get_empresa_config, get_empresa_certificados
 
 logger = logging.getLogger(__name__)
 
-# Caminho base persistente no disco do Render
+# 🔐 Caminho persistente para certificados no Render
 BASE_CERT_DIR = "/data/certificados"
 
 
@@ -30,7 +30,7 @@ async def get_empresa_credentials(empresa_id: str):
             "rede_api_key": config.get("rede_api_key"),
             "sicredi_cert_base64": certificados.get("sicredi_cert_base64"),
             "sicredi_key_base64": certificados.get("sicredi_key_base64"),
-            "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),  # opcional
+            "sicredi_ca_base64": certificados.get("sicredi_ca_base64"),
             "webhook_pix": config.get("webhook_pix"),
             "sicredi_env": config.get("sicredi_env", "production"),
         }
@@ -52,7 +52,7 @@ async def get_empresa_credentials(empresa_id: str):
 async def create_temp_cert_files(empresa_id: str):
     """
     Gera arquivos de certificado persistentes em /data/certificados/<empresa_id>.
-    Retorna os caminhos dos arquivos e uma função dummy de cleanup.
+    Retorna os caminhos dos arquivos e uma função de cleanup dummy.
     """
     try:
         credentials = await get_empresa_credentials(empresa_id)
