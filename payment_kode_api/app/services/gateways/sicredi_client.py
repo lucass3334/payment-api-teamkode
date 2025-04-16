@@ -45,10 +45,11 @@ async def get_access_token(empresa_id: str, retries: int = 2):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         async with httpx.AsyncClient(
             cert=(cert_files["cert_path"], cert_files["key_path"]),
             verify=certifi.where(),
-            timeout=10
+            timeout=timeout
         ) as client:
             for attempt in range(retries):
                 try:
@@ -111,10 +112,11 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         async with httpx.AsyncClient(
             cert=(cert_files["cert_path"], cert_files["key_path"]),
             verify=certifi.where(),
-            timeout=15
+            timeout=timeout
         ) as client:
             try:
                 response = await client.post(f"{base_url}/cob", json=body, headers=headers)
@@ -171,10 +173,11 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         async with httpx.AsyncClient(
             cert=(cert_files["cert_path"], cert_files["key_path"]),
             verify=certifi.where(),
-            timeout=10
+            timeout=timeout
         ) as client:
             response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
             if response.status_code == 200:
