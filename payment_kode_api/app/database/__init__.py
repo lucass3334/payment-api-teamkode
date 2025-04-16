@@ -8,6 +8,7 @@ try:
         get_payment, 
         update_payment_status, 
         save_empresa, 
+        get_empresa_by_chave_pix  , # 🔹 Adicionado suporte para obter empresa por chave Pix
         get_empresa_config,
         get_empresa_certificados,
         save_empresa_certificados,  # 🔹 Adicionado suporte para salvar certificados da empresa
@@ -34,6 +35,7 @@ def init_database():
             get_payment, 
             update_payment_status, 
             get_tokenized_card, 
+            get_empresa_by_chave_pix,  # 🔹 Adicionando a verificação de empresa por chave Pix
             get_empresa_certificados,  # 🔹 Adicionando a verificação de certificados
             save_empresa_certificados  # 🔹 Adicionando a verificação de salvamento de certificados
         ]
@@ -62,6 +64,7 @@ __all__ = [
     "update_payment_status", 
     "save_empresa", 
     "get_empresa_config",
+    "get_empresa_by_chave_pix",  # 🔹 Agora incluímos a função para obter empresa por chave Pix
     "get_empresa_certificados",
     "save_empresa_certificados",  # 🔹 Agora incluímos a função para salvar certificados
     "get_tokenized_card",  

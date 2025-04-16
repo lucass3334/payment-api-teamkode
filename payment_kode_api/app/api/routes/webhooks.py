@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 import asyncio
 from payment_kode_api.app.utilities.logging_config import logger
-from payment_kode_api.app.database.database import update_payment_status
+from payment_kode_api.app.database import update_payment_status, get_empresa_by_chave_pix
 from payment_kode_api.app.security.auth import validate_access_token  # 🔹 Para autenticação multiempresas
 
 router = APIRouter()
@@ -22,9 +22,13 @@ async def pix_webhook(request: Request, empresa: dict = Depends(validate_access_
 
         # 🔹 Se for Sicredi, pula autenticação e busca empresa pela chave Pix
         if provedor == "sicredi":
-            empresa_id = obter_empresa_por_chave_pix(payload)
+            chave_pix = payload.get("pix", [{}])[0].get("chave")
+            if not chave_pix:
+                raise HTTPException(status_code=400, detail="Chave Pix ausente no payload.")
+
+            empresa_id = await get_empresa_by_chave_pix(chave_pix)
             if not empresa_id:
-                logger.warning(f"Chave Pix recebida no webhook do Sicredi não mapeada: {payload}")
+                logger.warning(f"Chave Pix recebida no webhook do Sicredi não mapeada: {chave_pix}")
                 raise HTTPException(status_code=400, detail="Empresa não encontrada para a chave Pix.")
         else:
             # 🔹 Se for outro provedor, usa o `empresa_id` autenticado
@@ -72,19 +76,3 @@ def identificar_provedor(payload: dict) -> str:
     if "externalReference" in payload or "reference" in payload:
         return "rede"
     return "asaas"  # Padrão para fallback
-
-
-def obter_empresa_por_chave_pix(payload: dict) -> str:
-    """
-    Obtém o `empresa_id` baseado na chave Pix recebida no webhook do Sicredi.
-    Aqui você precisaria consultar o banco de dados para mapear a chave Pix para a empresa correta.
-    """
-    chave_pix = payload.get("pix", [{}])[0].get("chave")
-    if not chave_pix:
-        return None  # Sem chave Pix, não conseguimos mapear a empresa
-
-    chave_pix_empresa_map = {
-        "chave_pix_empresa1": "empresa1_id",
-        "chave_pix_empresa2": "empresa2_id",
-    }
-    return chave_pix_empresa_map.get(chave_pix)

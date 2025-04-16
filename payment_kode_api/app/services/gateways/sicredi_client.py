@@ -1,6 +1,5 @@
 import httpx
-import certifi  # ✅ necessário para usar a truststore padrão
-from decimal import Decimal
+import certifi
 import base64
 import asyncio
 from fastapi import HTTPException
@@ -12,8 +11,6 @@ from typing import Any
 
 
 async def get_access_token(empresa_id: str, retries: int = 2):
-    """Obtém um token OAuth2 para a API Pix do Sicredi, reutilizando via Redis."""
-    
     redis = get_redis_client()
     cached_token = redis.get(f"sicredi_token:{empresa_id}")
     if cached_token:
@@ -42,14 +39,14 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     data = {"grant_type": "client_credentials", "scope": "cob.read cob.write pix.read"}
 
     cert_files = await create_temp_cert_files(empresa_id)
-    cleanup = cert_files.pop("cleanup", None)  # ✅ importante
+    cleanup = cert_files.pop("cleanup", None)
 
-    if not all(cert_files.values()):
+    if not cert_files.get("cert_path") or not cert_files.get("key_path"):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
         async with httpx.AsyncClient(
-            cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+            cert=(cert_files["cert_path"], cert_files["key_path"]),
             verify=certifi.where(),
             timeout=10
         ) as client:
@@ -80,8 +77,6 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
 
 async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
-    """Cria um pagamento Pix no Sicredi com autenticação mTLS."""
-
     token = await get_access_token(empresa_id)
     credentials = await get_empresa_credentials(empresa_id)
 
@@ -110,14 +105,14 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
     cert_files = await create_temp_cert_files(empresa_id)
-    cleanup = cert_files.pop("cleanup", None)  # ✅ importante
+    cleanup = cert_files.pop("cleanup", None)
 
-    if not all(cert_files.values()):
+    if not cert_files.get("cert_path") or not cert_files.get("key_path"):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
         async with httpx.AsyncClient(
-            cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+            cert=(cert_files["cert_path"], cert_files["key_path"]),
             verify=certifi.where(),
             timeout=15
         ) as client:
@@ -148,8 +143,6 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
 
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
-    """Registra o webhook do Sicredi apenas se ainda não estiver cadastrado."""
-
     credentials = await get_empresa_credentials(empresa_id)
     webhook_pix = credentials.get("webhook_pix")
 
@@ -172,14 +165,14 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     }
 
     cert_files = await create_temp_cert_files(empresa_id)
-    cleanup = cert_files.pop("cleanup", None)  # ✅ importante
+    cleanup = cert_files.pop("cleanup", None)
 
-    if not all(cert_files.values()):
+    if not cert_files.get("cert_path") or not cert_files.get("key_path"):
         raise ValueError(f"Certificados do Sicredi estão ausentes para empresa {empresa_id}")
 
     try:
         async with httpx.AsyncClient(
-            cert=(cert_files["sicredi_cert_base64"], cert_files["sicredi_key_base64"]),
+            cert=(cert_files["cert_path"], cert_files["key_path"]),
             verify=certifi.where(),
             timeout=10
         ) as client:

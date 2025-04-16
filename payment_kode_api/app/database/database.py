@@ -347,3 +347,15 @@ async def save_empresa_certificados(empresa_id: str, sicredi_cert_base64: str, s
     except Exception as e:
         logger.error(f"❌ Erro ao salvar certificados da empresa {empresa_id}: {e}")
         raise
+async def get_empresa_by_chave_pix(chave_pix: str) -> dict:
+    """
+    Consulta a empresa associada à chave Pix fornecida.
+    """
+    try:
+        response = supabase.table("empresas_config").select("empresa_id").eq("chave_pix", chave_pix).limit(1).execute()
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception as e:
+        print(f"Erro ao buscar empresa pela chave Pix: {e}")
+        return None
