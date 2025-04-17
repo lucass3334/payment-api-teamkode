@@ -48,10 +48,6 @@ async def get_empresa_credentials(empresa_id: str):
         return None
 
 async def create_temp_cert_files(empresa_id: str):
-    """
-    Gera arquivos de certificado persistentes em /data/certificados/<empresa_id>.
-    Retorna os caminhos dos arquivos e uma função de cleanup dummy.
-    """
     try:
         credentials = await get_empresa_credentials(empresa_id)
         if not credentials:
@@ -60,11 +56,10 @@ async def create_temp_cert_files(empresa_id: str):
         empresa_path = os.path.join(BASE_CERT_DIR, empresa_id)
         os.makedirs(empresa_path, exist_ok=True)
 
-        # 🔄 Agora inclui a cadeia da CA (certificado raiz da Sicredi)
         mapping = {
             "cert_path": ("sicredi_cert_base64", "sicredi-cert.pem"),
             "key_path": ("sicredi_key_base64", "sicredi-key.pem"),
-            "ca_path": ("sicredi_ca_base64", "sicredi-ca.pem"),  # ✅ adicionado
+            "ca_path": ("sicredi_ca_base64", "sicredi-ca.pem"),
         }
 
         file_paths = {}
@@ -74,26 +69,38 @@ async def create_temp_cert_files(empresa_id: str):
             full_path = os.path.join(empresa_path, filename)
 
             if not b64_data:
-                logger.warning(f"⚠️ {cred_key} ausente para empresa {empresa_id}")
+                logger.warning(f"⚠️ Campo {cred_key} ausente para empresa {empresa_id}")
                 continue
 
             if not os.path.exists(full_path):
                 try:
-                    decoded = base64.b64decode(b64_data)
+                    # Validação prévia do base64
+                    try:
+                        decoded = base64.b64decode(b64_data, validate=True)
+                    except Exception as e:
+                        logger.error(f"❌ {cred_key} não é um base64 válido: {str(e)}")
+                        continue
+
+                    # Validação de conteúdo (PEM esperado)
+                    if b"BEGIN CERTIFICATE" not in decoded and filename.endswith(".pem"):
+                        logger.warning(f"⚠️ Conteúdo do {filename} não parece ser PEM válido.")
+
+                    # Salva no disco
                     with open(full_path, "wb") as f:
                         f.write(decoded)
-                    os.chmod(full_path, 0o600)  # 🔒 Restrição de acesso ao arquivo
-                    logger.info(f"📄 Certificado salvo em: {full_path}")
-                    logger.debug(f"📄 Conteúdo de {filename} (hex início): {decoded[:60].hex()}...")
+
+                    os.chmod(full_path, 0o600)
+
+                    hash_digest = hashlib.md5(decoded).hexdigest()
+                    logger.info(f"📄 {filename} salvo em {full_path} (md5: {hash_digest})")
+
+                    file_paths[key] = full_path
+
                 except Exception as e:
-                    logger.error(f"❌ Falha ao salvar {filename} da empresa {empresa_id}: {e}")
-                    raise
+                    logger.error(f"❌ Erro ao gravar {filename} para empresa {empresa_id}: {str(e)}")
 
-            file_paths[key] = full_path
-
-        # Cert e key são obrigatórios. CA é opcional, mas recomendada.
         if "cert_path" not in file_paths or "key_path" not in file_paths:
-            raise ValueError(f"❌ Certificados insuficientes para empresa {empresa_id}")
+            raise ValueError(f"❌ Certificados essenciais ausentes para empresa {empresa_id}")
 
         def cleanup():
             logger.debug("🧹 Nenhum cleanup necessário — certificados persistem em disco.")
@@ -102,6 +109,6 @@ async def create_temp_cert_files(empresa_id: str):
         return file_paths
 
     except Exception as e:
-        logger.error(f"❌ Erro ao preparar certificados para empresa {empresa_id}: {str(e)}")
+        logger.error(f"❌ Erro geral ao preparar certificados da empresa {empresa_id}: {str(e)}")
         return None
 
