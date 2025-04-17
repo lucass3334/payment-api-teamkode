@@ -60,9 +60,11 @@ async def create_temp_cert_files(empresa_id: str):
         empresa_path = os.path.join(BASE_CERT_DIR, empresa_id)
         os.makedirs(empresa_path, exist_ok=True)
 
+        # 🔄 Agora inclui a cadeia da CA (certificado raiz da Sicredi)
         mapping = {
             "cert_path": ("sicredi_cert_base64", "sicredi-cert.pem"),
             "key_path": ("sicredi_key_base64", "sicredi-key.pem"),
+            "ca_path": ("sicredi_ca_base64", "sicredi-ca.pem"),  # ✅ adicionado
         }
 
         file_paths = {}
@@ -89,10 +91,10 @@ async def create_temp_cert_files(empresa_id: str):
 
             file_paths[key] = full_path
 
+        # Cert e key são obrigatórios. CA é opcional, mas recomendada.
         if "cert_path" not in file_paths or "key_path" not in file_paths:
             raise ValueError(f"❌ Certificados insuficientes para empresa {empresa_id}")
 
-        # 🧹 Dummy cleanup - manter atenção caso no futuro passe a deletar certificados temporários
         def cleanup():
             logger.debug("🧹 Nenhum cleanup necessário — certificados persistem em disco.")
 
@@ -102,3 +104,4 @@ async def create_temp_cert_files(empresa_id: str):
     except Exception as e:
         logger.error(f"❌ Erro ao preparar certificados para empresa {empresa_id}: {str(e)}")
         return None
+

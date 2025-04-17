@@ -1,5 +1,4 @@
 import httpx
-import certifi
 import base64
 import asyncio
 import os
@@ -19,20 +18,21 @@ def get_cert_paths(empresa_id: str):
     base_dir = f"/data/certificados/{empresa_id}"
     cert_path = os.path.join(base_dir, "sicredi-cert.pem")
     key_path = os.path.join(base_dir, "sicredi-key.pem")
-    return cert_path, key_path
+    ca_path = os.path.join(base_dir, "sicredi-ca.pem")  # ✅ adicionado
+    return cert_path, key_path, ca_path
 
 # ✅ Garante que os arquivos estejam em disco ou tenta recriar
 async def get_or_create_cert_paths(empresa_id: str):
-    cert_path, key_path = get_cert_paths(empresa_id)
+    cert_path, key_path, ca_path = get_cert_paths(empresa_id)
 
-    if not os.path.exists(cert_path) or not os.path.exists(key_path):
-        logger.warning(f"📥 Certificados não encontrados em disco. Tentando criar novamente...")
+    if not all(os.path.exists(p) for p in [cert_path, key_path, ca_path]):
+        logger.warning(f"📥 Arquivos de certificado incompletos. Tentando criar novamente...")
         await create_temp_cert_files(empresa_id)
 
-    if not os.path.exists(cert_path) or not os.path.exists(key_path):
-        raise ValueError(f"❌ Certificados não encontrados após tentativa de criação para empresa {empresa_id}")
+    if not all(os.path.exists(p) for p in [cert_path, key_path, ca_path]):
+        raise ValueError(f"❌ Arquivos de certificado ausentes após tentativa de criação para empresa {empresa_id}")
 
-    return cert_path, key_path
+    return cert_path, key_path, ca_path
 
 # 🔐 Obtém e armazena access token da Sicredi com cache Redis
 async def get_access_token(empresa_id: str, retries: int = 2):
@@ -65,12 +65,12 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
     full_url = f"{auth_url}?grant_type=client_credentials&scope=cob.read%20cob.write%20pix.read"
 
-    cert_path, key_path = await get_or_create_cert_paths(empresa_id)
+    cert_path, key_path, ca_path = await get_or_create_cert_paths(empresa_id)
 
     try:
         async with httpx.AsyncClient(
             cert=(cert_path, key_path),
-            verify=certifi.where(),
+            verify=ca_path,  # ✅ agora usa a cadeia correta
             timeout=TIMEOUT
         ) as client:
             for attempt in range(retries):
@@ -92,7 +92,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
                     logger.debug(f"🔎 URL: {e.request.url}")
                     logger.debug(f"🔎 Resposta: {e.response.text}")
                     if e.response.status_code in {401, 403}:
-                        raise  # TODO: Implementar lógica de refresh_token se necessário
+                        raise
 
                 await asyncio.sleep(2)
     except Exception as e:
@@ -131,12 +131,12 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    cert_path, key_path = await get_or_create_cert_paths(empresa_id)
+    cert_path, key_path, ca_path = await get_or_create_cert_paths(empresa_id)
 
     try:
         async with httpx.AsyncClient(
             cert=(cert_path, key_path),
-            verify=certifi.where(),
+            verify=ca_path,
             timeout=TIMEOUT
         ) as client:
             logger.info(f"📤 Enviando cobrança para Sicredi: {base_url}/cob")
@@ -186,12 +186,12 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         "Content-Type": "application/json"
     }
 
-    cert_path, key_path = await get_or_create_cert_paths(empresa_id)
+    cert_path, key_path, ca_path = await get_or_create_cert_paths(empresa_id)
 
     try:
         async with httpx.AsyncClient(
             cert=(cert_path, key_path),
-            verify=certifi.where(),
+            verify=ca_path,
             timeout=TIMEOUT
         ) as client:
             logger.info(f"🔍 Verificando webhook para chave {chave_pix}")
