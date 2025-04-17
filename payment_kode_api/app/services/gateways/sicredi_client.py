@@ -4,24 +4,41 @@ import base64
 import asyncio
 import os
 from fastapi import HTTPException
+from typing import Any
+
 from ...utilities.logging_config import logger
 from ...database.database import update_payment_status
 from ...database.redis_client import get_redis_client
-from ..config_service import get_empresa_credentials
-from typing import Any
+from ..config_service import get_empresa_credentials, create_temp_cert_files
 
+# 🔧 Timeout padrão para conexões Sicredi
+TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 
+# 📁 Caminho padrão dos certificados persistidos
 def get_cert_paths(empresa_id: str):
-    # Atualizado para refletir o novo volume persistente montado em /data
     base_dir = f"/data/certificados/{empresa_id}"
     cert_path = os.path.join(base_dir, "sicredi-cert.pem")
     key_path = os.path.join(base_dir, "sicredi-key.pem")
     return cert_path, key_path
 
+# ✅ Garante que os arquivos estejam em disco ou tenta recriar
+async def get_or_create_cert_paths(empresa_id: str):
+    cert_path, key_path = get_cert_paths(empresa_id)
 
+    if not os.path.exists(cert_path) or not os.path.exists(key_path):
+        logger.warning(f"📥 Certificados não encontrados em disco. Tentando criar novamente...")
+        await create_temp_cert_files(empresa_id)
+
+    if not os.path.exists(cert_path) or not os.path.exists(key_path):
+        raise ValueError(f"❌ Certificados não encontrados após tentativa de criação para empresa {empresa_id}")
+
+    return cert_path, key_path
+
+# 🔐 Obtém e armazena access token da Sicredi com cache Redis
 async def get_access_token(empresa_id: str, retries: int = 2):
     redis = get_redis_client()
-    cached_token = redis.get(f"sicredi_token:{empresa_id}")
+    redis_key = f"sicredi_token:{empresa_id}"
+    cached_token = redis.get(redis_key)
     if cached_token:
         return cached_token
 
@@ -48,16 +65,13 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
     full_url = f"{auth_url}?grant_type=client_credentials&scope=cob.read%20cob.write%20pix.read"
 
-    cert_path, key_path = get_cert_paths(empresa_id)
-    if not os.path.exists(cert_path) or not os.path.exists(key_path):
-        raise ValueError(f"❌ Certificados não encontrados para empresa {empresa_id} em disco")
+    cert_path, key_path = await get_or_create_cert_paths(empresa_id)
 
     try:
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         async with httpx.AsyncClient(
             cert=(cert_path, key_path),
             verify=certifi.where(),
-            timeout=timeout
+            timeout=TIMEOUT
         ) as client:
             for attempt in range(retries):
                 try:
@@ -70,7 +84,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
                     expires_in = token_data.get("expires_in", 3600)
 
                     if access_token:
-                        redis.setex(f"sicredi_token:{empresa_id}", expires_in - 60, access_token)
+                        redis.setex(redis_key, expires_in - 60, access_token)
                         return access_token
 
                 except httpx.HTTPStatusError as e:
@@ -78,7 +92,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
                     logger.debug(f"🔎 URL: {e.request.url}")
                     logger.debug(f"🔎 Resposta: {e.response.text}")
                     if e.response.status_code in {401, 403}:
-                        raise
+                        raise  # TODO: Implementar lógica de refresh_token se necessário
 
                 await asyncio.sleep(2)
     except Exception as e:
@@ -87,7 +101,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
     raise RuntimeError(f"❌ Falha ao obter token do Sicredi para empresa {empresa_id}")
 
-
+# 💳 Criação de cobrança via Sicredi Pix
 async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     token = await get_access_token(empresa_id)
     credentials = await get_empresa_credentials(empresa_id)
@@ -103,6 +117,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
+
     body = {
         "calendario": {"expiracao": 900},
         "chave": payload["chave"],
@@ -116,16 +131,13 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    cert_path, key_path = get_cert_paths(empresa_id)
-    if not os.path.exists(cert_path) or not os.path.exists(key_path):
-        raise ValueError(f"❌ Certificados não encontrados para empresa {empresa_id} em disco")
+    cert_path, key_path = await get_or_create_cert_paths(empresa_id)
 
     try:
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         async with httpx.AsyncClient(
             cert=(cert_path, key_path),
             verify=certifi.where(),
-            timeout=timeout
+            timeout=TIMEOUT
         ) as client:
             logger.info(f"📤 Enviando cobrança para Sicredi: {base_url}/cob")
             response = await client.post(f"{base_url}/cob", json=body, headers=headers)
@@ -151,7 +163,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         logger.error(f"❌ Falha de conexão com Sicredi: {e}")
         raise HTTPException(status_code=500, detail="Falha de conexão com o Sicredi")
 
-
+# 🔔 Registro (ou verificação) de webhook do Sicredi para notificações Pix
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     credentials = await get_empresa_credentials(empresa_id)
     webhook_pix = credentials.get("webhook_pix")
@@ -174,16 +186,13 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         "Content-Type": "application/json"
     }
 
-    cert_path, key_path = get_cert_paths(empresa_id)
-    if not os.path.exists(cert_path) or not os.path.exists(key_path):
-        raise ValueError(f"❌ Certificados não encontrados para empresa {empresa_id} em disco")
+    cert_path, key_path = await get_or_create_cert_paths(empresa_id)
 
     try:
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         async with httpx.AsyncClient(
             cert=(cert_path, key_path),
             verify=certifi.where(),
-            timeout=timeout
+            timeout=TIMEOUT
         ) as client:
             logger.info(f"🔍 Verificando webhook para chave {chave_pix}")
             response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)

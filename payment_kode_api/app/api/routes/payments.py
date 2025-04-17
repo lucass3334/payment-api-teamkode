@@ -212,6 +212,10 @@ async def create_pix_payment(
 
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
 
+    # 🔐 Garante que os certificados estejam em disco antes da chamada
+    from payment_kode_api.app.services.config_service import create_temp_cert_files
+    await create_temp_cert_files(empresa_id)
+
     try:
         logger.info(f"🚀 Tentando processar pagamento Pix via Sicredi para {transaction_id} com txid {txid}")
         response = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
@@ -225,7 +229,7 @@ async def create_pix_payment(
         logger.error(f"❌ Erro no gateway Sicredi para {transaction_id}: {str(e)}")
 
         try:
-            logger.info(f"🔄 Tentando fallback via Asaas para {transaction_id}")
+            logger.warning(f"⚠️ Fallback será iniciado via Asaas para empresa {empresa_id}, txid {txid}")
             asaas_payload = map_to_asaas_pix_payload({**payment_data.dict(), "txid": txid})
             response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
 
@@ -237,3 +241,4 @@ async def create_pix_payment(
         except Exception as fallback_error:
             logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
+

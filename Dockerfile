@@ -5,11 +5,12 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Define timezone e encoding
-ENV TZ=UTC
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONIOENCODING=UTF-8
-ENV PATH="/root/.local/bin:$PATH"
-ENV REDIS_SSL_CERT_REQS="CERT_NONE"
+ENV TZ=UTC \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=UTF-8 \
+    PATH="/root/.local/bin:$PATH" \
+    REDIS_SSL_CERT_REQS="CERT_NONE" \
+    PYTHONPATH="/app"
 
 # Instala dependências de sistema necessárias
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,45 +20,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     redis-tools \
     curl \
     ca-certificates \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 # Instala o Poetry corretamente
 RUN curl -sSL https://install.python-poetry.org | python3 - \
-    && /root/.local/bin/poetry self update \
-    && /root/.local/bin/poetry --version  
+ && poetry self update \
+ && poetry config virtualenvs.create false \
+ && poetry --version
 
-# Configura Poetry para não criar ambientes virtuais
-RUN poetry config virtualenvs.create false
-
-# Copia arquivos de dependência
+# Copia arquivos de dependência para instalação
 COPY pyproject.toml poetry.lock /app/
 COPY README.md /app/
 
-# Instala dependências do projeto
-RUN poetry install --no-interaction --no-ansi --no-root  
+# Instala as dependências sem instalar o projeto como root
+RUN poetry install --no-interaction --no-ansi --no-root
 
-# Copia TODO o código depois de instalar dependências
+# Copia o restante do código da aplicação
 COPY . /app/
 
-# 🔒 Cria pasta no volume persistente (Render garante o /data)
-RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados
+# ⚠️ IMPORTANTE: o volume em /data será montado pelo Render em tempo de execução,
+# então criar diretórios aqui com RUN não tem efeito. Mover essa lógica para o docker-entrypoint.sh.
+# RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados  ❌ REMOVIDO
 
-# Permissões em scripts internos
+# Permissões para scripts específicos
 RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
-# Define PYTHONPATH
-ENV PYTHONPATH="/app"
-
-# Remove cache desnecessário do pip
-RUN rm -rf /root/.cache/pip
-
-# Copia script de entrada e torna executável
+# Copia o script de entrada e define como executável
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Expõe porta para o Render
+# Expõe a porta 8080
 EXPOSE 8080
 
-# Usa entrypoint para iniciar o app
+# Define o entrypoint para iniciar o app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

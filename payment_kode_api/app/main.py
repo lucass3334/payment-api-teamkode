@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, APIRouter, Response
 from payment_kode_api.app.api.routes import payments_router, webhooks_router, empresas_router
 from payment_kode_api.app.core.config import settings
@@ -27,7 +28,24 @@ def create_app() -> FastAPI:
     async def startup_event():
         """Inicialização de recursos durante o startup"""
         logger.info("🚀 Aplicação iniciando...")
-        
+
+        # 🔐 Verificação do diretório de certificados
+        cert_dir = "/data/certificados"
+        if os.path.exists(cert_dir):
+            try:
+                empresas = os.listdir(cert_dir)
+                if empresas:
+                    logger.info(f"📁 Diretório de certificados detectado com {len(empresas)} empresas:")
+                    for emp in empresas:
+                        logger.debug(f"🔎 Empresa com certificados: {emp}")
+                else:
+                    logger.warning(f"⚠️ Diretório {cert_dir} existe, mas não há certificados de empresas.")
+            except Exception as e:
+                logger.error(f"❌ Falha ao listar {cert_dir}: {e}")
+        else:
+            logger.warning(f"⚠️ Diretório {cert_dir} não encontrado. Verifique se o volume foi montado corretamente.")
+
+        # Inicialização do Redis
         try:
             app.state.redis = Redis.from_url(
                 settings.REDIS_URL,

@@ -23,15 +23,25 @@ chmod +x /app/docker-entrypoint.sh
 chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
 # 🔐 Garante que o diretório /data/certificados exista e esteja gravável
-if [[ ! -d "/data/certificados" ]]; then
-    log warn "📂 Diretório /data/certificados não encontrado. Criando agora..."
-    mkdir -p /data/certificados || {
-        log error "❌ Falha ao criar /data/certificados. Verifique permissões no disco persistente."
+CERT_DIR="/data/certificados"
+if [[ ! -d "$CERT_DIR" ]]; then
+    log warn "📂 Diretório $CERT_DIR não encontrado. Criando agora..."
+    mkdir -p "$CERT_DIR" || {
+        log error "❌ Falha ao criar $CERT_DIR. Verifique permissões no disco persistente."
         exit 1
     }
-else
-    log info "📂 Diretório /data/certificados encontrado com sucesso!"
 fi
+
+# ✅ Valida permissão de escrita
+if [[ -w "$CERT_DIR" ]]; then
+    log info "📂 Diretório $CERT_DIR está acessível e gravável."
+else
+    log error "❌ Sem permissão de escrita em $CERT_DIR. Verifique política de montagem do volume."
+    ls -ld "$CERT_DIR"
+    exit 1
+fi
+
+chmod -R 700 "$CERT_DIR"
 
 # 🔒 Verifica se as variáveis de ambiente obrigatórias estão definidas
 if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_KEY" ]]; then
@@ -79,7 +89,7 @@ if [[ $SUPABASE_RETRIES -eq 0 ]]; then
 fi
 
 # 📁 Confirmação final sobre certificado por empresa
-log info "📁 Certificados Sicredi serão gerados dinamicamente por empresa no disco persistente em /data/certificados."
+log info "📁 Certificados Sicredi serão gerados dinamicamente por empresa no disco persistente em $CERT_DIR."
 
 # 🧼 Garante encerramento limpo ao receber sinais de interrupção
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT

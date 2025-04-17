@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 # 🔐 Caminho persistente para certificados no Render
 BASE_CERT_DIR = "/data/certificados"
 
-
 async def get_empresa_credentials(empresa_id: str):
     """
     Recupera as credenciais completas da empresa para uso em integrações com Sicredi, Rede e Asaas.
@@ -48,7 +47,6 @@ async def get_empresa_credentials(empresa_id: str):
         logger.error(f"❌ Erro ao obter credenciais da empresa {empresa_id}: {str(e)}")
         return None
 
-
 async def create_temp_cert_files(empresa_id: str):
     """
     Gera arquivos de certificado persistentes em /data/certificados/<empresa_id>.
@@ -79,11 +77,12 @@ async def create_temp_cert_files(empresa_id: str):
 
             if not os.path.exists(full_path):
                 try:
-                    decoded = base64.b64decode(b64_data).decode("utf-8")
-                    with open(full_path, "w", encoding="utf-8") as f:
+                    decoded = base64.b64decode(b64_data)
+                    with open(full_path, "wb") as f:
                         f.write(decoded)
+                    os.chmod(full_path, 0o600)  # 🔒 Restrição de acesso ao arquivo
                     logger.info(f"📄 Certificado salvo em: {full_path}")
-                    logger.debug(f"📄 Conteúdo de {filename} (início):\n{decoded[:300]}")
+                    logger.debug(f"📄 Conteúdo de {filename} (hex início): {decoded[:60].hex()}...")
                 except Exception as e:
                     logger.error(f"❌ Falha ao salvar {filename} da empresa {empresa_id}: {e}")
                     raise
@@ -93,6 +92,7 @@ async def create_temp_cert_files(empresa_id: str):
         if "cert_path" not in file_paths or "key_path" not in file_paths:
             raise ValueError(f"❌ Certificados insuficientes para empresa {empresa_id}")
 
+        # 🧹 Dummy cleanup - manter atenção caso no futuro passe a deletar certificados temporários
         def cleanup():
             logger.debug("🧹 Nenhum cleanup necessário — certificados persistem em disco.")
 
