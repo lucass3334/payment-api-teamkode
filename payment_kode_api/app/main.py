@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv; load_dotenv()  # 🔹 Carrega variáveis do .env
+
 from fastapi import FastAPI, APIRouter, Response
 from payment_kode_api.app.api.routes import payments_router, webhooks_router, empresas_router
 from payment_kode_api.app.core.config import settings
@@ -26,10 +28,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup_event():
-        """Inicialização de recursos durante o startup"""
         logger.info("🚀 Aplicação iniciando...")
 
-        # 🔐 Verificação do diretório de certificados
         cert_dir = "/data/certificados"
         if os.path.exists(cert_dir):
             try:
@@ -45,7 +45,6 @@ def create_app() -> FastAPI:
         else:
             logger.warning(f"⚠️ Diretório {cert_dir} não encontrado. Verifique se o volume foi montado corretamente.")
 
-        # Inicialização do Redis
         try:
             app.state.redis = Redis.from_url(
                 settings.REDIS_URL,
@@ -64,7 +63,6 @@ def create_app() -> FastAPI:
     @app.get("/", tags=["Health Check"])
     @app.head("/", tags=["Health Check"])
     async def health_check(response: Response):
-        """Endpoint para health check e monitoramento"""
         response.headers["Cache-Control"] = "no-cache"
         return {"status": "OK", "message": "Payment Kode API operacional"}
 
