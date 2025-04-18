@@ -39,16 +39,15 @@ RUN poetry install --no-interaction --no-ansi --no-root
 # Copia o restante do código da aplicação
 COPY . /app/
 
-# ⚠️ IMPORTANTE: o volume em /data será montado pelo Render em tempo de execução,
-# então criar diretórios aqui com RUN não tem efeito. Mover essa lógica para o docker-entrypoint.sh.
-# RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados  ❌ REMOVIDO
-
 # Permissões para scripts específicos
-RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts
+RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts || true
 
 # Copia o script de entrada e define como executável
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
+
+# Cria diretório local de certificados (opcional: não conflitante com Render)
+RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados || true
 
 # Expõe a porta 8080
 EXPOSE 8080

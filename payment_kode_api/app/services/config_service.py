@@ -55,7 +55,6 @@ async def create_temp_cert_files(empresa_id: str):
         if not credentials:
             raise ValueError(f"❌ Credenciais não encontradas para empresa {empresa_id}")
 
-        # 🧱 Garante que a pasta da empresa existe no bucket
         await ensure_folder_exists(bucket=SUPABASE_BUCKET, empresa_id=empresa_id)
 
         empresa_path = os.path.join(BASE_CERT_DIR, empresa_id)
@@ -72,17 +71,25 @@ async def create_temp_cert_files(empresa_id: str):
         for key, filename in mapping.items():
             full_path = os.path.join(empresa_path, filename)
 
-            if not os.path.exists(full_path):
+            if not os.path.exists(full_path) or os.path.getsize(full_path) == 0:
+                logger.info(f"📥 {filename} ausente ou vazio. Tentando baixar do bucket para empresa {empresa_id}...")
                 success = await download_cert_file(empresa_id=empresa_id, filename=filename, dest_path=full_path)
                 if not success:
-                    logger.warning(f"⚠️ {filename} não encontrado no Supabase Storage para empresa {empresa_id}")
+                    logger.warning(f"⚠️ {filename} não encontrado ou inválido no Supabase Storage para empresa {empresa_id}")
                     continue
 
-            # Validação de integridade (md5)
+            # Validar se o arquivo está mesmo com conteúdo
+            if not os.path.exists(full_path) or os.path.getsize(full_path) == 0:
+                logger.warning(f"⚠️ {filename} continua ausente ou vazio após tentativa de download.")
+                continue
+
             with open(full_path, "rb") as f:
                 contents = f.read()
+                if not contents.strip():
+                    logger.warning(f"⚠️ {filename} contém apenas espaços ou está vazio.")
+                    continue
                 hash_digest = hashlib.md5(contents).hexdigest()
-                logger.info(f"📄 {filename} salvo em {full_path} (md5: {hash_digest})")
+                logger.info(f"📄 {filename} válido em {full_path} (md5: {hash_digest})")
 
             file_paths[key] = full_path
 

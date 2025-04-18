@@ -25,12 +25,27 @@ def get_cert_paths(empresa_id: str):
 async def get_or_create_cert_paths(empresa_id: str):
     cert_path, key_path, ca_path = get_cert_paths(empresa_id)
 
-    if not all(os.path.exists(p) for p in [cert_path, key_path, ca_path]):
-        logger.warning(f"📥 Arquivos de certificado incompletos. Tentando criar novamente para {empresa_id}...")
+    def is_valid_pem(file_path: str) -> bool:
+        try:
+            with open(file_path, "rb") as f:
+                content = f.read()
+                return b"-----BEGIN" in content and len(content.strip()) > 100
+        except Exception as e:
+            logger.warning(f"⚠️ Falha ao ler {file_path}: {e}")
+            return False
+
+    if not all(os.path.exists(p) and is_valid_pem(p) for p in [cert_path, key_path, ca_path]):
+        logger.warning(f"📥 Arquivos de certificado incompletos ou inválidos. Tentando criar novamente para {empresa_id}...")
         await create_temp_cert_files(empresa_id)
 
-    if not all(os.path.exists(p) for p in [cert_path, key_path, ca_path]):
-        raise ValueError(f"❌ Arquivos de certificado ausentes após tentativa de criação para empresa {empresa_id}")
+    # Revalida após tentativa de criação
+    missing = [p for p in [cert_path, key_path, ca_path] if not os.path.exists(p)]
+    if missing:
+        raise ValueError(f"❌ Arquivos ausentes após criação: {missing}")
+
+    empty_or_invalid = [p for p in [cert_path, key_path, ca_path] if not is_valid_pem(p)]
+    if empty_or_invalid:
+        raise ValueError(f"❌ Certificados inválidos ou vazios: {empty_or_invalid}")
 
     return cert_path, key_path, ca_path
 

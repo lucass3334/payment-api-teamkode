@@ -1,6 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
-from payment_kode_api.app.database.supabase_storage import upload_cert_file, ensure_folder_exists
+from payment_kode_api.app.database.supabase_storage import upload_cert_file, ensure_folder_exists, SUPABASE_BUCKET
 from payment_kode_api.app.utilities.logging_config import logger
 import os
 
@@ -14,33 +14,41 @@ async def upload_certificado(
     arquivo: UploadFile = File(...)
 ):
     """
-    Upload seguro de um arquivo .pem/.key da empresa para o Supabase Storage.
+    Upload seguro de um certificado .pem/.key para o Supabase Storage.
     """
-    filename = os.path.basename(arquivo.filename)
+    filename = os.path.basename(arquivo.filename.strip())
+    filename = filename.lower()
 
     if filename not in ALLOWED_FILENAMES:
         raise HTTPException(
             status_code=400,
-            detail=f"❌ Nome de arquivo inválido. Use: {', '.join(ALLOWED_FILENAMES)}"
+            detail=f"❌ Nome de arquivo inválido. Use apenas: {', '.join(sorted(ALLOWED_FILENAMES))}"
         )
 
     try:
-        file_content = await arquivo.read()
+        content = await arquivo.read()
 
-        # 🔒 Garante que o diretório no bucket existe antes de enviar
-        await ensure_folder_exists(empresa_id)
+        if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
+            raise HTTPException(status_code=400, detail="❌ Conteúdo do certificado inválido ou vazio.")
+
+        # 🔐 Garante que o diretório no bucket existe antes de enviar
+        await ensure_folder_exists(empresa_id=empresa_id, bucket=SUPABASE_BUCKET)
 
         success = await upload_cert_file(
             empresa_id=empresa_id,
             filename=filename,
-            file_bytes=file_content
+            file_bytes=content
         )
 
         if not success:
             raise HTTPException(status_code=500, detail="❌ Erro ao subir o certificado.")
 
+        logger.info(f"✅ Certificado {filename} enviado com sucesso para empresa {empresa_id}.")
         return JSONResponse(content={"message": f"✅ {filename} enviado com sucesso."})
 
+    except HTTPException as e:
+        raise e
+
     except Exception as e:
-        logger.error(f"❌ Erro durante upload de certificado: {str(e)}")
+        logger.error(f"❌ Erro inesperado no upload do certificado {filename}: {str(e)}")
         raise HTTPException(status_code=500, detail="❌ Falha ao processar o upload.")
