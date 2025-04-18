@@ -1,12 +1,12 @@
 #!/bin/bash
-set -e  # Para o script imediatamente em caso de erro
+set -euo pipefail
 
 # 🔧 Função de log colorido com timestamp
 log() {
     local GREEN="\033[0;32m"
     local YELLOW="\033[0;33m"
     local RED="\033[0;31m"
-    local NC="\033[0m"  # No Color
+    local NC="\033[0m"
     local TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 
     case $1 in
@@ -18,20 +18,16 @@ log() {
 
 log info "🔄 Inicializando entrypoint..."
 
-# ✅ Garante permissões para scripts úteis
-chmod +x /app/docker-entrypoint.sh
-chmod -R 755 /app/payment_kode_api/app/bugs_scripts
+# 🔒 Garante permissões
+chmod -R 755 /app/payment_kode_api/app/bugs_scripts || true
 
-# ❌ REMOVE diretório /data/certificados (não é mais usado)
-# O Supabase Storage cuida de tudo em memória (via bytes), sem disco fixo
-
-# 🔒 Verifica se variáveis de ambiente críticas estão presentes
-if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_KEY" ]]; then
+# 🔒 Verifica variáveis críticas
+if [[ -z "${SUPABASE_URL}" || -z "${SUPABASE_KEY}" ]]; then
     log error "SUPABASE_URL ou SUPABASE_KEY não foram definidas!"
     exit 1
 fi
 
-# 🔄 Aguarda Redis responder
+# 🔄 Aguarda Redis
 log info "🔄 Aguardando Redis estar disponível..."
 RETRIES=10
 while [[ $RETRIES -gt 0 ]]; do
@@ -39,7 +35,7 @@ while [[ $RETRIES -gt 0 ]]; do
         log info "✅ Redis está pronto!"
         break
     fi
-    log warn "⏳ Redis ainda não respondeu... Tentando novamente. Tentativas restantes: $RETRIES"
+    log warn "⏳ Redis ainda não respondeu... Tentativas restantes: $RETRIES"
     sleep 5
     ((RETRIES--))
 done
@@ -49,18 +45,18 @@ if [[ $RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 🔄 Aguarda Supabase online
+# 🔄 Aguarda Supabase
 log info "🔄 Verificando conexão com Supabase..."
 SUPABASE_RETRIES=6
 while [[ $SUPABASE_RETRIES -gt 0 ]]; do
-    SUPABASE_STATUS=$(curl -s -o response.json -w "%{http_code}" "$SUPABASE_URL/rest/v1/" --header "apikey: $SUPABASE_KEY")
+    SUPABASE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SUPABASE_URL/rest/v1/" --header "apikey: $SUPABASE_KEY")
 
-    if [[ "$SUPABASE_STATUS" -eq 200 ]] && [[ -s response.json ]] && grep -q "swagger" response.json; then
-        log info "✅ Supabase está acessível!"
+    if [[ "$SUPABASE_STATUS" == "200" ]]; then
+        log info "✅ Supabase está acessível! (HTTP $SUPABASE_STATUS)"
         break
     fi
 
-    log warn "⏳ Supabase não respondeu (Código HTTP: $SUPABASE_STATUS). Tentando novamente..."
+    log warn "⏳ Supabase não respondeu corretamente (HTTP $SUPABASE_STATUS). Tentando novamente..."
     sleep 5
     ((SUPABASE_RETRIES--))
 done
@@ -70,11 +66,11 @@ if [[ $SUPABASE_RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 🧼 Trap para encerrar com elegância
+# 🧼 Encerramento suave
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT
 
-# 🚀 Inicialização final
-if [[ "$1" == "worker" ]]; then
+# 🚀 Inicializa API ou Celery Worker
+if [[ "${1:-}" == "worker" ]]; then
     log info "🚀 Iniciando Celery Worker..."
     exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4
 else
