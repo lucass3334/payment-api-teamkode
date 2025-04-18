@@ -233,3 +233,73 @@ async def get_empresa_by_chave_pix(chave_pix: str) -> dict:
     except Exception as e:
         print(f"Erro ao buscar empresa pela chave Pix: {e}")
         return None
+
+
+# 🔹 Salva as chaves públicas/privadas RSA da empresa
+async def save_empresa_certificados(empresa_id: str, public_key_base64: str, private_key_base64: str) -> Dict[str, Any]:
+    """
+    Insere ou atualiza os certificados RSA (public/private key) da empresa na tabela `empresas_certificados`.
+    """
+    try:
+        data = {
+            "empresa_id": empresa_id,
+            "public_key_base64": public_key_base64,
+            "private_key_base64": private_key_base64,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        existing = (
+            supabase.table("empresas_certificados")
+            .select("id")
+            .eq("empresa_id", empresa_id)
+            .limit(1)
+            .execute()
+        )
+
+        if existing.data:
+            response = (
+                supabase.table("empresas_certificados")
+                .update(data)
+                .eq("empresa_id", empresa_id)
+                .execute()
+            )
+            logger.info(f"🔄 Certificados RSA atualizados para empresa {empresa_id}")
+        else:
+            response = (
+                supabase.table("empresas_certificados")
+                .insert(data)
+                .execute()
+            )
+            logger.info(f"✅ Certificados RSA salvos para empresa {empresa_id}")
+
+        return response.data[0] if response.data else {}
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao salvar certificados RSA da empresa {empresa_id}: {e}")
+        raise
+
+
+# 🔹 Recupera os certificados RSA da empresa
+async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Recupera os certificados públicos/privados da empresa armazenados na tabela `empresas_certificados`.
+    """
+    try:
+        response = (
+            supabase.table("empresas_certificados")
+            .select("public_key_base64, private_key_base64")
+            .eq("empresa_id", empresa_id)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"🔐 Certificados RSA recuperados para empresa {empresa_id}")
+            return response.data[0]
+
+        logger.warning(f"⚠️ Nenhum certificado RSA encontrado para a empresa {empresa_id}")
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao recuperar certificados RSA da empresa {empresa_id}: {e}")
+        return None
