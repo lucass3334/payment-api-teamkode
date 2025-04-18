@@ -7,7 +7,7 @@ from typing import Any
 from ...utilities.logging_config import logger
 from ...database.redis_client import get_redis_client
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
-from utilities.cert_utils import get_md5, build_ssl_context_from_memory
+from ...utilities.cert_utils import get_md5, build_ssl_context_from_memory
 
 # 🔧 Timeout padrão para conexões Sicredi
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
