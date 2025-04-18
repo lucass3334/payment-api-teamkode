@@ -6,7 +6,9 @@ from payment_kode_api.app.api.routes import (
     payments_router,
     webhooks_router,
     empresas_router,
-    upload_certificados_router  # ✅ Importa o novo roteador
+    upload_certificados_router, 
+    auth_gateway_router  
+
 )
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.core.error_handlers import add_error_handlers
@@ -28,6 +30,8 @@ def create_app() -> FastAPI:
     app.include_router(webhooks_router, prefix="/webhooks", tags=["Webhooks"])
     app.include_router(empresas_router, prefix="/empresas", tags=["Empresas"])
     app.include_router(upload_certificados_router)  # ✅ Nova rota para upload de certificados
+    app.include_router(auth_gateway_router)  
+
 
     # Handlers de erro
     add_error_handlers(app)
