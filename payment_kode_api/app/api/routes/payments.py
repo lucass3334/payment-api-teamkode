@@ -242,4 +242,3 @@ async def create_pix_payment(
             logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
 
-S
