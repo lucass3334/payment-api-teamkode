@@ -15,13 +15,14 @@ SUPABASE_BUCKET = "certificados"
 storage_client = create_client(SUPABASE_URL, SUPABASE_KEY).storage
 
 
-async def ensure_folder_exists(empresa_id: str) -> bool:
+async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -> bool:
     """
     Cria uma "pasta lógica" no bucket do Supabase Storage para uma empresa,
     usando um arquivo placeholder (".init").
 
     Args:
         empresa_id (str): ID da empresa (UUID)
+        bucket (str): Nome do bucket
 
     Returns:
         bool: True se a pasta foi criada ou já existia, False se houve erro
@@ -31,23 +32,23 @@ async def ensure_folder_exists(empresa_id: str) -> bool:
         test_path = f"{folder_prefix}.init"
 
         # Verifica se já existe algo na pasta
-        existing = storage_client.from_(SUPABASE_BUCKET).list(path=folder_prefix)
+        existing = storage_client.from_(bucket).list(path=folder_prefix)
         if existing:
-            logger.info(f"📁 Pasta {folder_prefix} já existe no bucket.")
+            logger.info(f"📁 Pasta {folder_prefix} já existe no bucket {bucket}.")
             return True
 
         # Upload de placeholder para criar a pasta
-        storage_client.from_(SUPABASE_BUCKET).upload(
+        storage_client.from_(bucket).upload(
             path=test_path,
             file=b"",  # conteúdo vazio
             file_options={"content-type": "text/plain", "upsert": True}
         )
 
-        logger.info(f"✅ Pasta {folder_prefix} criada com placeholder.")
+        logger.info(f"✅ Pasta {folder_prefix} criada com placeholder no bucket {bucket}.")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Erro ao criar pasta para empresa {empresa_id} no bucket: {e}")
+        logger.error(f"❌ Erro ao criar pasta para empresa {empresa_id} no bucket {bucket}: {e}")
         return False
 
 
