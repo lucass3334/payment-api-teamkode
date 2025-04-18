@@ -14,17 +14,46 @@ SUPABASE_BUCKET = "certificados"
 # Inicializa o cliente do Supabase Storage
 storage_client = create_client(SUPABASE_URL, SUPABASE_KEY).storage
 
+
+async def ensure_folder_exists(empresa_id: str) -> bool:
+    """
+    Cria uma "pasta lógica" no bucket do Supabase Storage para uma empresa,
+    usando um arquivo placeholder (".init").
+
+    Args:
+        empresa_id (str): ID da empresa (UUID)
+
+    Returns:
+        bool: True se a pasta foi criada ou já existia, False se houve erro
+    """
+    try:
+        folder_prefix = f"{empresa_id}/"
+        test_path = f"{folder_prefix}.init"
+
+        # Verifica se já existe algo na pasta
+        existing = storage_client.from_(SUPABASE_BUCKET).list(path=folder_prefix)
+        if existing:
+            logger.info(f"📁 Pasta {folder_prefix} já existe no bucket.")
+            return True
+
+        # Upload de placeholder para criar a pasta
+        storage_client.from_(SUPABASE_BUCKET).upload(
+            path=test_path,
+            file=b"",  # conteúdo vazio
+            file_options={"content-type": "text/plain", "upsert": True}
+        )
+
+        logger.info(f"✅ Pasta {folder_prefix} criada com placeholder.")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao criar pasta para empresa {empresa_id} no bucket: {e}")
+        return False
+
+
 async def download_cert_file(empresa_id: str, filename: str, dest_path: str) -> bool:
     """
     Faz o download de um certificado do Supabase Storage para o disco local.
-
-    Args:
-        empresa_id (str): ID da empresa (UUID).
-        filename (str): Nome do arquivo no bucket.
-        dest_path (str): Caminho local onde o arquivo deve ser salvo.
-
-    Returns:
-        bool: True se sucesso, False se falhar.
     """
     try:
         storage_path = f"{empresa_id}/{filename}"
@@ -51,14 +80,6 @@ async def download_cert_file(empresa_id: str, filename: str, dest_path: str) -> 
 async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) -> bool:
     """
     Faz o upload de um certificado .pem/.key para o Supabase Storage.
-
-    Args:
-        empresa_id (str): ID da empresa (UUID).
-        filename (str): Nome do arquivo (ex: sicredi-cert.pem).
-        file_bytes (bytes): Conteúdo do arquivo.
-
-    Returns:
-        bool: True se o upload for bem-sucedido, False caso contrário.
     """
     try:
         path = f"{empresa_id}/{filename}"

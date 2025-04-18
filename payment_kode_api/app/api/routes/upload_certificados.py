@@ -1,8 +1,6 @@
-# payment_kode_api/app/api/routes/upload_certificados.py
-
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
-from payment_kode_api.app.database.supabase_storage import upload_cert_file
+from payment_kode_api.app.database.supabase_storage import upload_cert_file, ensure_folder_exists
 from payment_kode_api.app.utilities.logging_config import logger
 import os
 
@@ -21,10 +19,17 @@ async def upload_certificado(
     filename = os.path.basename(arquivo.filename)
 
     if filename not in ALLOWED_FILENAMES:
-        raise HTTPException(status_code=400, detail=f"❌ Nome de arquivo inválido. Use: {', '.join(ALLOWED_FILENAMES)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"❌ Nome de arquivo inválido. Use: {', '.join(ALLOWED_FILENAMES)}"
+        )
 
     try:
         file_content = await arquivo.read()
+
+        # 🔒 Garante que o diretório no bucket existe antes de enviar
+        await ensure_folder_exists(empresa_id)
+
         success = await upload_cert_file(
             empresa_id=empresa_id,
             filename=filename,
