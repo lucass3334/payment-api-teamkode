@@ -19,13 +19,6 @@ async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -
     """
     Cria uma "pasta lógica" no bucket do Supabase Storage para uma empresa,
     usando um arquivo placeholder (".init").
-
-    Args:
-        empresa_id (str): ID da empresa (UUID)
-        bucket (str): Nome do bucket
-
-    Returns:
-        bool: True se a pasta foi criada ou já existia, False se houve erro
     """
     try:
         folder_prefix = f"{empresa_id}/"
@@ -40,8 +33,9 @@ async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -
         # Upload de placeholder para criar a pasta
         storage_client.from_(bucket).upload(
             path=test_path,
-            file=b"",  # conteúdo vazio
-            file_options={"content-type": "text/plain", "upsert": True}
+            file=b"",
+            file_options={"content-type": "text/plain"},
+            upsert=True
         )
 
         logger.info(f"✅ Pasta {folder_prefix} criada com placeholder no bucket {bucket}.")
@@ -89,7 +83,8 @@ async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) ->
         storage_client.from_(SUPABASE_BUCKET).upload(
             path=path,
             file=file_bytes,
-            file_options={"content-type": "application/x-pem-file", "upsert": True}
+            file_options={"content-type": "application/x-pem-file"},
+            upsert=True
         )
 
         logger.info(f"✅ {filename} enviado com sucesso para {path}")
