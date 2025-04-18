@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
+import shutil
 from payment_kode_api.app.database.supabase_storage import (
     upload_cert_file,
     ensure_folder_exists,
@@ -61,7 +62,7 @@ async def upload_certificado(
 async def validar_certificados(empresa_id: str):
     """
     Valida se todos os certificados (cert, key, ca) estão no bucket
-    e possuem conteúdo válido (não vazio).
+    e possuem conteúdo válido (não vazios, e com início válido de certificado).
     """
     empresa_path = f"/tmp/valida/{empresa_id}"
     os.makedirs(empresa_path, exist_ok=True)
@@ -79,24 +80,37 @@ async def validar_certificados(empresa_id: str):
             )
 
             if not success or not os.path.exists(local_path) or os.path.getsize(local_path) < 50:
+                logger.warning(f"⚠️ Arquivo ausente ou muito pequeno: {filename}")
                 missing_or_invalid.append(filename)
                 continue
 
             with open(local_path, "rb") as f:
                 content = f.read()
                 if not content.strip() or b"-----BEGIN" not in content:
+                    logger.warning(f"⚠️ Conteúdo inválido ou incompleto no arquivo: {filename}")
                     missing_or_invalid.append(filename)
 
         except Exception as e:
             logger.warning(f"⚠️ Erro ao validar {filename} da empresa {empresa_id}: {str(e)}")
             missing_or_invalid.append(filename)
 
+    # Limpa os arquivos temporários
+    shutil.rmtree(empresa_path, ignore_errors=True)
+
     if missing_or_invalid:
         return JSONResponse(
             status_code=400,
-            content={"status": "invalid", "missing_or_invalid": missing_or_invalid}
+            content={
+                "status": "invalid",
+                "empresa_id": empresa_id,
+                "missing_or_invalid": missing_or_invalid
+            }
         )
 
     return JSONResponse(
-        content={"status": "ok", "message": "✅ Todos os certificados estão presentes e válidos."}
+        content={
+            "status": "ok",
+            "empresa_id": empresa_id,
+            "message": "✅ Todos os certificados estão presentes e válidos."
+        }
     )

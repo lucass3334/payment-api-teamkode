@@ -32,13 +32,11 @@ async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -
         folder_prefix = f"{empresa_id}/"
         test_path = f"{folder_prefix}.init"
 
-        # Verifica se já existe algo na pasta
         existing = storage_client.from_(bucket).list(path=folder_prefix)
         if existing:
             logger.info(f"📁 Pasta {folder_prefix} já existe no bucket {bucket}.")
             return True
 
-        # Upload de placeholder para criar a pasta
         storage_client.from_(bucket).upload(
             path=test_path,
             file=b"",
@@ -61,14 +59,14 @@ async def download_cert_file(empresa_id: str, filename: str, dest_path: str) -> 
         storage_path = f"{empresa_id}/{filename}"
         logger.info(f"📦 Baixando {filename} de {storage_path} no Supabase Storage...")
 
-        response = storage_client.from_(SUPABASE_BUCKET).download(storage_path)
-        if response is None or not response.content:
-            logger.error(f"❌ Conteúdo vazio ou não encontrado para {storage_path}")
+        file_bytes = storage_client.from_(SUPABASE_BUCKET).download(storage_path)
+        if not file_bytes or len(file_bytes.strip()) < 20:
+            logger.error(f"❌ Conteúdo vazio ou inválido para {storage_path}")
             return False
 
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         with open(dest_path, "wb") as f:
-            f.write(response.content)
+            f.write(file_bytes)
 
         os.chmod(dest_path, 0o600)
         logger.info(f"✅ Certificado salvo localmente em {dest_path}")
