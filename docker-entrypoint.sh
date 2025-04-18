@@ -7,7 +7,8 @@ log() {
     local YELLOW="\033[0;33m"
     local RED="\033[0;31m"
     local NC="\033[0m"
-    local TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    local TIMESTAMP
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 
     case $1 in
         info) echo -e "${GREEN}[INFO] ${TIMESTAMP}${NC} - $2" ;;
@@ -27,23 +28,22 @@ if [[ -z "${SUPABASE_URL}" || -z "${SUPABASE_KEY}" ]]; then
     exit 1
 fi
 
-# 🔄 Aguarda Redis
-log info "🔄 Aguardando Redis estar disponível..."
-RETRIES=10
-while [[ $RETRIES -gt 0 ]]; do
-    if redis-cli -u "$REDIS_URL" ping | grep -q "PONG"; then
-        log info "✅ Redis está pronto!"
-        break
-    fi
-    log warn "⏳ Redis ainda não respondeu... Tentativas restantes: $RETRIES"
-    sleep 5
-    ((RETRIES--))
-done
-
-if [[ $RETRIES -eq 0 ]]; then
-    log error "❌ Redis não respondeu após várias tentativas!"
-    exit 1
-fi
+# 🔄 Aguarda Redis (COMENTADO — não usado no momento)
+# log info "🔄 Aguardando Redis estar disponível..."
+# RETRIES=10
+# while [[ $RETRIES -gt 0 ]]; do
+#     if redis-cli -u "$REDIS_URL" ping | grep -q "PONG"; then
+#         log info "✅ Redis está pronto!"
+#         break
+#     fi
+#     log warn "⏳ Redis ainda não respondeu... Tentativas restantes: $RETRIES"
+#     sleep 5
+#     ((RETRIES--))
+# done
+# if [[ $RETRIES -eq 0 ]]; then
+#     log error "❌ Redis não respondeu após várias tentativas!"
+#     exit 1
+# fi
 
 # 🔄 Aguarda Supabase
 log info "🔄 Verificando conexão com Supabase..."

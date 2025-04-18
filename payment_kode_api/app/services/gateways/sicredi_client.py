@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from typing import Any
 
 from ...utilities.logging_config import logger
-from ...database.redis_client import get_redis_client
+# from ...database.redis_client import get_redis_client  # ❌ Desativado (uso de Redis)
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
 from ...utilities.cert_utils import get_md5, build_ssl_context_from_memory
 
@@ -14,9 +14,10 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 
 
 async def get_access_token(empresa_id: str, retries: int = 2):
-    redis = get_redis_client()
-    redis_key = f"sicredi_token:{empresa_id}"
-    cached_token = redis.get(redis_key)
+    # redis = get_redis_client()
+    # redis_key = f"sicredi_token:{empresa_id}"
+    # cached_token = redis.get(redis_key)
+    cached_token = None  # ❌ Cache desativado
 
     if cached_token:
         return cached_token
@@ -74,7 +75,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
                 expires_in = token_data.get("expires_in", 3600)
 
                 if access_token:
-                    redis.setex(redis_key, expires_in - 60, access_token)
+                    # redis.setex(redis_key, expires_in - 60, access_token)
                     return access_token
 
                 logger.error(f"❌ Token ausente na resposta da Sicredi: {token_data}")
@@ -84,7 +85,7 @@ async def get_access_token(empresa_id: str, retries: int = 2):
             logger.error(f"❌ HTTP {e.response.status_code} na autenticação Sicredi")
             logger.debug(f"🔎 URL: {e.request.url}")
             logger.debug(f"🔎 Resposta: {e.response.text}")
-            redis.delete(redis_key)
+            # redis.delete(redis_key)
             if e.response.status_code in {401, 403} and attempt + 1 >= retries:
                 raise HTTPException(status_code=410, detail="Credenciais Sicredi inválidas ou expiradas.")
         except Exception as e:
@@ -208,6 +209,7 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
 
         logger.info(f"✅ Webhook registrado com sucesso para chave Pix: {chave_pix}")
         return response.json()
+
 
 
 # 🔧 (Comentado: método antigo baseado em arquivos)

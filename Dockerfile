@@ -9,7 +9,6 @@ ENV TZ=UTC \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=UTF-8 \
     PATH="/root/.local/bin:$PATH" \
-    REDIS_SSL_CERT_REQS="CERT_NONE" \
     PYTHONPATH="/app"
 
 # Instala dependências de sistema necessárias
@@ -17,7 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     openssl \
-    redis-tools \
     curl \
     ca-certificates \
  && apt-get clean \
@@ -45,9 +43,6 @@ RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts || true
 # Copia o script de entrada e define como executável
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
-
-# ❌ REMOVE este volume (certificados agora são temporários e em memória)
-# RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados || true
 
 # Expõe a porta 8080
 EXPOSE 8080

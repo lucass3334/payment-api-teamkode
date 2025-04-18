@@ -21,7 +21,7 @@ httpx = "^0.28.0"      # Última versão estável
 supabase = "^2.15.0"   # Última versão estável em 26 de março de 2025
 
 # Cliente Redis
-redis = "^5.2.1"       # Última versão estável
+redis = ">=5.0.0,<6.0.0"
 
 # Fila de tarefas assíncronas
 celery = "^5.5.1"      # Última versão estável
