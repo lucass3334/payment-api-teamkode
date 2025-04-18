@@ -14,8 +14,8 @@ try:
         save_empresa_certificados      # 🔹 Adicionado
     )
 
-    # Cliente Redis com inicialização controlada
-    from .redis_client import get_redis_client, test_redis_connection
+    # Redis desativado — mantendo como referência
+    # from .redis_client import get_redis_client, test_redis_connection
 
 except ImportError as e:
     raise RuntimeError(f"Erro crítico na inicialização do módulo database: {str(e)}") from e
@@ -23,8 +23,9 @@ except ImportError as e:
 def init_database():
     """Configura e valida as conexões do módulo de banco de dados"""
     try:
-        if not test_redis_connection():
-            raise ConnectionError("Falha na conexão com Redis")
+        # Redis desativado — validação removida
+        # if not test_redis_connection():
+        #     raise ConnectionError("Falha na conexão com Redis")
 
         required_methods = [
             save_payment,
@@ -48,7 +49,8 @@ def init_database():
 def shutdown_database():
     """Encerra conexões do banco de dados de forma segura"""
     try:
-        get_redis_client().close()
+        # Redis desativado — encerramento removido
+        # get_redis_client().close()
         print("✅ Conexões do database encerradas")
     except Exception as e:
         print(f"⚠️ Erro ao encerrar conexões: {str(e)}")
@@ -63,7 +65,7 @@ __all__ = [
     "get_tokenized_card",
     "get_empresa_certificados",      # 🔹 Adicionado
     "save_empresa_certificados",     # 🔹 Adicionado
-    "get_redis_client",
+    # "get_redis_client",             # 🔹 Desativado
     "init_database",
     "shutdown_database"
 ]
