@@ -12,7 +12,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_BUCKET = "certificados"
 
 # Inicializa o cliente do Supabase Storage
-storage_client = create_client(SUPABASE_URL, SUPABASE_KEY).storage()
+storage_client = create_client(SUPABASE_URL, SUPABASE_KEY).storage
 
 async def download_cert_file(empresa_id: str, filename: str, dest_path: str) -> bool:
     """
