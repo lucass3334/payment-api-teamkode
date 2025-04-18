@@ -2,17 +2,25 @@
 
 import os
 import logging
-from supabase import create_client
 from pathlib import Path
+from typing import Optional
+from supabase import create_client, Client
+from payment_kode_api.app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_BUCKET = "certificados"
 
-# Inicializa o cliente do Supabase Storage
-storage_client = create_client(SUPABASE_URL, SUPABASE_KEY).storage
+class SupabaseStorageClient:
+    _client: Optional[Client] = None
+
+    @classmethod
+    def get_client(cls) -> Client:
+        if cls._client is None:
+            cls._client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        return cls._client.storage
+
+storage_client = SupabaseStorageClient.get_client()
 
 
 async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -> bool:
@@ -34,8 +42,7 @@ async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -
         storage_client.from_(bucket).upload(
             path=test_path,
             file=b"",
-            file_options={"content-type": "text/plain"},
-            upsert=True
+            file_options={"content-type": "text/plain"}
         )
 
         logger.info(f"✅ Pasta {folder_prefix} criada com placeholder no bucket {bucket}.")
@@ -83,8 +90,7 @@ async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) ->
         storage_client.from_(SUPABASE_BUCKET).upload(
             path=path,
             file=file_bytes,
-            file_options={"content-type": "application/x-pem-file"},
-            upsert=True
+            file_options={"content-type": "application/x-pem-file"}
         )
 
         logger.info(f"✅ {filename} enviado com sucesso para {path}")
