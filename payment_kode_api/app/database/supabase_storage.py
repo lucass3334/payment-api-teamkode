@@ -9,7 +9,7 @@ from payment_kode_api.app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-SUPABASE_BUCKET = "certificados"
+SUPABASE_BUCKET = settings.SUPABASE_BUCKET
 
 class SupabaseStorageClient:
     _client: Optional[Client] = None
