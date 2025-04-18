@@ -1,24 +1,17 @@
 import httpx
 import base64
 import asyncio
-import tempfile
+import os
 from fastapi import HTTPException
 from typing import Any
 
 from ...utilities.logging_config import logger
-from ...database.database import update_payment_status
 from ...database.redis_client import get_redis_client
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
+from  utilities.cert_utils import write_temp_cert, get_md5
 
 # 🔧 Timeout padrão para conexões Sicredi
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
-
-
-def write_temp_cert(cert_bytes: bytes, suffix: str) -> tempfile.NamedTemporaryFile:
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    temp_file.write(cert_bytes)
-    temp_file.flush()
-    return temp_file
 
 
 async def get_cert_paths_from_memory(empresa_id: str):
@@ -30,10 +23,14 @@ async def get_cert_paths_from_memory(empresa_id: str):
     key_file = write_temp_cert(cert_data["key_path"], ".key")
     ca_file = write_temp_cert(cert_data["ca_path"], ".pem")
 
-    return cert_file.name, key_file.name, ca_file.name
+    logger.info(f"🔐 Certificados temporários criados:")
+    logger.debug(f"🔑 cert.pem md5: {get_md5(cert_data['cert_path'])}")
+    logger.debug(f"🔑 key.key md5: {get_md5(cert_data['key_path'])}")
+    logger.debug(f"🔑 ca.pem   md5: {get_md5(cert_data['ca_path'])}")
+
+    return cert_file, key_file, ca_file
 
 
-# 🔐 Obtém e armazena access token da Sicredi com cache Redis
 async def get_access_token(empresa_id: str, retries: int = 2):
     redis = get_redis_client()
     redis_key = f"sicredi_token:{empresa_id}"
@@ -63,44 +60,50 @@ async def get_access_token(empresa_id: str, retries: int = 2):
     }
 
     full_url = f"{auth_url}?grant_type=client_credentials&scope=cob.read%20cob.write%20pix.read"
-    cert_path, key_path, ca_path = await get_cert_paths_from_memory(empresa_id)
+    cert_file, key_file, ca_file = await get_cert_paths_from_memory(empresa_id)
 
-    for attempt in range(retries):
-        try:
-            async with httpx.AsyncClient(
-                cert=(cert_path, key_path),
-                verify=ca_path,
-                timeout=TIMEOUT
-            ) as client:
-                logger.info(f"🔐 Tentativa {attempt + 1} - Token Sicredi via {full_url}")
-                response = await client.post(full_url, headers=headers)
-                response.raise_for_status()
+    try:
+        for attempt in range(retries):
+            try:
+                async with httpx.AsyncClient(
+                    cert=(cert_file.name, key_file.name),
+                    verify=ca_file.name,
+                    timeout=TIMEOUT
+                ) as client:
+                    logger.info(f"🔐 Tentativa {attempt + 1} - Token Sicredi via {full_url}")
+                    response = await client.post(full_url, headers=headers)
+                    response.raise_for_status()
 
-                token_data = response.json()
-                access_token = token_data.get("access_token")
-                expires_in = token_data.get("expires_in", 3600)
+                    token_data = response.json()
+                    access_token = token_data.get("access_token")
+                    expires_in = token_data.get("expires_in", 3600)
 
-                if access_token:
-                    redis.setex(redis_key, expires_in - 60, access_token)
-                    return access_token
+                    if access_token:
+                        redis.setex(redis_key, expires_in - 60, access_token)
+                        return access_token
 
-                logger.error(f"❌ Token ausente na resposta da Sicredi: {token_data}")
-                break
+                    logger.error(f"❌ Token ausente na resposta da Sicredi: {token_data}")
+                    break
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP {e.response.status_code} na autenticação Sicredi")
-            logger.debug(f"🔎 URL: {e.request.url}")
-            logger.debug(f"🔎 Resposta: {e.response.text}")
-            redis.delete(redis_key)
-            if e.response.status_code in {401, 403} and attempt + 1 >= retries:
-                raise HTTPException(status_code=410, detail="Credenciais Sicredi inválidas ou expiradas.")
-        except Exception as e:
-            logger.error(f"❌ Erro inesperado ao requisitar token: {str(e)}")
-            raise
+            except httpx.HTTPStatusError as e:
+                logger.error(f"❌ HTTP {e.response.status_code} na autenticação Sicredi")
+                logger.debug(f"🔎 URL: {e.request.url}")
+                logger.debug(f"🔎 Resposta: {e.response.text}")
+                redis.delete(redis_key)
+                if e.response.status_code in {401, 403} and attempt + 1 >= retries:
+                    raise HTTPException(status_code=410, detail="Credenciais Sicredi inválidas ou expiradas.")
+            except Exception as e:
+                logger.error(f"❌ Erro inesperado ao requisitar token: {str(e)}")
+                raise
 
-        await asyncio.sleep(2)
+            await asyncio.sleep(2)
 
-    raise RuntimeError(f"❌ Falha ao obter token do Sicredi para empresa {empresa_id}")
+        raise RuntimeError(f"❌ Falha ao obter token do Sicredi para empresa {empresa_id}")
+
+    finally:
+        os.unlink(cert_file.name)
+        os.unlink(key_file.name)
+        os.unlink(ca_file.name)
 
 
 # 💳 Criação de cobrança via Sicredi Pix
@@ -133,12 +136,12 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    cert_path, key_path, ca_path = await get_cert_paths_from_memory(empresa_id)
+    cert_file, key_file, ca_file = await get_cert_paths_from_memory(empresa_id)
 
     try:
         async with httpx.AsyncClient(
-            cert=(cert_path, key_path),
-            verify=ca_path,
+            cert=(cert_file.name, key_file.name),
+            verify=ca_file.name,
             timeout=TIMEOUT
         ) as client:
             logger.info(f"📤 Enviando cobrança Pix para Sicredi: {base_url}/cob - txid: {body['txid']}")
@@ -155,17 +158,13 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
                 "expiration": response_data["calendario"]["expiracao"]
             }
 
-    except httpx.HTTPStatusError as e:
-        logger.error(f"❌ Erro HTTP {e.response.status_code} ao criar cobrança Sicredi.")
-        logger.debug(f"❌ Resposta completa: {e.response.text}")
-        raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento via Sicredi")
-
-    except httpx.RequestError as e:
-        logger.error(f"❌ Falha de conexão com Sicredi: {str(e)}")
-        raise HTTPException(status_code=500, detail="Falha de conexão com Sicredi")
+    finally:
+        os.unlink(cert_file.name)
+        os.unlink(key_file.name)
+        os.unlink(ca_file.name)
 
 
-# 🔔 Registro de webhook para notificações Pix
+# 🔔 Registro de webhook
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
     credentials = await get_empresa_credentials(empresa_id)
     webhook_pix = credentials.get("webhook_pix")
@@ -188,12 +187,12 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         "Content-Type": "application/json"
     }
 
-    cert_path, key_path, ca_path = await get_cert_paths_from_memory(empresa_id)
+    cert_file, key_file, ca_file = await get_cert_paths_from_memory(empresa_id)
 
     try:
         async with httpx.AsyncClient(
-            cert=(cert_path, key_path),
-            verify=ca_path,
+            cert=(cert_file.name, key_file.name),
+            verify=ca_file.name,
             timeout=TIMEOUT
         ) as client:
             logger.info(f"🔍 Verificando webhook para chave Pix: {chave_pix}")
@@ -211,8 +210,7 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
             logger.info(f"✅ Webhook registrado com sucesso para chave Pix: {chave_pix}")
             return response.json()
 
-    except httpx.HTTPStatusError as e:
-        logger.error(f"❌ Erro HTTP {e.response.status_code} ao registrar webhook.")
-        logger.debug(f"❌ URL: {e.request.url}")
-        logger.debug(f"❌ Resposta: {e.response.text}")
-        raise
+    finally:
+        os.unlink(cert_file.name)
+        os.unlink(key_file.name)
+        os.unlink(ca_file.name)

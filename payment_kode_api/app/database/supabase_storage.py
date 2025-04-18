@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 SUPABASE_BUCKET = settings.SUPABASE_BUCKET
 
+
 class SupabaseStorageClient:
     _client: Optional[Client] = None
 
@@ -18,66 +19,67 @@ class SupabaseStorageClient:
             cls._client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         return cls._client.storage
 
+
 storage_client = SupabaseStorageClient.get_client()
 
 
 async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -> bool:
     """
-    Cria uma "pasta lógica" no bucket do Supabase Storage para uma empresa,
-    usando um arquivo placeholder (".init").
+    Garante que a 'pasta lógica' no bucket da empresa exista.
+    Usa upload de um arquivo .init vazio para simular diretório.
     """
-    try:
-        folder_prefix = f"{empresa_id}/"
-        test_path = f"{folder_prefix}.init"
+    folder_prefix = f"{empresa_id}/"
+    init_path = f"{folder_prefix}.init"
 
+    try:
         existing = storage_client.from_(bucket).list(path=folder_prefix)
         if existing:
-            logger.info(f"📁 Pasta {folder_prefix} já existe no bucket {bucket}.")
+            logger.info(f"📁 Pasta lógica '{folder_prefix}' já existe no bucket '{bucket}'.")
             return True
 
         storage_client.from_(bucket).upload(
-            path=test_path,
+            path=init_path,
             file=b"",
             file_options={"content-type": "text/plain"}
         )
-
-        logger.info(f"✅ Pasta {folder_prefix} criada com placeholder no bucket {bucket}.")
+        logger.info(f"✅ Placeholder '.init' criado para empresa {empresa_id} em {bucket}/{folder_prefix}")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Erro ao criar pasta para empresa {empresa_id} no bucket {bucket}: {e}")
+        logger.error(f"❌ Erro ao criar diretório lógico '{folder_prefix}' no bucket {bucket}: {str(e)}")
         return False
 
 
 async def download_cert_file(empresa_id: str, filename: str) -> Optional[bytes]:
     """
-    Faz o download de um certificado do Supabase Storage e retorna como bytes em memória.
+    Faz o download de um certificado como bytes diretamente da memória.
+    Retorna None se o conteúdo for inválido ou não encontrado.
     """
     try:
         storage_path = f"{empresa_id}/{filename}"
-        logger.info(f"📦 Baixando {filename} de {storage_path} no Supabase Storage...")
+        logger.info(f"📦 Baixando {filename} do path {storage_path}...")
 
         file_bytes = storage_client.from_(SUPABASE_BUCKET).download(storage_path)
 
         if not file_bytes or len(file_bytes.strip()) < 20:
-            logger.error(f"❌ Conteúdo vazio ou inválido para {storage_path}")
+            logger.warning(f"⚠️ {filename} vazio ou inválido para empresa {empresa_id}.")
             return None
 
-        logger.info(f"✅ {filename} baixado com sucesso da empresa {empresa_id}")
+        logger.info(f"✅ {filename} baixado com sucesso para empresa {empresa_id}.")
         return file_bytes
 
     except Exception as e:
-        logger.error(f"❌ Erro ao baixar {filename} para empresa {empresa_id}: {str(e)}")
+        logger.error(f"❌ Erro ao baixar {filename} de {SUPABASE_BUCKET}/{empresa_id}: {str(e)}")
         return None
 
 
 async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) -> bool:
     """
-    Faz o upload de um certificado .pem/.key para o Supabase Storage.
+    Faz o upload de um certificado .pem ou .key para o Supabase Storage.
     """
     try:
         path = f"{empresa_id}/{filename}"
-        logger.info(f"🚀 Enviando {filename} para {path} no bucket {SUPABASE_BUCKET}")
+        logger.info(f"🚀 Upload do certificado {filename} para {SUPABASE_BUCKET}/{path}")
 
         storage_client.from_(SUPABASE_BUCKET).upload(
             path=path,
@@ -85,9 +87,9 @@ async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) ->
             file_options={"content-type": "application/x-pem-file"}
         )
 
-        logger.info(f"✅ {filename} enviado com sucesso para {path}")
+        logger.info(f"✅ Upload bem-sucedido de {filename} para {empresa_id}.")
         return True
 
     except Exception as e:
-        logger.error(f"❌ Erro ao enviar {filename} para empresa {empresa_id}: {e}")
+        logger.error(f"❌ Erro ao fazer upload de {filename} para empresa {empresa_id}: {str(e)}")
         return False

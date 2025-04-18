@@ -18,23 +18,24 @@ async def obter_token_sicredi(
     """
     try:
         logger.info(f"🔐 [Token Sicredi] Empresa: {empresa_id} — iniciando validação de certificados.")
+
         certs = await load_certificates_from_bucket(empresa_id)
+        if not certs or not all(k in certs for k in ("cert_path", "key_path", "ca_path")):
+            logger.warning(f"⚠️ Certificados ausentes ou incompletos para empresa {empresa_id}")
+            raise HTTPException(status_code=400, detail="❌ Certificados inválidos ou incompletos no Supabase Storage.")
 
-        if not certs:
-            raise HTTPException(status_code=400, detail="❌ Certificados ausentes ou inválidos no Supabase Storage.")
-
-        logger.info(f"📡 [Token Sicredi] Solicitando token...")
+        logger.info(f"📡 [Token Sicredi] Solicitando token com certificados válidos para {empresa_id}...")
         token = await get_access_token(empresa_id)
 
-        logger.success(f"✅ [Token Sicredi] Token recuperado com sucesso para empresa {empresa_id}.")
+        logger.success(f"✅ [Token Sicredi] Token recuperado com sucesso.")
         return JSONResponse(content={
             "empresa_id": empresa_id,
             "access_token": token,
             "message": "✅ Token obtido com sucesso"
         })
 
-    except HTTPException as http_exc:
-        raise http_exc
+    except HTTPException:
+        raise
 
     except Exception as e:
         logger.error(f"❌ [Token Sicredi] Erro inesperado: {str(e)}")

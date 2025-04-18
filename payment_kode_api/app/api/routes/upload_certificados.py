@@ -21,21 +21,22 @@ async def upload_certificado(
     arquivo: UploadFile = File(...)
 ):
     """
-    Upload seguro de um certificado .pem/.key para o Supabase Storage.
+    Faz o upload seguro de um certificado .pem/.key para o Supabase Storage.
+    Valida o conteúdo mínimo e a presença de header de certificado.
     """
     filename = os.path.basename(arquivo.filename.strip().lower())
 
     if filename not in ALLOWED_FILENAMES:
         raise HTTPException(
             status_code=400,
-            detail=f"❌ Nome de arquivo inválido. Use apenas: {', '.join(sorted(ALLOWED_FILENAMES))}"
+            detail=f"❌ Nome de arquivo inválido. Permitidos: {', '.join(sorted(ALLOWED_FILENAMES))}"
         )
 
     try:
         content = await arquivo.read()
 
         if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
-            raise HTTPException(status_code=400, detail="❌ Conteúdo do certificado inválido ou vazio.")
+            raise HTTPException(status_code=400, detail="❌ Conteúdo inválido ou ausente no certificado.")
 
         await ensure_folder_exists(empresa_id=empresa_id, bucket=SUPABASE_BUCKET)
 
@@ -48,21 +49,23 @@ async def upload_certificado(
         if not success:
             raise HTTPException(status_code=500, detail="❌ Erro ao subir o certificado.")
 
-        logger.info(f"✅ Certificado {filename} enviado com sucesso para empresa {empresa_id}.")
+        hash_digest = hashlib.md5(content).hexdigest()
+        logger.info(f"✅ {filename} salvo no bucket para empresa {empresa_id} (md5: {hash_digest})")
+
         return JSONResponse(content={"message": f"✅ {filename} enviado com sucesso."})
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Erro inesperado no upload do certificado {filename}: {str(e)}")
-        raise HTTPException(status_code=500, detail="❌ Falha ao processar o upload.")
+        logger.error(f"❌ Erro inesperado no upload de {filename} para {empresa_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="❌ Erro inesperado no upload do certificado.")
 
 
 @router.get("/validate")
 async def validar_certificados(empresa_id: str):
     """
-    Valida se todos os certificados (cert, key, ca) estão presentes no bucket
-    e possuem conteúdo válido diretamente da memória.
+    Valida se todos os certificados (cert, key, ca) estão presentes e válidos no Supabase Storage.
+    A verificação é feita diretamente da memória (sem disco).
     """
     missing_or_invalid = []
 
@@ -72,7 +75,7 @@ async def validar_certificados(empresa_id: str):
             content = await download_cert_file(empresa_id=empresa_id, filename=filename)
 
             if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
-                logger.warning(f"⚠️ {filename} inválido ou incompleto.")
+                logger.warning(f"⚠️ {filename} inválido ou incompleto para {empresa_id}")
                 missing_or_invalid.append(filename)
                 continue
 
