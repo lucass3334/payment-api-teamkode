@@ -1,7 +1,7 @@
 #!/bin/bash
-set -e  # Faz o script falhar imediatamente se algum comando falhar
+set -e  # Para o script imediatamente em caso de erro
 
-# 🧾 Função auxiliar de log com timestamp e cores para diferentes níveis
+# 🔧 Função de log colorido com timestamp
 log() {
     local GREEN="\033[0;32m"
     local YELLOW="\033[0;33m"
@@ -18,38 +18,20 @@ log() {
 
 log info "🔄 Inicializando entrypoint..."
 
-# ✅ Garante permissões para arquivos críticos
+# ✅ Garante permissões para scripts úteis
 chmod +x /app/docker-entrypoint.sh
 chmod -R 755 /app/payment_kode_api/app/bugs_scripts
 
-# 🔐 Garante que o diretório /data/certificados exista e esteja gravável
-CERT_DIR="/data/certificados"
-if [[ ! -d "$CERT_DIR" ]]; then
-    log warn "📂 Diretório $CERT_DIR não encontrado. Criando agora..."
-    mkdir -p "$CERT_DIR" || {
-        log error "❌ Falha ao criar $CERT_DIR. Verifique permissões no disco persistente."
-        exit 1
-    }
-fi
+# ❌ REMOVE diretório /data/certificados (não é mais usado)
+# O Supabase Storage cuida de tudo em memória (via bytes), sem disco fixo
 
-# ✅ Valida permissão de escrita
-if [[ -w "$CERT_DIR" ]]; then
-    log info "📂 Diretório $CERT_DIR está acessível e gravável."
-else
-    log error "❌ Sem permissão de escrita em $CERT_DIR. Verifique política de montagem do volume."
-    ls -ld "$CERT_DIR"
-    exit 1
-fi
-
-chmod -R 700 "$CERT_DIR"
-
-# 🔒 Verifica se as variáveis de ambiente obrigatórias estão definidas
+# 🔒 Verifica se variáveis de ambiente críticas estão presentes
 if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_KEY" ]]; then
     log error "SUPABASE_URL ou SUPABASE_KEY não foram definidas!"
     exit 1
 fi
 
-# 🕵️ Aguarda o Redis estar disponível antes de iniciar o app
+# 🔄 Aguarda Redis responder
 log info "🔄 Aguardando Redis estar disponível..."
 RETRIES=10
 while [[ $RETRIES -gt 0 ]]; do
@@ -57,7 +39,7 @@ while [[ $RETRIES -gt 0 ]]; do
         log info "✅ Redis está pronto!"
         break
     fi
-    log warn "⏳ Redis ainda não está pronto... Tentando novamente em 5 segundos. Tentativas restantes: $RETRIES"
+    log warn "⏳ Redis ainda não respondeu... Tentando novamente. Tentativas restantes: $RETRIES"
     sleep 5
     ((RETRIES--))
 done
@@ -67,7 +49,7 @@ if [[ $RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 🕵️ Verifica a conectividade com a Supabase
+# 🔄 Aguarda Supabase online
 log info "🔄 Verificando conexão com Supabase..."
 SUPABASE_RETRIES=6
 while [[ $SUPABASE_RETRIES -gt 0 ]]; do
@@ -78,7 +60,7 @@ while [[ $SUPABASE_RETRIES -gt 0 ]]; do
         break
     fi
 
-    log warn "⏳ Supabase ainda não está pronto (Código HTTP: $SUPABASE_STATUS). Tentando novamente em 5 segundos..."
+    log warn "⏳ Supabase não respondeu (Código HTTP: $SUPABASE_STATUS). Tentando novamente..."
     sleep 5
     ((SUPABASE_RETRIES--))
 done
@@ -88,13 +70,10 @@ if [[ $SUPABASE_RETRIES -eq 0 ]]; then
     exit 1
 fi
 
-# 📁 Confirmação final sobre certificado por empresa
-log info "📁 Certificados Sicredi serão gerados dinamicamente por empresa no disco persistente em $CERT_DIR."
-
-# 🧼 Garante encerramento limpo ao receber sinais de interrupção
+# 🧼 Trap para encerrar com elegância
 trap 'log info "⛔ Encerrando aplicação..."; exit 0' SIGTERM SIGINT
 
-# 🚀 Inicializa o serviço de acordo com o tipo de container
+# 🚀 Inicialização final
 if [[ "$1" == "worker" ]]; then
     log info "🚀 Iniciando Celery Worker..."
     exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4

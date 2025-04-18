@@ -1,8 +1,6 @@
 # payment_kode_api/app/database/supabase_storage.py
 
-import os
 import logging
-from pathlib import Path
 from typing import Optional
 from supabase import create_client, Client
 from payment_kode_api.app.core.config import settings
@@ -51,30 +49,26 @@ async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -
         return False
 
 
-async def download_cert_file(empresa_id: str, filename: str, dest_path: str) -> bool:
+async def download_cert_file(empresa_id: str, filename: str) -> Optional[bytes]:
     """
-    Faz o download de um certificado do Supabase Storage para o disco local.
+    Faz o download de um certificado do Supabase Storage e retorna como bytes em memória.
     """
     try:
         storage_path = f"{empresa_id}/{filename}"
         logger.info(f"📦 Baixando {filename} de {storage_path} no Supabase Storage...")
 
         file_bytes = storage_client.from_(SUPABASE_BUCKET).download(storage_path)
+
         if not file_bytes or len(file_bytes.strip()) < 20:
             logger.error(f"❌ Conteúdo vazio ou inválido para {storage_path}")
-            return False
+            return None
 
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        with open(dest_path, "wb") as f:
-            f.write(file_bytes)
-
-        os.chmod(dest_path, 0o600)
-        logger.info(f"✅ Certificado salvo localmente em {dest_path}")
-        return True
+        logger.info(f"✅ {filename} baixado com sucesso da empresa {empresa_id}")
+        return file_bytes
 
     except Exception as e:
         logger.error(f"❌ Erro ao baixar {filename} para empresa {empresa_id}: {str(e)}")
-        return False
+        return None
 
 
 async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) -> bool:

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
+
 from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
-from payment_kode_api.app.services.config_service import create_temp_cert_files
+from payment_kode_api.app.services.config_service import load_certificates_from_bucket
 from payment_kode_api.app.utilities.logging_config import logger
 
 router = APIRouter(prefix="/auth_gateway", tags=["Auth Gateway"])
@@ -13,11 +14,14 @@ async def obter_token_sicredi(
 ):
     """
     Retorna o access_token da Sicredi para a empresa informada.
-    Valida certificados e utiliza cache Redis se disponível.
+    Valida os certificados em memória e utiliza cache Redis se disponível.
     """
     try:
         logger.info(f"🔐 [Token Sicredi] Empresa: {empresa_id} — iniciando validação de certificados.")
-        await create_temp_cert_files(empresa_id)
+        certs = await load_certificates_from_bucket(empresa_id)
+
+        if not certs:
+            raise HTTPException(status_code=400, detail="❌ Certificados ausentes ou inválidos no Supabase Storage.")
 
         logger.info(f"📡 [Token Sicredi] Solicitando token...")
         token = await get_access_token(empresa_id)

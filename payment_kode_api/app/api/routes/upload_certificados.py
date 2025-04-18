@@ -1,18 +1,19 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
-import shutil
 from payment_kode_api.app.database.supabase_storage import (
     upload_cert_file,
     ensure_folder_exists,
     download_cert_file,
-    SUPABASE_BUCKET
+    SUPABASE_BUCKET,
 )
 from payment_kode_api.app.utilities.logging_config import logger
 import os
+import hashlib
 
 router = APIRouter(prefix="/certificados", tags=["Certificados"])
 
 ALLOWED_FILENAMES = {"sicredi-cert.pem", "sicredi-key.key", "sicredi-ca.pem"}
+
 
 @router.post("/upload")
 async def upload_certificado(
@@ -36,7 +37,6 @@ async def upload_certificado(
         if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
             raise HTTPException(status_code=400, detail="❌ Conteúdo do certificado inválido ou vazio.")
 
-        # 🔐 Garante que o diretório no bucket existe antes de enviar
         await ensure_folder_exists(empresa_id=empresa_id, bucket=SUPABASE_BUCKET)
 
         success = await upload_cert_file(
@@ -61,41 +61,27 @@ async def upload_certificado(
 @router.get("/validate")
 async def validar_certificados(empresa_id: str):
     """
-    Valida se todos os certificados (cert, key, ca) estão no bucket
-    e possuem conteúdo válido (não vazios, e com início válido de certificado).
+    Valida se todos os certificados (cert, key, ca) estão presentes no bucket
+    e possuem conteúdo válido diretamente da memória.
     """
-    empresa_path = f"/tmp/valida/{empresa_id}"
-    os.makedirs(empresa_path, exist_ok=True)
-
     missing_or_invalid = []
 
     for filename in sorted(ALLOWED_FILENAMES):
-        local_path = os.path.join(empresa_path, filename)
-
         try:
-            success = await download_cert_file(
-                empresa_id=empresa_id,
-                filename=filename,
-                dest_path=local_path
-            )
+            logger.info(f"🔍 Validando {filename} para empresa {empresa_id}...")
+            content = await download_cert_file(empresa_id=empresa_id, filename=filename)
 
-            if not success or not os.path.exists(local_path) or os.path.getsize(local_path) < 50:
-                logger.warning(f"⚠️ Arquivo ausente ou muito pequeno: {filename}")
+            if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
+                logger.warning(f"⚠️ {filename} inválido ou incompleto.")
                 missing_or_invalid.append(filename)
                 continue
 
-            with open(local_path, "rb") as f:
-                content = f.read()
-                if not content.strip() or b"-----BEGIN" not in content:
-                    logger.warning(f"⚠️ Conteúdo inválido ou incompleto no arquivo: {filename}")
-                    missing_or_invalid.append(filename)
+            hash_digest = hashlib.md5(content).hexdigest()
+            logger.info(f"📄 {filename} válido (md5: {hash_digest})")
 
         except Exception as e:
             logger.warning(f"⚠️ Erro ao validar {filename} da empresa {empresa_id}: {str(e)}")
             missing_or_invalid.append(filename)
-
-    # Limpa os arquivos temporários
-    shutil.rmtree(empresa_path, ignore_errors=True)
 
     if missing_or_invalid:
         return JSONResponse(

@@ -6,9 +6,8 @@ from payment_kode_api.app.api.routes import (
     payments_router,
     webhooks_router,
     empresas_router,
-    upload_certificados_router, 
-    auth_gateway_router  
-
+    upload_certificados_router,
+    auth_gateway_router
 )
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.core.error_handlers import add_error_handlers
@@ -29,9 +28,8 @@ def create_app() -> FastAPI:
     app.include_router(payments_router, prefix="/payments", tags=["Pagamentos"])
     app.include_router(webhooks_router, prefix="/webhooks", tags=["Webhooks"])
     app.include_router(empresas_router, prefix="/empresas", tags=["Empresas"])
-    app.include_router(upload_certificados_router)  # ✅ Nova rota para upload de certificados
-    app.include_router(auth_gateway_router)  
-
+    app.include_router(upload_certificados_router)
+    app.include_router(auth_gateway_router)
 
     # Handlers de erro
     add_error_handlers(app)
@@ -40,20 +38,7 @@ def create_app() -> FastAPI:
     async def startup_event():
         logger.info("🚀 Aplicação iniciando...")
 
-        cert_dir = "/data/certificados"
-        if os.path.exists(cert_dir):
-            try:
-                empresas = os.listdir(cert_dir)
-                if empresas:
-                    logger.info(f"📁 Diretório de certificados detectado com {len(empresas)} empresas:")
-                    for emp in empresas:
-                        logger.debug(f"🔎 Empresa com certificados: {emp}")
-                else:
-                    logger.warning(f"⚠️ Diretório {cert_dir} existe, mas não há certificados de empresas.")
-            except Exception as e:
-                logger.error(f"❌ Falha ao listar {cert_dir}: {e}")
-        else:
-            logger.warning(f"⚠️ Diretório {cert_dir} não encontrado. Verifique se o volume foi montado corretamente.")
+        logger.info("📦 Certificados Sicredi serão carregados dinamicamente da memória via Supabase Storage.")
 
         try:
             app.state.redis = Redis.from_url(
@@ -64,7 +49,7 @@ def create_app() -> FastAPI:
             )
             logger.success("✅ Redis conectado com sucesso!")
         except Exception as e:
-            logger.critical(f"❌ Falha crítica no Redis: {str(e)}")
+            logger.critical(f"❌ Falha crítica ao conectar com Redis: {str(e)}")
             raise
 
         logger.info(f"✅ API `{app.title}` versão `{app.version}` inicializada!")

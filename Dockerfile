@@ -46,8 +46,8 @@ RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts || true
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Cria diretório local de certificados (opcional: não conflitante com Render)
-RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados || true
+# ❌ REMOVE este volume (certificados agora são temporários e em memória)
+# RUN mkdir -p /data/certificados && chmod -R 700 /data/certificados || true
 
 # Expõe a porta 8080
 EXPOSE 8080

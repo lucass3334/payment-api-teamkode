@@ -1,7 +1,6 @@
 import logging
-import os
 import hashlib
-from typing import Optional
+from typing import Optional, Dict
 
 from ..database.supabase_storage import download_cert_file, ensure_folder_exists
 from ..database.database import get_empresa_config
@@ -9,10 +8,7 @@ from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 🔐 Caminho persistente para certificados no Render
-BASE_CERT_DIR = "/data/certificados"
-
-# 📁 Arquivos esperados
+# 🔐 Arquivos esperados no Supabase por empresa
 CERT_MAPPING = {
     "cert_path": "sicredi-cert.pem",
     "key_path": "sicredi-key.key",
@@ -20,9 +16,9 @@ CERT_MAPPING = {
 }
 
 
-async def get_empresa_credentials(empresa_id: str) -> Optional[dict]:
+async def get_empresa_credentials(empresa_id: str) -> Optional[Dict[str, str]]:
     """
-    Recupera as credenciais da empresa para uso com Sicredi, Rede e Asaas.
+    Retorna as credenciais da empresa para integração com gateways (Sicredi, Rede, Asaas).
     """
     try:
         config = await get_empresa_config(empresa_id)
@@ -45,8 +41,10 @@ async def get_empresa_credentials(empresa_id: str) -> Optional[dict]:
         if missing:
             logger.warning(f"⚠️ Credenciais sensíveis ausentes para empresa {empresa_id}: {missing}")
 
-        logger.debug(f"🔐 Credenciais carregadas para empresa {empresa_id}: "
-                     f"{[k for k, v in credentials.items() if v is not None]}")
+        logger.debug(
+            f"🔐 Credenciais carregadas para empresa {empresa_id}: "
+            f"{[k for k, v in credentials.items() if v is not None]}"
+        )
 
         return credentials
 
@@ -55,89 +53,42 @@ async def get_empresa_credentials(empresa_id: str) -> Optional[dict]:
         return None
 
 
-async def create_temp_cert_files(empresa_id: str) -> Optional[dict]:
+async def load_certificates_from_bucket(empresa_id: str) -> Optional[Dict[str, bytes]]:
     """
-    Garante que os certificados da empresa existam localmente,
-    baixando do Supabase Storage e validando o conteúdo.
+    Carrega os certificados Sicredi diretamente da memória via Supabase Storage.
+    Retorna um dicionário com os conteúdos dos arquivos .pem/.key.
     """
     try:
         credentials = await get_empresa_credentials(empresa_id)
         if not credentials:
             raise ValueError(f"❌ Credenciais não encontradas para empresa {empresa_id}")
 
-        await ensure_folder_exists(empresa_id=empresa_id, bucket=settings.SUPABASE_BUCKET)
+        await ensure_folder_exists(empresa_id=empresa_id)
 
-        empresa_path = os.path.join(BASE_CERT_DIR, empresa_id)
-        os.makedirs(empresa_path, exist_ok=True)
-
-        file_paths = {}
+        certs: Dict[str, bytes] = {}
 
         for key, filename in CERT_MAPPING.items():
-            full_path = os.path.join(empresa_path, filename)
+            logger.info(f"📥 [{empresa_id}] Baixando {filename} do bucket...")
 
-            # Tenta baixar do Supabase se não existir ou estiver vazio
-            if not os.path.exists(full_path) or os.path.getsize(full_path) == 0:
-                logger.info(f"📥 Tentando baixar {filename} do Supabase para empresa {empresa_id}...")
-                success = await download_cert_file(
-                    empresa_id=empresa_id,
-                    filename=filename,
-                    dest_path=full_path
-                )
-                if not success:
-                    logger.warning(f"⚠️ {filename} não encontrado ou inválido no Supabase Storage.")
-                    continue
+            content = await download_cert_file(empresa_id, filename)
 
-            # Validação de conteúdo
-            try:
-                with open(full_path, "rb") as f:
-                    content = f.read()
-                    if not content.strip() or b"-----BEGIN" not in content:
-                        logger.warning(f"⚠️ {filename} vazio ou malformado: {full_path}")
-                        continue
+            if not content or not content.strip():
+                logger.warning(f"⚠️ [{empresa_id}] {filename} está vazio ou não encontrado.")
+                continue
 
-                    hash_digest = hashlib.md5(content).hexdigest()
-                    logger.info(f"📄 {filename} válido (md5: {hash_digest})")
-                    file_paths[key] = full_path
+            if b"-----BEGIN" not in content:
+                logger.warning(f"⚠️ [{empresa_id}] {filename} não contém um header PEM válido.")
+                continue
 
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao validar {filename}: {str(e)}")
+            hash_digest = hashlib.md5(content).hexdigest()
+            logger.info(f"📄 [{empresa_id}] {filename} válido (md5: {hash_digest})")
+            certs[key] = content
 
-        if "cert_path" not in file_paths or "key_path" not in file_paths:
-            raise ValueError(f"❌ Certificados essenciais ausentes ou inválidos para empresa {empresa_id}")
+        if "cert_path" not in certs or "key_path" not in certs:
+            raise ValueError(f"❌ [{empresa_id}] Certificados essenciais ausentes ou inválidos.")
 
-        def cleanup():
-            logger.debug("🧹 Nenhum cleanup necessário — certificados persistem em disco.")
-
-        file_paths["cleanup"] = cleanup
-        return file_paths
+        return certs
 
     except Exception as e:
-        logger.error(f"❌ Erro ao preparar certificados da empresa {empresa_id}: {str(e)}")
+        logger.error(f"❌ Erro ao carregar certificados da empresa {empresa_id}: {str(e)}")
         return None
-
-
-def delete_temp_cert_files(empresa_id: str) -> bool:
-    """
-    Remove os certificados da empresa do disco local, se existirem.
-    Útil para testes ou força de revalidação.
-    """
-    try:
-        empresa_path = os.path.join(BASE_CERT_DIR, empresa_id)
-        deleted_files = []
-
-        for filename in CERT_MAPPING.values():
-            full_path = os.path.join(empresa_path, filename)
-            if os.path.exists(full_path):
-                os.remove(full_path)
-                deleted_files.append(filename)
-
-        if deleted_files:
-            logger.info(f"🗑️ Certificados deletados para empresa {empresa_id}: {deleted_files}")
-        else:
-            logger.info(f"ℹ️ Nenhum certificado encontrado para deletar em {empresa_path}")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ Erro ao deletar certificados da empresa {empresa_id}: {str(e)}")
-        return False
