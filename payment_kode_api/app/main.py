@@ -12,7 +12,7 @@ from payment_kode_api.app.api.routes import (
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.core.error_handlers import add_error_handlers
 from payment_kode_api.app.utilities.logging_config import logger
-from redis import Redis
+# from redis import Redis  # ❌ Desativado
 
 def create_app() -> FastAPI:
     debug_mode = settings.DEBUG if isinstance(settings.DEBUG, bool) else str(settings.DEBUG).lower() in ["true", "1"]
@@ -40,17 +40,18 @@ def create_app() -> FastAPI:
 
         logger.info("📦 Certificados Sicredi serão carregados dinamicamente da memória via Supabase Storage.")
 
-        try:
-            app.state.redis = Redis.from_url(
-                settings.REDIS_URL,
-                ssl=settings.REDIS_USE_SSL,
-                ssl_cert_reqs=settings.REDIS_SSL_CERT_REQS,
-                decode_responses=True
-            )
-            logger.success("✅ Redis conectado com sucesso!")
-        except Exception as e:
-            logger.critical(f"❌ Falha crítica ao conectar com Redis: {str(e)}")
-            raise
+        # 🔴 Redis desativado
+        # try:
+        #     app.state.redis = Redis.from_url(
+        #         settings.REDIS_URL,
+        #         ssl=settings.REDIS_USE_SSL,
+        #         ssl_cert_reqs=settings.REDIS_SSL_CERT_REQS,
+        #         decode_responses=True
+        #     )
+        #     logger.success("✅ Redis conectado com sucesso!")
+        # except Exception as e:
+        #     logger.critical(f"❌ Falha crítica ao conectar com Redis: {str(e)}")
+        #     raise
 
         logger.info(f"✅ API `{app.title}` versão `{app.version}` inicializada!")
         logger.info(f"🔧 Debug: {'Ativado' if app.debug else 'Desativado'}")
