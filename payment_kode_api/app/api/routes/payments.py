@@ -212,10 +212,6 @@ async def create_pix_payment(
 
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
 
-    # 🔐 Garante que os certificados estejam em disco antes da chamada
-    from payment_kode_api.app.services.config_service import create_temp_cert_files
-    await create_temp_cert_files(empresa_id)
-
     try:
         logger.info(f"🚀 Tentando processar pagamento Pix via Sicredi para {transaction_id} com txid {txid}")
         response = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)

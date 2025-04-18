@@ -17,7 +17,7 @@ TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 def get_cert_paths(empresa_id: str):
     base_dir = f"/data/certificados/{empresa_id}"
     cert_path = os.path.join(base_dir, "sicredi-cert.pem")
-    key_path = os.path.join(base_dir, "sicredi-key.pem")
+    key_path = os.path.join(base_dir, "sicredi-key.key")
     ca_path = os.path.join(base_dir, "sicredi-ca.pem")
     return cert_path, key_path, ca_path
 

@@ -62,7 +62,7 @@ async def create_temp_cert_files(empresa_id: str):
 
         mapping = {
             "cert_path": "sicredi-cert.pem",
-            "key_path": "sicredi-key.pem",
+            "key_path": "sicredi-key.key",   # ✅ Correção aqui
             "ca_path": "sicredi-ca.pem",
         }
 
