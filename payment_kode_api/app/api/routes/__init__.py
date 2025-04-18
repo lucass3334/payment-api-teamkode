@@ -4,6 +4,7 @@ from .webhooks import router as webhooks_router
 from .empresas import router as empresas_router
 from .tokenization import router as tokenization_router
 from .upload_certificados import router as upload_certificados_router  # ✅ Novo roteador
+from .auth_gateway import router as auth_gateway_router  # ✅ Novo roteador para tokens Sicredi
 
 # Define o que será exportado ao importar o módulo routes
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "webhooks_router",
     "empresas_router",
     "tokenization_router",
-    "upload_certificados_router"  # ✅ Adicionado à lista de exportação
+    "upload_certificados_router",
+    "auth_gateway_router"  # ✅ Adicionado à lista de exportação
 ]
