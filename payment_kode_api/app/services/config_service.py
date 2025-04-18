@@ -1,6 +1,6 @@
 import logging
 import hashlib
-from typing import Optional, Dict
+from typing import Dict
 
 from ..database.supabase_storage import download_cert_file, ensure_folder_exists
 from ..database.database import get_empresa_config
@@ -16,7 +16,7 @@ CERT_MAPPING = {
 }
 
 
-async def get_empresa_credentials(empresa_id: str) -> Optional[Dict[str, str]]:
+async def get_empresa_credentials(empresa_id: str) -> Dict[str, str]:
     """
     Retorna as credenciais da empresa para integração com gateways (Sicredi, Rede, Asaas).
     """
@@ -24,7 +24,7 @@ async def get_empresa_credentials(empresa_id: str) -> Optional[Dict[str, str]]:
         config = await get_empresa_config(empresa_id)
         if not config:
             logger.error(f"❌ Configuração da empresa {empresa_id} não encontrada.")
-            return None
+            return {}
 
         credentials = {
             "asaas_api_key": config.get("asaas_api_key"),
@@ -43,17 +43,17 @@ async def get_empresa_credentials(empresa_id: str) -> Optional[Dict[str, str]]:
 
         logger.debug(
             f"🔐 Credenciais carregadas para empresa {empresa_id}: "
-            f"{[k for k, v in credentials.items() if v is not None]}"
+            f"{[k for k, v in credentials.items() if v]}"
         )
 
         return credentials
 
     except Exception as e:
         logger.error(f"❌ Erro ao obter credenciais da empresa {empresa_id}: {str(e)}")
-        return None
+        return {}
 
 
-async def load_certificates_from_bucket(empresa_id: str) -> Optional[Dict[str, bytes]]:
+async def load_certificates_from_bucket(empresa_id: str) -> Dict[str, bytes]:
     """
     Carrega os certificados Sicredi diretamente da memória via Supabase Storage.
     Retorna um dicionário com os conteúdos dos arquivos .pem/.key.
@@ -72,23 +72,25 @@ async def load_certificates_from_bucket(empresa_id: str) -> Optional[Dict[str, b
 
             content = await download_cert_file(empresa_id, filename)
 
-            if not content or not content.strip():
-                logger.warning(f"⚠️ [{empresa_id}] {filename} está vazio ou não encontrado.")
+            if not content:
+                logger.warning(f"⚠️ [{empresa_id}] {filename} está ausente ou vazio.")
                 continue
 
-            if b"-----BEGIN" not in content:
-                logger.warning(f"⚠️ [{empresa_id}] {filename} não contém um header PEM válido.")
+            if not content.startswith(b"-----BEGIN"):
+                logger.warning(f"⚠️ [{empresa_id}] {filename} não contém cabeçalho PEM válido.")
                 continue
 
             hash_digest = hashlib.md5(content).hexdigest()
             logger.info(f"📄 [{empresa_id}] {filename} válido (md5: {hash_digest})")
             certs[key] = content
 
-        if "cert_path" not in certs or "key_path" not in certs:
-            raise ValueError(f"❌ [{empresa_id}] Certificados essenciais ausentes ou inválidos.")
+        required = ["cert_path", "key_path"]
+        missing = [r for r in required if r not in certs]
+        if missing:
+            raise ValueError(f"❌ [{empresa_id}] Certificados obrigatórios ausentes: {missing}")
 
         return certs
 
     except Exception as e:
         logger.error(f"❌ Erro ao carregar certificados da empresa {empresa_id}: {str(e)}")
-        return None
+        raise

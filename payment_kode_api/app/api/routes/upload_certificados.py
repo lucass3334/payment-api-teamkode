@@ -35,7 +35,7 @@ async def upload_certificado(
     try:
         content = await arquivo.read()
 
-        if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
+        if not content or len(content) < 50 or not content.startswith(b"-----BEGIN"):
             raise HTTPException(status_code=400, detail="❌ Conteúdo inválido ou ausente no certificado.")
 
         await ensure_folder_exists(empresa_id=empresa_id, bucket=SUPABASE_BUCKET)
@@ -74,7 +74,7 @@ async def validar_certificados(empresa_id: str):
             logger.info(f"🔍 Validando {filename} para empresa {empresa_id}...")
             content = await download_cert_file(empresa_id=empresa_id, filename=filename)
 
-            if not content or len(content.strip()) < 50 or b"-----BEGIN" not in content:
+            if not content or len(content) < 50 or not content.startswith(b"-----BEGIN"):
                 logger.warning(f"⚠️ {filename} inválido ou incompleto para {empresa_id}")
                 missing_or_invalid.append(filename)
                 continue

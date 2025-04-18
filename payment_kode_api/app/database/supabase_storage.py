@@ -33,7 +33,7 @@ async def ensure_folder_exists(empresa_id: str, bucket: str = SUPABASE_BUCKET) -
 
     try:
         existing = storage_client.from_(bucket).list(path=folder_prefix)
-        if existing:
+        if existing and isinstance(existing, list):
             logger.info(f"📁 Pasta lógica '{folder_prefix}' já existe no bucket '{bucket}'.")
             return True
 
@@ -55,14 +55,14 @@ async def download_cert_file(empresa_id: str, filename: str) -> Optional[bytes]:
     Faz o download de um certificado como bytes diretamente da memória.
     Retorna None se o conteúdo for inválido ou não encontrado.
     """
+    storage_path = f"{empresa_id}/{filename}"
     try:
-        storage_path = f"{empresa_id}/{filename}"
         logger.info(f"📦 Baixando {filename} do path {storage_path}...")
 
         file_bytes = storage_client.from_(SUPABASE_BUCKET).download(storage_path)
 
-        if not file_bytes or len(file_bytes.strip()) < 20:
-            logger.warning(f"⚠️ {filename} vazio ou inválido para empresa {empresa_id}.")
+        if not file_bytes or not isinstance(file_bytes, bytes) or len(file_bytes) < 20:
+            logger.warning(f"⚠️ {filename} vazio, inválido ou não encontrado para empresa {empresa_id}.")
             return None
 
         logger.info(f"✅ {filename} baixado com sucesso para empresa {empresa_id}.")
@@ -77,8 +77,9 @@ async def upload_cert_file(empresa_id: str, filename: str, file_bytes: bytes) ->
     """
     Faz o upload de um certificado .pem ou .key para o Supabase Storage.
     """
+    path = f"{empresa_id}/{filename}"
+
     try:
-        path = f"{empresa_id}/{filename}"
         logger.info(f"🚀 Upload do certificado {filename} para {SUPABASE_BUCKET}/{path}")
 
         storage_client.from_(SUPABASE_BUCKET).upload(

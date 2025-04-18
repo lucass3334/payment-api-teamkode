@@ -17,17 +17,22 @@ async def obter_token_sicredi(
     Valida os certificados em memória e utiliza cache Redis se disponível.
     """
     try:
-        logger.info(f"🔐 [Token Sicredi] Empresa: {empresa_id} — iniciando validação de certificados.")
+        logger.info(f"🔐 [Token Sicredi] Iniciando verificação de certificados para empresa {empresa_id}...")
 
         certs = await load_certificates_from_bucket(empresa_id)
-        if not certs or not all(k in certs for k in ("cert_path", "key_path", "ca_path")):
-            logger.warning(f"⚠️ Certificados ausentes ou incompletos para empresa {empresa_id}")
-            raise HTTPException(status_code=400, detail="❌ Certificados inválidos ou incompletos no Supabase Storage.")
+        required_keys = {"cert_path", "key_path", "ca_path"}
 
-        logger.info(f"📡 [Token Sicredi] Solicitando token com certificados válidos para {empresa_id}...")
+        if not certs or not required_keys.issubset(certs.keys()):
+            logger.warning(f"⚠️ Certificados ausentes ou incompletos para empresa {empresa_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="❌ Certificados obrigatórios ausentes ou inválidos no Supabase Storage."
+            )
+
+        logger.info(f"📡 [Token Sicredi] Certificados OK. Solicitando token para empresa {empresa_id}...")
         token = await get_access_token(empresa_id)
 
-        logger.success(f"✅ [Token Sicredi] Token recuperado com sucesso.")
+        logger.info(f"✅ [Token Sicredi] Token recuperado com sucesso para {empresa_id}")
         return JSONResponse(content={
             "empresa_id": empresa_id,
             "access_token": token,
@@ -38,5 +43,8 @@ async def obter_token_sicredi(
         raise
 
     except Exception as e:
-        logger.error(f"❌ [Token Sicredi] Erro inesperado: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro ao obter token da Sicredi")
+        logger.error(f"❌ [Token Sicredi] Erro inesperado ao obter token para empresa {empresa_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="❌ Erro inesperado ao obter token da Sicredi"
+        )
