@@ -1,23 +1,10 @@
 import hashlib
 import tempfile
 import ssl
-from typing import Tuple, Union
-
-
-def write_temp_cert(cert_bytes: bytes, suffix: str) -> tempfile.NamedTemporaryFile:
-    """
-    Escreve certificados temporários em disco, usado para compatibilidade com bibliotecas que não aceitam bytes diretamente.
-    """
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb")
-    temp_file.write(cert_bytes)
-    temp_file.flush()
-    return temp_file
+from typing import Union
 
 
 def get_md5(content: bytes) -> str:
-    """
-    Gera o hash MD5 de um conteúdo (útil para debug e rastreamento de certificados).
-    """
     return hashlib.md5(content).hexdigest()
 
 
@@ -27,21 +14,28 @@ def build_ssl_context_from_memory(
     ca_pem: Union[str, bytes]
 ) -> ssl.SSLContext:
     """
-    Cria um contexto SSL diretamente da memória (sem precisar salvar arquivos fixos no disco).
-    Usa arquivos temporários apenas para cert/key pois o OpenSSL exige caminho para load_cert_chain().
-    O CA é carregado diretamente via cadata.
+    Cria um contexto SSL a partir de certificados e chave em memória.
+    Gera arquivos temporários apenas para cert/key — o CA é carregado via cadata.
     """
-    ssl_ctx = ssl.create_default_context(cadata=ca_pem.decode() if isinstance(ca_pem, bytes) else ca_pem)
+    if isinstance(cert_pem, str):
+        cert_pem = cert_pem.encode()
+    if isinstance(key_pem, str):
+        key_pem = key_pem.encode()
+    if isinstance(ca_pem, str):
+        ca_pem = ca_pem.encode()
 
-    # Criamos arquivos temporários para cert/key
-    cert_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pem", mode="wb")
-    cert_temp.write(cert_pem if isinstance(cert_pem, bytes) else cert_pem.encode())
-    cert_temp.flush()
+    # Cria arquivos temporários (serão apagados com delete=True ao sair do processo)
+    cert_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pem", mode="wb")
+    cert_file.write(cert_pem)
+    cert_file.flush()
 
-    key_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".key", mode="wb")
-    key_temp.write(key_pem if isinstance(key_pem, bytes) else key_pem.encode())
-    key_temp.flush()
+    key_file = tempfile.NamedTemporaryFile(delete=False, suffix=".key", mode="wb")
+    key_file.write(key_pem)
+    key_file.flush()
 
-    ssl_ctx.load_cert_chain(certfile=cert_temp.name, keyfile=key_temp.name)
+    ssl_ctx = ssl.create_default_context(cadata=ca_pem.decode())
+    ssl_ctx.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_REQUIRED
 
     return ssl_ctx
