@@ -28,23 +28,6 @@ if [[ -z "${SUPABASE_URL}" || -z "${SUPABASE_KEY}" ]]; then
     exit 1
 fi
 
-# 🔄 Aguarda Redis (COMENTADO — não usado no momento)
-# log info "🔄 Aguardando Redis estar disponível..."
-# RETRIES=10
-# while [[ $RETRIES -gt 0 ]]; do
-#     if redis-cli -u "$REDIS_URL" ping | grep -q "PONG"; then
-#         log info "✅ Redis está pronto!"
-#         break
-#     fi
-#     log warn "⏳ Redis ainda não respondeu... Tentativas restantes: $RETRIES"
-#     sleep 5
-#     ((RETRIES--))
-# done
-# if [[ $RETRIES -eq 0 ]]; then
-#     log error "❌ Redis não respondeu após várias tentativas!"
-#     exit 1
-# fi
-
 # 🔄 Aguarda Supabase
 log info "🔄 Verificando conexão com Supabase..."
 SUPABASE_RETRIES=6
@@ -74,6 +57,11 @@ if [[ "${1:-}" == "worker" ]]; then
     log info "🚀 Iniciando Celery Worker..."
     exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4
 else
-    log info "🚀 Iniciando API Web..."
-    exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080
+    if [[ "${API_LOCAL:-false}" == "true" ]]; then
+        log info "🌐 API_LOCAL=true → Rodando localmente na porta 8080"
+        exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080
+    else
+        log info "🌐 API_LOCAL=false → Rodando em ambiente de produção (Render ou similar)"
+        exec poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080
+    fi
 fi

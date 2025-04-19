@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     # 🔹 Controle de Ambiente
     USE_SANDBOX: bool = Field(True, env="USE_SANDBOX")
+    API_LOCAL: bool = Field(False, env="API_LOCAL")  # ✅ Adicionado para controle local/remoto
 
     # 🔹 Suporte a Multiempresas
     EMPRESA_ID: Optional[str] = Field(None, env="EMPRESA_ID")
@@ -97,7 +98,6 @@ class Settings(BaseSettings):
     #         f"  - URL Redis reconstruída: "
     #         f"{self.REDIS_URL.replace(self.REDIS_PASSWORD, '[REDACTED]') if self.REDIS_PASSWORD else '⚠ Sem senha definida!'}"
     #     )
-
 
 # ✅ Instância de configurações
 try:

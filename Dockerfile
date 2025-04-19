@@ -40,12 +40,16 @@ COPY . /app/
 # Permissões para scripts específicos
 RUN chmod -R 755 /app/payment_kode_api/app/bugs_scripts || true
 
+# (Opcional) Copia script de diagnóstico de certificado (se existir)
+COPY test_ca_ssl_empresa.sh /app/test_ca_ssl_empresa.sh
+RUN chmod +x /app/test_ca_ssl_empresa.sh
+
 # Copia o script de entrada e define como executável
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Expõe a porta 8080
+# Expõe a porta da API
 EXPOSE 8080
 
-# Define o entrypoint para iniciar o app
+# Define o entrypoint
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

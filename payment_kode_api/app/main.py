@@ -60,7 +60,11 @@ def create_app() -> FastAPI:
     @app.head("/", tags=["Health Check"])
     async def health_check(response: Response):
         response.headers["Cache-Control"] = "no-cache"
-        return {"status": "OK", "message": "Payment Kode API operacional"}
+        return {
+            "status": "OK",
+            "message": "Payment Kode API operacional",
+            "api_local": settings.API_LOCAL  # ✅ Adicionado para refletir o estado da variável
+        }
 
     return app
 
