@@ -1,10 +1,10 @@
-from pydantic import BaseModel, StringConstraints, condecimal
+from pydantic import BaseModel, StringConstraints, condecimal, field_validator
 from typing import Annotated, Optional, Dict
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[float, condecimal(gt=0, decimal_places=2)]
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
 
 class CustomerInfo(BaseModel):
@@ -52,11 +52,29 @@ class PaymentSchema(BaseModel):
     """
     Estrutura para criação e consulta de pagamentos.
     """
-    empresa_id: uuid.UUID  # ✅ Usa `uuid.UUID` diretamente
+    empresa_id: uuid.UUID
     transaction_id: TransactionIDType
-    amount: AmountType
+    txid: Optional[Annotated[str, StringConstraints(min_length=4, max_length=35)]] = None
+    # txid é opcional, mas se fornecido deve ter entre 4 e 35 caracteres
+    amount: Decimal  # 🔧 Corrigido para usar Decimal direto
     description: Annotated[str, StringConstraints(min_length=3, max_length=255)]
     payment_type: Annotated[str, StringConstraints(min_length=3, max_length=15)]  # "pix" ou "credit_card"
     status: Optional[StatusType] = "pending"
     customer: CustomerInfo
     webhook_url: Optional[str] = None  # Webhook opcional para notificações externas
+
+    @field_validator('amount', mode='before')
+    @classmethod
+    def normalize_amount(cls, v):
+        """
+        Converte o valor recebido para Decimal com 2 casas decimais,
+        aceitando int, float ou string.
+        """
+        try:
+            decimal_value = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except Exception as e:
+            raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
+
+        if decimal_value <= 0:
+            raise ValueError("O valor de 'amount' deve ser maior que 0.")
+        return decimal_value

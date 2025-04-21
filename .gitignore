@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -35,3 +35,6 @@ certs/
 *.key
 *.crt
 *.pem
+
+/app/certificados/
+# Ignorar arquivos de configuração do Docker

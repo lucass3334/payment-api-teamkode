@@ -1,11 +1,12 @@
 from pydantic import BaseModel, StringConstraints, condecimal
 from datetime import datetime
 from typing import Annotated, Optional
+from decimal import Decimal  # ✅ Importado para corrigir o tipo AmountType
 import uuid
 
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
-AmountType = Annotated[float, condecimal(gt=0, decimal_places=2)]
+AmountType = Annotated[Decimal, condecimal(gt=0, decimal_places=2)]  # ✅ Corrigido: float → Decimal
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
 
 class PaymentModel(BaseModel):
@@ -17,8 +18,8 @@ class PaymentModel(BaseModel):
     transaction_id: TransactionIDType
     amount: AmountType
     customer_id: Annotated[str, StringConstraints(min_length=6, max_length=50)]
-    status: StatusType  # Status do pagamento
-    webhook_url: Optional[str] = None  # Webhook opcional para notificações externas
+    status: StatusType
+    webhook_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -28,7 +29,7 @@ class EmpresaModel(BaseModel):
     """
     id: uuid.UUID
     nome: Annotated[str, StringConstraints(min_length=3, max_length=100)]
-    cnpj: Annotated[str, StringConstraints(min_length=14, max_length=14)]  # CNPJ sem formatação
+    cnpj: Annotated[str, StringConstraints(min_length=14, max_length=14)]
     created_at: datetime
     updated_at: datetime
 

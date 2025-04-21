@@ -1,12 +1,12 @@
 from celery import Celery
 from kombu import Connection
-from payment_kode_api.app.services.asaas_client import create_asaas_payment
-from payment_kode_api.app.services.sicredi_client import create_sicredi_pix_payment
-from payment_kode_api.app.services.rede_client import create_rede_payment
+from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
+from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
+from payment_kode_api.app.services.gateways.rede_client import create_rede_payment
 from payment_kode_api.app.models.database_models import PaymentModel
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.database.database import get_empresa_config
-from payment_kode_api.app.config import settings  # ✅ Configuração segura
+from payment_kode_api.app.core.config import settings  # ✅ Configuração segura
 import asyncio
 import time
 

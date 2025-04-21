@@ -3,7 +3,7 @@ import sys
 from kombu import Connection
 from payment_kode_api.app.workers.tasks import celery_app
 from payment_kode_api.app.utilities.logging_config import logger
-from payment_kode_api.app.config import settings  # 🔹 Garantindo que as configs do Redis são carregadas corretamente
+from payment_kode_api.app.core.config import settings  # 🔹 Garantindo que as configs do Redis são carregadas corretamente
 
 def wait_for_redis():
     """Aguarda o Redis estar pronto antes de iniciar o Celery Worker."""

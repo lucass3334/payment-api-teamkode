@@ -6,49 +6,45 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8080:8080"  # 🔹 Porta local ↔ porta do container
     env_file:
-      - .env  # ✅ Carrega todas as variáveis automaticamente
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    restart: always  # ✅ Mantém a API rodando na nuvem
-
-  redis:
-    image: redis:latest
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
-    ports:
-      - "6379:6379"
-    env_file:
-      - .env  # ✅ Carrega todas as variáveis automaticamente
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: always  # ✅ Mantém o Redis rodando corretamente
+      - .env
+    # 🔒 Desativado healthcheck (opcional reativar quando /health estiver configurado)
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+    command: >
+      sh -c "
+      if [[ -f '/app/certificados/sicredi-cert.pem' && -f '/app/certificados/sicredi-key.pem' ]]; then
+        echo '✅ Certificados encontrados! Rodando API com SSL.';
+        poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080 
+        --ssl-keyfile /app/certificados/sicredi-key.pem 
+        --ssl-certfile /app/certificados/sicredi-cert.pem;
+      else
+        echo '⚠️ Nenhum certificado encontrado. Rodando API sem SSL.';
+        poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080;
+      fi"
+    volumes:
+      - ./certs:/app/certificados
+    restart: always
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - .env  # ✅ Carrega todas as variáveis automaticamente
-    depends_on:
-      redis:
-        condition: service_healthy
-      web:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "celery", "-A", "payment_kode_api.app.workers.tasks", "status"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      - .env
+    # 🔄 Dependência do web desativada por simplicidade local
+    # depends_on:
+    #   web:
+    #     condition: service_healthy
+    # healthcheck:
+    #   test: ["CMD", "sh", "-c", "poetry run celery -A payment_kode_api.app.workers.tasks inspect ping || exit 1"]
+    #   interval: 20s
+    #   timeout: 10s
+    #   retries: 5
     command: >
       sh -c "exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4"
-    restart: always # ✅ Mantém o worker rodando corretamente
+    restart: always
