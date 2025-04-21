@@ -170,7 +170,7 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
         logger.warning(f"⚠️ WEBHOOK_PIX não configurado para empresa {empresa_id}.")
         return
 
-    token = await get_access_token(empresa_id)
+    token = await get_sicredi_token_or_refresh(empresa_id)
 
     sicredi_env = credentials.get("sicredi_env", "production").lower()
     base_url = (

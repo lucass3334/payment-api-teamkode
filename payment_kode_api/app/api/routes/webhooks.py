@@ -2,12 +2,12 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 import asyncio
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.database import (
-    update_payment_status,
     get_empresa_by_chave_pix,
     get_payment
 )
 from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.services import notify_user_webhook  # ✅ Corrigido aqui
+from payment_kode_api.app.database.payment_operations import update_payment_status
 
 router = APIRouter()
 

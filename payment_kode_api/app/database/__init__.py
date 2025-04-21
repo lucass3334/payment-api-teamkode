@@ -5,7 +5,6 @@ try:
     from .database import (
         save_payment,
         get_payment,
-        update_payment_status,
         save_empresa,
         get_empresa_by_chave_pix,
         get_empresa_config,
@@ -34,7 +33,6 @@ def init_database():
         required_methods = [
             save_payment,
             get_payment,
-            update_payment_status,
             get_tokenized_card,
             get_empresa_by_chave_pix,
             get_empresa_config,
@@ -67,7 +65,6 @@ def shutdown_database():
 __all__ = [
     "save_payment",
     "get_payment",
-    "update_payment_status",
     "save_empresa",
     "get_empresa_config",
     "get_empresa_by_chave_pix",

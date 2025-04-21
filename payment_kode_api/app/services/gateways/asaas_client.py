@@ -1,7 +1,7 @@
 import httpx
 from fastapi import HTTPException
 from ...utilities.logging_config import logger
-from ...database.database import update_payment_status
+from ...database.payment_operations import update_payment_status
 from ..config_service import get_empresa_credentials
 import asyncio
 
