@@ -6,6 +6,7 @@ from ..database.supabase_storage import download_cert_file, ensure_folder_exists
 from ..database.database import get_empresa_config
 from ..core.config import settings
 
+
 logger = logging.getLogger(__name__)
 
 # 🔐 Arquivos esperados no Supabase por empresa

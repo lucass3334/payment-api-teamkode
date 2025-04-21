@@ -29,7 +29,7 @@ Para comunicação segura com a Sicredi via mTLS, precisamos:
 Acesse o portal Sicredi e baixe:
 
 - `22308504000106.cer` (ou nome similar)
-- `CadeiaCompletaSicredi.cer`
+- `CadeiaCompletaSicredi.cer` # não serve de porra nenhuma
 
 Renomeie:
 ```bash

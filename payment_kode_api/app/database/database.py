@@ -1,5 +1,4 @@
 import os
-from supabase import create_client, Client
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.utilities.logging_config import logger
 from datetime import datetime, timezone
@@ -7,6 +6,7 @@ from typing import Optional, Dict, Any
 import uuid
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
+from .supabase_client import supabase
 
 
 
@@ -17,16 +17,6 @@ datetime.now(timezone.utc)
 
 VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
 
-class SupabaseClient:
-    _client: Optional[Client] = None
-
-    @classmethod
-    def get_client(cls) -> Client:
-        if cls._client is None:
-            cls._client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        return cls._client
-
-supabase = SupabaseClient.get_client()
 
 # 🔹 Cartões tokenizados
 async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:

@@ -1,7 +1,7 @@
 # payment_operations.py
 
 from payment_kode_api.app.utilities.logging_config import logger
-from payment_kode_api.app.database.database import supabase
+from payment_kode_api.app.database.supabase_client import supabase  # ✅ Corrigido aqui
 from datetime import datetime, timezone
 
 VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
