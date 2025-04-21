@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import uuid
 from decimal import Decimal
+from datetime import datetime, timezone, timedelta
+
+
+
+from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
+
 
 datetime.now(timezone.utc)
 
@@ -140,6 +146,56 @@ async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"❌ Erro ao recuperar configuração da empresa {empresa_id}: {e}")
         raise
+
+
+
+# 🔹 Busca o token da Sicredi para uma empresa, atualizando se expirado
+async def get_sicredi_token_or_refresh(empresa_id: str) -> str:
+    """
+    Verifica se a empresa possui um token da Sicredi válido no banco.
+    Se não houver ou estiver expirado, solicita novo token via Sicredi,
+    salva no banco com novo expires_at e retorna.
+    """
+    try:
+        config = await get_empresa_config(empresa_id)
+        token = config.get("sicredi_token")
+        expires_at = config.get("sicredi_token_expires_at")
+
+        if token and expires_at:
+            now_utc = datetime.now(timezone.utc)
+            expires_dt = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+            if expires_dt > now_utc:
+                logger.info(f"🟢 Token Sicredi reutilizado para empresa {empresa_id}")
+                return token
+            else:
+                logger.info(f"🔄 Token Sicredi expirado para empresa {empresa_id}. Renovando...")
+
+        # Se chegou aqui, precisa renovar
+        new_token = await get_access_token(empresa_id)
+        new_expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600 - 60)
+
+        update_result = (
+            supabase.table("empresas_config")
+            .update({
+                "sicredi_token": new_token,
+                "sicredi_token_expires_at": new_expires_at.isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            })
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+
+        if update_result.data:
+            logger.info(f"✅ Token Sicredi atualizado e salvo para empresa {empresa_id}")
+        else:
+            logger.warning(f"⚠️ Token obtido mas não foi possível salvar para empresa {empresa_id}")
+
+        return new_token
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao verificar ou renovar token Sicredi para empresa {empresa_id}: {e}")
+        raise
+
 
 # 🔹 Atualiza os gateways padrão (Pix e Crédito) da empresa
 async def atualizar_config_gateway(payload: Dict[str, Any]) -> bool:

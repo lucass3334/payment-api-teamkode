@@ -22,7 +22,7 @@ from payment_kode_api.app.services.gateways.payment_payload_mapper import (
     map_to_rede_payload,
     map_to_asaas_credit_payload
 )
-from payment_kode_api.app.services.config_service import get_empresa_credentials
+from payment_kode_api.app.services import notify_user_webhook
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.security.auth import validate_access_token
 
@@ -85,15 +85,6 @@ class CreditCardPaymentRequest(BaseModel):
             return decimal_value
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
-
-
-async def notify_user_webhook(webhook_url: str, data: dict):
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(webhook_url, json=data, timeout=5)
-            response.raise_for_status()
-        except httpx.RequestError as e:
-            logger.error(f"Erro ao enviar notificação ao webhook do usuário: {e}")
 
 
 @router.post("/payment/tokenize-card")
@@ -160,6 +151,14 @@ async def create_credit_card_payment(
 
         if response and response.get("status") == "approved":
             logger.info(f"✅ Pagamento Cartão via Rede aprovado para {transaction_id}")
+
+            if payment_data.webhook_url:
+                await notify_user_webhook(payment_data.webhook_url, {
+                    "transaction_id": transaction_id,
+                    "status": "approved",
+                    "provedor": "rede"
+                })
+
             return {"status": "approved", "message": "Pagamento aprovado via Rede", "transaction_id": transaction_id}
 
         raise Exception("Erro desconhecido na Rede")
@@ -174,7 +173,15 @@ async def create_credit_card_payment(
 
             if response and response.get("status") == "approved":
                 logger.info(f"✅ Pagamento Cartão via Asaas aprovado para {transaction_id}")
-                return {"status": "approved", "message": "Rede falhou, usando Asaas como fallback", "transaction_id": transaction_id}
+
+                if payment_data.webhook_url:
+                    await notify_user_webhook(payment_data.webhook_url, {
+                        "transaction_id": transaction_id,
+                        "status": "approved",
+                        "provedor": "asaas"
+                    })
+
+                return {"status": "approved", "message": "Rede falhou, Asaas aprovado", "transaction_id": transaction_id}
 
             raise HTTPException(status_code=500, detail="Falha no pagamento via Rede e Asaas")
 
@@ -217,6 +224,14 @@ async def create_pix_payment(
         response = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
         if response and response.get("status") == "approved":
+            if payment_data.webhook_url:
+                await notify_user_webhook(payment_data.webhook_url, {
+                    "transaction_id": transaction_id,
+                    "status": "approved",
+                    "provedor": "sicredi",
+                    "txid": txid
+                })
+
             return {"status": "approved", "message": "Pagamento aprovado via Sicredi", "transaction_id": transaction_id}
 
         raise Exception("Erro desconhecido no Sicredi")
@@ -230,6 +245,14 @@ async def create_pix_payment(
             response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
 
             if response and response.get("status") == "approved":
+                if payment_data.webhook_url:
+                    await notify_user_webhook(payment_data.webhook_url, {
+                        "transaction_id": transaction_id,
+                        "status": "approved",
+                        "provedor": "asaas",
+                        "txid": txid
+                    })
+
                 return {"status": "approved", "message": "Sicredi falhou, Asaas aprovado", "transaction_id": transaction_id}
 
             raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
@@ -237,4 +260,3 @@ async def create_pix_payment(
         except Exception as fallback_error:
             logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
-

@@ -13,7 +13,8 @@ try:
         get_empresa_certificados,       # 🔹 Adicionado
         save_empresa_certificados,      # 🔹 Adicionado
         atualizar_config_gateway,       # ✅ Novo método para configuração de gateways
-        get_empresa_gateways            # ✅ Novo método para leitura de gateways
+        get_empresa_gateways,           # ✅ Novo método para leitura de gateways
+        get_sicredi_token_or_refresh    # ✅ Novo método de token controlado via banco
     )
 
     # Redis desativado — mantendo como referência
@@ -40,7 +41,8 @@ def init_database():
             get_empresa_certificados,
             save_empresa_certificados,
             atualizar_config_gateway,
-            get_empresa_gateways
+            get_empresa_gateways,
+            get_sicredi_token_or_refresh
         ]
         if None in required_methods:
             raise ImportError("Métodos essenciais do banco de dados não carregados")
@@ -74,6 +76,7 @@ __all__ = [
     "save_empresa_certificados",      # 🔹 Adicionado
     "atualizar_config_gateway",       # ✅ Novo
     "get_empresa_gateways",           # ✅ Novo
+    "get_sicredi_token_or_refresh",   # ✅ Novo
     # "get_redis_client",              # 🔹 Desativado
     "init_database",
     "shutdown_database"

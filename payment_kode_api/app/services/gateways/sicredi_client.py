@@ -1,3 +1,5 @@
+# services/gateways/sicredi_client.py
+
 import httpx
 import base64
 import asyncio
@@ -8,6 +10,7 @@ from ...utilities.logging_config import logger
 # from ...database.redis_client import get_redis_client  # ❌ Desativado (uso de Redis)
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
 from ...utilities.cert_utils import get_md5, build_ssl_context_from_memory
+from ...database import get_sicredi_token_or_refresh
 
 # 🔧 Timeout padrão para conexões Sicredi
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
@@ -98,7 +101,9 @@ async def get_access_token(empresa_id: str, retries: int = 2):
 
 
 async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
-    token = await get_access_token(empresa_id)
+    token = await get_sicredi_token_or_refresh(empresa_id)
+    if not token:
+        raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado.")
     credentials = await get_empresa_credentials(empresa_id)
 
     sicredi_env = credentials.get("sicredi_env", "production").lower()
