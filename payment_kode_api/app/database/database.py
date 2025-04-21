@@ -141,6 +141,69 @@ async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ Erro ao recuperar configuração da empresa {empresa_id}: {e}")
         raise
 
+# 🔹 Atualiza os gateways padrão (Pix e Crédito) da empresa
+async def atualizar_config_gateway(payload: Dict[str, Any]) -> bool:
+    """
+    Atualiza os providers de Pix e Crédito para a empresa no Supabase.
+    """
+    try:
+        empresa_id = payload.get("empresa_id")
+        pix_provider = payload.get("pix_provider", "sicredi")
+        credit_provider = payload.get("credit_provider", "rede")
+
+        if not empresa_id:
+            raise ValueError("O campo 'empresa_id' é obrigatório.")
+
+        update_data = {
+            "pix_provider": pix_provider,
+            "credit_provider": credit_provider,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        response = (
+            supabase.table("empresas_config")
+            .update(update_data)
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"✅ Gateways atualizados para empresa {empresa_id}: Pix = {pix_provider}, Crédito = {credit_provider}")
+            return True
+        else:
+            logger.warning(f"⚠️ Nenhuma empresa encontrada com ID {empresa_id} para atualizar gateways.")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao atualizar os gateways da empresa {payload.get('empresa_id')}: {e}")
+        raise
+
+# 🔹 Retorna os providers atuais da empresa (Pix e Crédito)
+async def get_empresa_gateways(empresa_id: str) -> Optional[Dict[str, str]]:
+    """
+    Retorna os providers configurados para Pix e Crédito de uma empresa.
+    """
+    try:
+        response = (
+            supabase.table("empresas_config")
+            .select("pix_provider, credit_provider")
+            .eq("empresa_id", empresa_id)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"📦 Providers da empresa {empresa_id} retornados com sucesso.")
+            return response.data[0]
+
+        logger.warning(f"⚠️ Nenhum provider encontrado para empresa {empresa_id}.")
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar providers da empresa {empresa_id}: {e}")
+        return None
+
+
 # 🔹 Pagamentos
 async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
     try:

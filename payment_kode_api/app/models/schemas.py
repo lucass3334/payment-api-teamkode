@@ -3,6 +3,17 @@ from typing import Annotated, Optional, Dict
 from decimal import Decimal, ROUND_HALF_UP
 import uuid
 
+from enum import Enum
+
+class PixProviderEnum(str, Enum):
+    sicredi = "sicredi"
+    asaas = "asaas"
+
+class CreditProviderEnum(str, Enum):
+    rede = "rede"
+    asaas = "asaas"
+
+
 # Tipos de dados validados
 TransactionIDType = Annotated[str, StringConstraints(min_length=6, max_length=35)]
 StatusType = Annotated[str, StringConstraints(min_length=3, max_length=20)]  # Ex: "pending", "approved", "failed"
@@ -47,6 +58,16 @@ class EmpresaCertificadosSchema(BaseModel):
     sicredi_cert_base64: Optional[str] = None
     sicredi_key_base64: Optional[str] = None
     sicredi_ca_base64: Optional[str] = None
+
+
+class EmpresaGatewayConfigSchema(BaseModel):
+    """
+    Permite configurar os gateways de pagamento (Pix e Crédito) usados por uma empresa.
+    """
+    empresa_id: uuid.UUID
+    pix_provider: PixProviderEnum = PixProviderEnum.sicredi  # Default: Sicredi
+    credit_provider: CreditProviderEnum = CreditProviderEnum.rede  # Default: Rede
+
 
 class PaymentSchema(BaseModel):
     """
