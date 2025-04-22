@@ -125,36 +125,63 @@ async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
 
 # 🔹 Busca o token da Sicredi para uma empresa, atualizando se expirado
 async def get_sicredi_token_or_refresh(empresa_id: str) -> str:
-    # import local para evitar ciclo
-    from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
+    """
+    Busca no Supabase o token Sicredi salvo; se expirou, solicita um novo
+    e atualiza a tabela `empresas_config`.
+    """
+    try:
+        # 1) Busca diretamente no Supabase (sem passar pelo config_service)
+        resp = (
+            supabase
+            .table("empresas_config")
+            .select("sicredi_token, sicredi_token_expires_at")
+            .eq("empresa_id", empresa_id)
+            .limit(1)
+            .execute()
+        )
+        row = resp.data[0] if resp.data else {}
+        token = row.get("sicredi_token")
+        expires_at = row.get("sicredi_token_expires_at")
 
-    config = await get_empresa_config(empresa_id) or {}
-    token = config.get("sicredi_token")
-    expires_at = config.get("sicredi_token_expires_at")
+        # 2) Verifica validade
+        if token and expires_at:
+            now = datetime.now(timezone.utc)
+            exp_dt = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+            if exp_dt > now:
+                logger.info(f"🟢 Reutilizando token Sicredi para {empresa_id}")
+                return token
+            logger.info(f"🔄 Token Sicredi expirado para {empresa_id}, renovando...")
 
-    if token and expires_at:
-        now_utc = datetime.now(timezone.utc)
-        exp_dt = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
-        if exp_dt > now_utc:
-            logger.info(f"🟢 Reutilizando token Sicredi para empresa {empresa_id}")
-            return token
-        logger.info(f"🔄 Token Sicredi expirado; renovando para empresa {empresa_id}")
+        # 3) Só agora importamos a função que vai chamar o Sicredi
+        from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
 
-    # Solicita novo
-    new_token = await get_access_token(empresa_id)
-    new_expiry = datetime.now(timezone.utc) + timedelta(seconds=3600 - 60)
+        new_token = await get_access_token(empresa_id)
+        # subtrai 60s pra dar folga
+        new_expires = datetime.now(timezone.utc) + timedelta(seconds=3600 - 60)
 
-    supabase.table("empresas_config") \
-        .update({
-            "sicredi_token": new_token,
-            "sicredi_token_expires_at": new_expiry.isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }) \
-        .eq("empresa_id", empresa_id) \
-        .execute()
+        # 4) Atualiza no Supabase
+        upd = (
+            supabase
+            .table("empresas_config")
+            .update({
+                "sicredi_token": new_token,
+                "sicredi_token_expires_at": new_expires.isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            })
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
 
-    logger.info(f"✅ Novo token Sicredi salvo para empresa {empresa_id}")
-    return new_token
+        if upd.data:
+            logger.info(f"✅ Token Sicredi atualizado no Supabase para {empresa_id}")
+        else:
+            logger.warning(f"⚠️ Não salvou token Sicredi para {empresa_id}")
+
+        return new_token
+
+    except Exception as e:
+        logger.error(f"❌ Erro em get_sicredi_token_or_refresh({empresa_id}): {e}")
+        raise
 
 # 🔹 Atualiza os gateways padrão (Pix e Crédito) da empresa
 async def atualizar_config_gateway(payload: Dict[str, Any]) -> bool:
