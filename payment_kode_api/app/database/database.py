@@ -10,8 +10,6 @@ from .supabase_client import supabase
 
 
 
-from payment_kode_api.app.services.config_service import get_empresa_config, get_empresa_credentials
-
 
 datetime.now(timezone.utc)
 
