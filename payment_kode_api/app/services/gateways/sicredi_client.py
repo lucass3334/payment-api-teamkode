@@ -1,3 +1,4 @@
+
 # services/gateways/sicredi_client.py
 
 import httpx
@@ -7,109 +8,98 @@ from fastapi import HTTPException
 from typing import Any
 
 from ...utilities.logging_config import logger
-# from ...database.redis_client import get_redis_client  # ❌ Desativado (uso de Redis)
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
 from ...utilities.cert_utils import get_md5, build_ssl_context_from_memory
-from ...database import get_sicredi_token_or_refresh
 
 # 🔧 Timeout padrão para conexões Sicredi
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 
 
-async def get_access_token(empresa_id: str, retries: int = 2):
-    # redis = get_redis_client()
-    # redis_key = f"sicredi_token:{empresa_id}"
-    # cached_token = redis.get(redis_key)
-    cached_token = None  # ❌ Cache desativado
-
-    if cached_token:
-        return cached_token
-
+async def get_access_token(empresa_id: str, retries: int = 2) -> str:
+    """
+    Solicita um novo token diretamente na API Sicredi via client_credentials.
+    """
     credentials = await get_empresa_credentials(empresa_id)
     if not credentials:
         raise ValueError("❌ Credenciais do Sicredi não configuradas corretamente.")
 
-    sicredi_client_id = credentials["sicredi_client_id"]
-    sicredi_client_secret = credentials["sicredi_client_secret"]
-    sicredi_env = credentials.get("sicredi_env", "production").lower()
+    client_id = credentials["sicredi_client_id"]
+    client_secret = credentials["sicredi_client_secret"]
+    env = credentials.get("sicredi_env", "production").lower()
 
     auth_url = (
         "https://api-h.pix.sicredi.com.br/oauth/token"
-        if sicredi_env == "homologation"
+        if env == "homologation"
         else "https://api-pix.sicredi.com.br/oauth/token"
     )
-    auth_header = base64.b64encode(f"{sicredi_client_id}:{sicredi_client_secret}".encode()).decode()
+    auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
     headers = {
         "Authorization": f"Basic {auth_header}",
         "Content-Type": "application/json"
     }
-
     full_url = f"{auth_url}?grant_type=client_credentials&scope=cob.read%20cob.write%20pix.read"
 
-    cert_data = await load_certificates_from_bucket(empresa_id)
-
+    certs = await load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
-            cert_pem=cert_data["cert_path"],
-            key_pem=cert_data["key_path"],
-            ca_pem=cert_data["ca_path"]
+            cert_pem=certs["cert_path"],
+            key_pem=certs["key_path"],
+            ca_pem=certs["ca_path"]
         )
     except Exception as e:
-        logger.error(f"❌ Erro ao montar SSLContext: {str(e)}")
+        logger.error(f"❌ Erro ao montar SSLContext: {e}")
         raise HTTPException(status_code=500, detail="Erro ao processar certificados da empresa.")
 
-    logger.debug(f"🔑 cert.pem md5: {get_md5(cert_data['cert_path'])}")
-    logger.debug(f"🔑 key.key md5: {get_md5(cert_data['key_path'])}")
-    logger.debug(f"🔑 ca.pem   md5: {get_md5(cert_data['ca_path'])}")
+    logger.debug(f"🔑 cert.pem md5: {get_md5(certs['cert_path'])}")
+    logger.debug(f"🔑 key.key md5:  {get_md5(certs['key_path'])}")
+    logger.debug(f"🔑 ca.pem md5:   {get_md5(certs['ca_path'])}")
 
-    for attempt in range(retries):
+    for attempt in range(1, retries + 1):
         try:
-            async with httpx.AsyncClient(
-                verify=ssl_ctx,
-                timeout=TIMEOUT
-            ) as client:
-                logger.info(f"🔐 Tentativa {attempt + 1} - Token Sicredi via {full_url}")
-                response = await client.post(full_url, headers=headers)
-                response.raise_for_status()
+            async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+                logger.info(f"🔐 Sicredi token attempt {attempt} → {full_url}")
+                resp = await client.post(full_url, headers=headers)
+                resp.raise_for_status()
 
-                token_data = response.json()
-                access_token = token_data.get("access_token")
-                expires_in = token_data.get("expires_in", 3600)
+                data = resp.json()
+                token = data.get("access_token")
+                if token:
+                    return token
 
-                if access_token:
-                    # redis.setex(redis_key, expires_in - 60, access_token)
-                    return access_token
-
-                logger.error(f"❌ Token ausente na resposta da Sicredi: {token_data}")
+                logger.error(f"❌ Nenhum access_token no retorno Sicredi: {data}")
                 break
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP {e.response.status_code} na autenticação Sicredi")
-            logger.debug(f"🔎 URL: {e.request.url}")
-            logger.debug(f"🔎 Resposta: {e.response.text}")
-            # redis.delete(redis_key)
-            if e.response.status_code in {401, 403} and attempt + 1 >= retries:
+            code = e.response.status_code
+            logger.error(f"❌ HTTP {code} obtendo token Sicredi")
+            if code in (401, 403) and attempt == retries:
                 raise HTTPException(status_code=410, detail="Credenciais Sicredi inválidas ou expiradas.")
         except Exception as e:
-            logger.error(f"❌ Erro inesperado ao requisitar token: {str(e)}")
+            logger.error(f"❌ Erro inesperado ao requisitar token Sicredi: {e}")
             raise
 
         await asyncio.sleep(2)
 
-    raise RuntimeError(f"❌ Falha ao obter token do Sicredi para empresa {empresa_id}")
+    raise RuntimeError(f"❌ Falha ao obter token Sicredi para empresa {empresa_id}")
 
 
-async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
+async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
+    """
+    Cria uma cobrança Pix no Sicredi usando PUT /cob/{txid}.
+    """
+    # import dinâmico para quebrar ciclo
+    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
+
     token = await get_sicredi_token_or_refresh(empresa_id)
     if not token:
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado.")
-    credentials = await get_empresa_credentials(empresa_id)
 
-    sicredi_env = credentials.get("sicredi_env", "production").lower()
+    credentials = await get_empresa_credentials(empresa_id)
+    env = credentials.get("sicredi_env", "production").lower()
     base_url = (
         "https://api-h.pix.sicredi.com.br/api/v2"
-        if sicredi_env == "homologation"
+        if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
 
@@ -118,102 +108,99 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any):
         "Content-Type": "application/json"
     }
 
+    txid = payload["txid"]
+    # monta o corpo sem repetir o txid
     body = {
         "calendario": {"expiracao": 900},
         "chave": payload["chave"],
         "valor": {"original": payload["valor"]["original"]},
-        "txid": payload["txid"]
     }
-
     if "devedor" in payload:
         body["devedor"] = payload["devedor"]
-
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    cert_data = await load_certificates_from_bucket(empresa_id)
-
+    certs = await load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
-            cert_pem=cert_data["cert_path"],
-            key_pem=cert_data["key_path"],
-            ca_pem=cert_data["ca_path"]
+            cert_pem=certs["cert_path"],
+            key_pem=certs["key_path"],
+            ca_pem=certs["ca_path"]
         )
     except Exception as e:
-        logger.error(f"❌ Erro ao montar SSLContext (cobrança): {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro com os certificados da empresa.")
+        logger.error(f"❌ Erro SSLContext (cobrança): {e}")
+        raise HTTPException(status_code=500, detail="Erro com certificados da empresa.")
 
-    async with httpx.AsyncClient(
-        verify=ssl_ctx,
-        timeout=TIMEOUT
-    ) as client:
-        logger.info(f"📤 Enviando cobrança Pix para Sicredi: {base_url}/cob - txid: {body['txid']}")
-        response = await client.post(f"{base_url}/cob", json=body, headers=headers)
-        response.raise_for_status()
-        response_data = response.json()
+    # usa PUT com txid na URL
+    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+        logger.info(f"📤 Enviando Pix para Sicredi: PUT {base_url}/cob/{txid}")
+        resp = await client.put(f"{base_url}/cob/{txid}", json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
 
+        # registra webhook no Sicredi após criar cobrança
         await register_sicredi_webhook(empresa_id, payload["chave"])
 
         return {
-            "qr_code": response_data.get("pixCopiaECola"),
-            "pix_link": response_data.get("location"),
-            "status": response_data.get("status"),
-            "expiration": response_data["calendario"]["expiracao"]
+            "qr_code": data.get("pixCopiaECola"),
+            "pix_link": data.get("location"),
+            "status": data.get("status"),
+            "expiration": data["calendario"]["expiracao"]
         }
 
 
-async def register_sicredi_webhook(empresa_id: str, chave_pix: str):
-    credentials = await get_empresa_credentials(empresa_id)
-    webhook_pix = credentials.get("webhook_pix")
+async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
+    """
+    Consulta e, se ausente, registra o webhook no Sicredi via PUT /webhook/{chave}.
+    """
+    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
 
-    if not webhook_pix:
-        logger.warning(f"⚠️ WEBHOOK_PIX não configurado para empresa {empresa_id}.")
+    creds = await get_empresa_credentials(empresa_id)
+    webhook_url = creds.get("webhook_pix")
+    if not webhook_url:
+        logger.warning(f"⚠️ WEBHOOK_PIX não configurado para empresa {empresa_id}")
         return
 
     token = await get_sicredi_token_or_refresh(empresa_id)
-
-    sicredi_env = credentials.get("sicredi_env", "production").lower()
+    env = creds.get("sicredi_env", "production").lower()
     base_url = (
         "https://api-h.pix.sicredi.com.br/api/v2"
-        if sicredi_env == "homologation"
+        if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
-
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
 
-    cert_data = await load_certificates_from_bucket(empresa_id)
-
+    certs = await load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
-            cert_pem=cert_data["cert_path"],
-            key_pem=cert_data["key_path"],
-            ca_pem=cert_data["ca_path"]
+            cert_pem=certs["cert_path"],
+            key_pem=certs["key_path"],
+            ca_pem=certs["ca_path"]
         )
     except Exception as e:
-        logger.error(f"❌ Erro ao montar SSLContext (webhook): {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro com os certificados da empresa.")
+        logger.error(f"❌ Erro SSLContext (webhook): {e}")
+        raise HTTPException(status_code=500, detail="Erro com certificados da empresa.")
 
-    async with httpx.AsyncClient(
-        verify=ssl_ctx,
-        timeout=TIMEOUT
-    ) as client:
-        logger.info(f"🔍 Verificando webhook para chave Pix: {chave_pix}")
-        response = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
-
-        if response.status_code == 200:
-            logger.info(f"✅ Webhook já configurado para {chave_pix}")
+    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+        # verifica se já existe
+        resp = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
+        if resp.status_code == 200:
+            logger.info(f"✅ Webhook já existe para {chave_pix}")
             return
 
-        payload = {"webhookUrl": webhook_pix}
-        logger.info(f"📤 Registrando webhook para chave Pix: {chave_pix}")
-        response = await client.put(f"{base_url}/webhook/{chave_pix}", json=payload, headers=headers)
-        response.raise_for_status()
-
-        logger.info(f"✅ Webhook registrado com sucesso para chave Pix: {chave_pix}")
-        return response.json()
+        # registra novo webhook
+        logger.info(f"📤 Registrando webhook Sicredi para {chave_pix}")
+        resp = await client.put(
+            f"{base_url}/webhook/{chave_pix}",
+            json={"webhookUrl": webhook_url},
+            headers=headers
+        )
+        resp.raise_for_status()
+        logger.info(f"✅ Webhook Sicredi registrado para {chave_pix}")
+        return resp.json()
 
 
 
