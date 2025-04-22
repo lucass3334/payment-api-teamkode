@@ -1,10 +1,11 @@
 import logging
 import hashlib
-from typing import Dict
+from typing import Dict, Optional, Any
 
 from ..database.supabase_storage import download_cert_file, ensure_folder_exists
 from ..database.database import get_empresa_config
 from ..core.config import settings
+from ..database.supabase_client import supabase
 
 
 logger = logging.getLogger(__name__)
@@ -94,4 +95,19 @@ async def load_certificates_from_bucket(empresa_id: str) -> Dict[str, bytes]:
 
     except Exception as e:
         logger.error(f"❌ Erro ao carregar certificados da empresa {empresa_id}: {str(e)}")
+        raise
+# Dentro de config_service.py
+from ..database.supabase_client import supabase
+
+async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        response = (
+            supabase.table("empresas_config")
+            .select("*")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+    except Exception as e:
+        logger.error(f"❌ Erro ao recuperar configuração da empresa {empresa_id}: {e}")
         raise

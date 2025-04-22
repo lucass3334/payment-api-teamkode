@@ -10,7 +10,7 @@ from .supabase_client import supabase
 
 
 
-from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
+from payment_kode_api.app.services.config_service import get_empresa_config, get_empresa_credentials
 
 
 datetime.now(timezone.utc)
@@ -124,68 +124,39 @@ async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ Erro ao buscar empresa pelo Access Token: {e}")
         raise
 
-async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
-    try:
-        response = (
-            supabase.table("empresas_config")
-            .select("*")
-            .eq("empresa_id", empresa_id)
-            .execute()
-        )
-        return response.data[0] if response.data else None
-    except Exception as e:
-        logger.error(f"❌ Erro ao recuperar configuração da empresa {empresa_id}: {e}")
-        raise
-
-
 
 # 🔹 Busca o token da Sicredi para uma empresa, atualizando se expirado
 async def get_sicredi_token_or_refresh(empresa_id: str) -> str:
-    """
-    Verifica se a empresa possui um token da Sicredi válido no banco.
-    Se não houver ou estiver expirado, solicita novo token via Sicredi,
-    salva no banco com novo expires_at e retorna.
-    """
-    try:
-        config = await get_empresa_config(empresa_id)
-        token = config.get("sicredi_token")
-        expires_at = config.get("sicredi_token_expires_at")
+    # import local para evitar ciclo
+    from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
 
-        if token and expires_at:
-            now_utc = datetime.now(timezone.utc)
-            expires_dt = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
-            if expires_dt > now_utc:
-                logger.info(f"🟢 Token Sicredi reutilizado para empresa {empresa_id}")
-                return token
-            else:
-                logger.info(f"🔄 Token Sicredi expirado para empresa {empresa_id}. Renovando...")
+    config = await get_empresa_config(empresa_id) or {}
+    token = config.get("sicredi_token")
+    expires_at = config.get("sicredi_token_expires_at")
 
-        # Se chegou aqui, precisa renovar
-        new_token = await get_access_token(empresa_id)
-        new_expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600 - 60)
+    if token and expires_at:
+        now_utc = datetime.now(timezone.utc)
+        exp_dt = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+        if exp_dt > now_utc:
+            logger.info(f"🟢 Reutilizando token Sicredi para empresa {empresa_id}")
+            return token
+        logger.info(f"🔄 Token Sicredi expirado; renovando para empresa {empresa_id}")
 
-        update_result = (
-            supabase.table("empresas_config")
-            .update({
-                "sicredi_token": new_token,
-                "sicredi_token_expires_at": new_expires_at.isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
-            .eq("empresa_id", empresa_id)
-            .execute()
-        )
+    # Solicita novo
+    new_token = await get_access_token(empresa_id)
+    new_expiry = datetime.now(timezone.utc) + timedelta(seconds=3600 - 60)
 
-        if update_result.data:
-            logger.info(f"✅ Token Sicredi atualizado e salvo para empresa {empresa_id}")
-        else:
-            logger.warning(f"⚠️ Token obtido mas não foi possível salvar para empresa {empresa_id}")
+    supabase.table("empresas_config") \
+        .update({
+            "sicredi_token": new_token,
+            "sicredi_token_expires_at": new_expiry.isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }) \
+        .eq("empresa_id", empresa_id) \
+        .execute()
 
-        return new_token
-
-    except Exception as e:
-        logger.error(f"❌ Erro ao verificar ou renovar token Sicredi para empresa {empresa_id}: {e}")
-        raise
-
+    logger.info(f"✅ Novo token Sicredi salvo para empresa {empresa_id}")
+    return new_token
 
 # 🔹 Atualiza os gateways padrão (Pix e Crédito) da empresa
 async def atualizar_config_gateway(payload: Dict[str, Any]) -> bool:
@@ -412,3 +383,20 @@ async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"❌ Erro ao recuperar certificados RSA da empresa {empresa_id}: {e}")
         return None
+    
+
+
+# 🔹 Recupera config direto do supabase (quebra import circular)
+async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        resp = (
+            supabase
+            .table("empresas_config")
+            .select("*")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception as e:
+        logger.error(f"❌ Erro ao carregar config da empresa {empresa_id}: {e}")
+        raise
