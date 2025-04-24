@@ -133,21 +133,36 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
 
     # usa PUT com txid na URL
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
-        logger.info(f"📤 Enviando Pix para Sicredi: PUT {base_url}/cob/{txid}")
-        resp = await client.put(f"{base_url}/cob/{txid}", json=body, headers=headers)
-        resp.raise_for_status()
+        txid = payload["txid"]
+        endpoint = f"{base_url}/cob/{txid}"
+
+        # 1) Logue endpoint e body antes de enviar
+        logger.info(f"📤 Enviando Pix para Sicredi: PUT {endpoint} – body: {body}")
+
+        resp = await client.put(endpoint, json=body, headers=headers)
+
+        # 2) Capture e logue qualquer erro HTTP
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ Sicredi retornou HTTP {e.response.status_code}: {e.response.text}")
+            raise HTTPException(
+                status_code=e.response.status_code,
+                detail=f"Erro no gateway Sicredi: {e.response.text}"
+            ) from e
+
         data = resp.json()
 
-        # registra webhook no Sicredi após criar cobrança
+        # 3) Registra webhook no Sicredi após criar cobrança
         await register_sicredi_webhook(empresa_id, payload["chave"])
 
+        # 4) Retorna dados ao chamador
         return {
             "qr_code": data.get("pixCopiaECola"),
             "pix_link": data.get("location"),
             "status": data.get("status"),
             "expiration": data["calendario"]["expiracao"]
         }
-
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
     """
