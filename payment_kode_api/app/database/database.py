@@ -146,10 +146,18 @@ async def get_sicredi_token_or_refresh(empresa_id: str) -> str:
         # 2) Verifica validade
         if token and expires_at:
             now = datetime.now(timezone.utc)
-            exp_dt = datetime.fromisoformat(expires_at).replace(tzinfo=timezone.utc)
+            try:
+                exp_dt = datetime.fromisoformat(expires_at)
+            except ValueError:
+                exp_dt = datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%S.%f")
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            # --- Fim do patch ---
+
             if exp_dt > now:
                 logger.info(f"🟢 Reutilizando token Sicredi para {empresa_id}")
                 return token
+
             logger.info(f"🔄 Token Sicredi expirado para {empresa_id}, renovando...")
 
         # 3) Só agora importamos a função que vai chamar o Sicredi
