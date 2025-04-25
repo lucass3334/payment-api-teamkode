@@ -228,7 +228,9 @@ async def create_pix_payment(
         logger.info(f"🚀 Tentando processar pagamento Pix via Sicredi para {transaction_id} com txid {txid}")
         response = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
-        if response and response.get("status") == "approved":
+        # Sicredi retorna "ATIVA" quando a cobrança foi criada com sucesso
+        if response and response.get("status", "").upper() == "ATIVA":
+            logger.info(f"✅ Cobrança Pix criada no Sicredi para {transaction_id} (txid={txid})")
             if payment_data.webhook_url:
                 await notify_user_webhook(payment_data.webhook_url, {
                     "transaction_id": transaction_id,
@@ -236,10 +238,11 @@ async def create_pix_payment(
                     "provedor": "sicredi",
                     "txid": txid
                 })
-
             return {"status": "approved", "message": "Pagamento aprovado via Sicredi", "transaction_id": transaction_id}
 
-        raise Exception("Erro desconhecido no Sicredi")
+        # qualquer outro status (erro de negócio, etc)
+        logger.error(f"❌ Sicredi retornou status inesperado para {transaction_id}: {response.get('status')}")
+        raise Exception(f"Erro no Sicredi: status retornado = {response.get('status')}")
 
     except Exception as e:
         logger.error(f"❌ Erro no gateway Sicredi para {transaction_id}: {str(e)}")
