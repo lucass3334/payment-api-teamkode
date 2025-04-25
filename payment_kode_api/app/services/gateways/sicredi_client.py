@@ -5,7 +5,9 @@ import httpx
 import base64
 import asyncio
 from fastapi import HTTPException
-from typing import Any
+from typing import Any, Dict, Optional
+import re
+
 
 from ...utilities.logging_config import logger
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
@@ -84,17 +86,19 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
     raise RuntimeError(f"❌ Falha ao obter token Sicredi para empresa {empresa_id}")
 
 
-async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
+async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[str, Any]:
     """
-    Cria uma cobrança Pix no Sicredi usando PUT /cob/{txid}.
+    Cria ou altera uma cobrança Pix imediata no Sicredi usando PUT /cob/{txid}.
     """
-    # import dinâmico para quebrar ciclo
+    # Import dinâmico para quebrar ciclo de importação
     from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
 
+    # 1) Obtém (ou renova) o token Sicredi
     token = await get_sicredi_token_or_refresh(empresa_id)
     if not token:
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado.")
 
+    # 2) Carrega credenciais e define URL base
     credentials = await get_empresa_credentials(empresa_id)
     env = credentials.get("sicredi_env", "production").lower()
     base_url = (
@@ -108,9 +112,14 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
         "Content-Type": "application/json"
     }
 
-    txid = payload["txid"]
-    # monta o corpo sem repetir o txid
-    body = {
+    # 3) Sanitiza o txid para atender ao schema do Bacen (até 35 chars, alfanumérico)
+    raw_txid = payload.get("txid", "")
+    txid = re.sub(r'[^A-Za-z0-9]', '', raw_txid).upper()[:35]
+    if not txid:
+        raise HTTPException(status_code=400, detail="txid inválido após sanitização.")
+
+    # 4) Monta o corpo da requisição (sem repetir o txid, que já vai na URL)
+    body: Dict[str, Any] = {
         "calendario": {"expiracao": 900},
         "chave": payload["chave"],
         "valor": {"original": payload["valor"]["original"]},
@@ -120,6 +129,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
+    # 5) Carrega certificados em memória e monta SSLContext
     certs = await load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
@@ -128,21 +138,17 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
             ca_pem=certs["ca_path"]
         )
     except Exception as e:
-        logger.error(f"❌ Erro SSLContext (cobrança): {e}")
+        logger.error(f"❌ Erro ao montar SSLContext (cobrança): {e}")
         raise HTTPException(status_code=500, detail="Erro com certificados da empresa.")
 
-    # usa PUT com txid na URL
+    # 6) Envia o PUT e faz logging detalhado
+    endpoint = f"{base_url}/cob/{txid}"
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
-        txid = payload["txid"]
-        endpoint = f"{base_url}/cob/{txid}"
-
-        # 1) Logue endpoint e body antes de enviar
+        # Log antes de enviar
         logger.info(f"📤 Enviando Pix para Sicredi: PUT {endpoint} – body: {body}")
 
-        resp = await client.put(endpoint, json=body, headers=headers)
-
-        # 2) Capture e logue qualquer erro HTTP
         try:
+            resp = await client.put(endpoint, json=body, headers=headers)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ Sicredi retornou HTTP {e.response.status_code}: {e.response.text}")
@@ -153,17 +159,16 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> dict:
 
         data = resp.json()
 
-        # 3) Registra webhook no Sicredi após criar cobrança
-        await register_sicredi_webhook(empresa_id, payload["chave"])
+    # 7) Registra (ou confirma) o webhook no Sicredi
+    await register_sicredi_webhook(empresa_id, payload["chave"])
 
-        # 4) Retorna dados ao chamador
-        return {
-            "qr_code": data.get("pixCopiaECola"),
-            "pix_link": data.get("location"),
-            "status": data.get("status"),
-            "expiration": data["calendario"]["expiracao"]
-        }
-
+    # 8) Retorna o resultado ao chamador
+    return {
+        "qr_code": data.get("pixCopiaECola"),
+        "pix_link": data.get("location"),
+        "status": data.get("status"),
+        "expiration": data["calendario"]["expiracao"]
+    }
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
     """
     Consulta e, se ausente, registra o webhook no Sicredi via PUT /webhook/{chave}.

@@ -36,8 +36,13 @@ EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
 
 def generate_txid() -> str:
-    return f"trx_{secrets.token_hex(12)}"[:35]
-
+    """
+    Gera um txid válido para o Sicredi:
+   - somente caracteres 0–9 e a–f (hex lowercase)
+   - comprimento fixo de 32 chars (UUID4.hex), ≤ 35
+   """
+    # uuid4().hex já retorna 32 caracteres hexadecimais (0-9, a-f)
+    return uuid4().hex
 
 class PixPaymentRequest(BaseModel):
     amount: Decimal
