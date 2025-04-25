@@ -11,6 +11,8 @@ from payment_kode_api.app.database.database import (
     save_payment,
     get_payment,
     save_tokenized_card,
+    get_payment_by_txid,
+    update_payment_status_by_txid,
     get_tokenized_card
 )
 from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
@@ -91,6 +93,57 @@ class CreditCardPaymentRequest(BaseModel):
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
+class SicrediWebhookRequest(BaseModel):
+    txid: str
+    status: str
+    # outros campos podem existir, mas só precisamos de txid e status
+@router.post("/webhook/sicredi")
+async def sicredi_webhook(
+    payload: SicrediWebhookRequest,
+):
+    """
+    Endpoint para receber callbacks de status de cobrança Pix do Sicredi.
+    """
+    txid = payload.txid
+    sicredi_status = payload.status.upper()
+
+    # 1) Busca pagamento pelo txid
+    payment = await get_payment_by_txid(txid)
+    if not payment:
+        raise HTTPException(status_code=404, detail=f"Pagamento não encontrado para txid {txid}")
+
+    empresa_id = payment["empresa_id"]
+    transaction_id = payment["transaction_id"]
+    webhook_url = payment.get("webhook_url")
+
+    # 2) Mapeia status Sicredi → nosso status
+    # Sicredi normalmente retorna 'ATIVA' após criar e 'CONCLUIDA' após pagamento
+    if sicredi_status == "CONCLUIDA":
+        new_status = "approved"
+    elif sicredi_status in ("REMOVIDA_PELO_USUARIO_RECEBEDOR", "REMOVIDA_POR_ERRO"):
+        new_status = "canceled"
+    else:
+        new_status = "failed"
+
+    # 3) Atualiza status no banco
+    updated = await update_payment_status_by_txid(
+        txid=txid,
+        empresa_id=empresa_id,
+        status=new_status
+    )
+
+    logger.info(f"🔄 Pagamento {transaction_id} (txid={txid}) atualizado para status '{new_status}' via webhook Sicredi")
+
+    # 4) Notifica o cliente via webhook_url, se configurado
+    if webhook_url:
+        await notify_user_webhook(webhook_url, {
+            "transaction_id": transaction_id,
+            "status": new_status,
+            "provedor": "sicredi",
+            "txid": txid
+        })
+
+    return {"message": "Webhook Sicredi processado com sucesso"}
 
 @router.post("/payment/tokenize-card")
 async def tokenize_card(
@@ -231,14 +284,14 @@ async def create_pix_payment(
         # Sicredi retorna "ATIVA" quando a cobrança foi criada com sucesso
         if response and response.get("status", "").upper() == "ATIVA":
             logger.info(f"✅ Cobrança Pix criada no Sicredi para {transaction_id} (txid={txid})")
-            if payment_data.webhook_url:
-                await notify_user_webhook(payment_data.webhook_url, {
-                    "transaction_id": transaction_id,
-                    "status": "approved",
-                    "provedor": "sicredi",
-                    "txid": txid
-                })
-            return {"status": "approved", "message": "Pagamento aprovado via Sicredi", "transaction_id": transaction_id}
+            # não notificar aqui — aguardamos o webhook de confirmação de pagamento
+        return {
+                "status": response["status"].lower(),            # ex: "ativa"
+                "transaction_id": transaction_id,
+                "qr_code": response["qr_code"],                  # pixCopiaECola
+                "pix_link": response["pix_link"],                # location header
+                "expiration": response["expiration"]             # tempo em segundos
+}
 
         # qualquer outro status (erro de negócio, etc)
         logger.error(f"❌ Sicredi retornou status inesperado para {transaction_id}: {response.get('status')}")
@@ -247,24 +300,23 @@ async def create_pix_payment(
     except Exception as e:
         logger.error(f"❌ Erro no gateway Sicredi para {transaction_id}: {str(e)}")
 
-        try:
-            logger.warning(f"⚠️ Fallback será iniciado via Asaas para empresa {empresa_id}, txid {txid}")
-            asaas_payload = map_to_asaas_pix_payload({**payment_data.dict(), "txid": txid})
-            response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
+        # Fallback via Asaas
+        logger.warning(f"⚠️ Fallback será iniciado via Asaas para {transaction_id}")
+        asaas_payload = map_to_asaas_pix_payload({**payment_data.dict(), "txid": txid})
+        response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
 
-            if response and response.get("status") == "approved":
-                if payment_data.webhook_url:
-                    await notify_user_webhook(payment_data.webhook_url, {
-                        "transaction_id": transaction_id,
-                        "status": "approved",
-                        "provedor": "asaas",
-                        "txid": txid
-                    })
+        if response and response.get("status") == "approved":
+            return {
+                "status": response["status"].lower(),       # ex: 'approved'
+                "transaction_id": transaction_id,
+                "pix_key": response.get("pixKey"),          # chave PIX Asaas
+                "qr_code": response.get("qrCode"),          # se o Asaas retornar
+                "expiration": response.get("expirationDateTime")  # data/hora de expiração
+            }
 
-                return {"status": "approved", "message": "Sicredi falhou, Asaas aprovado", "transaction_id": transaction_id}
+        # se também falhar no Asaas
+        raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
 
-            raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")
-
-        except Exception as fallback_error:
+    except Exception as fallback_error:
             logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Sicredi e Asaas")

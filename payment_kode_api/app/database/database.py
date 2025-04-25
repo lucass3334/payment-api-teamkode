@@ -336,6 +336,44 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
         logger.error(f"❌ Erro ao atualizar status do pagamento para empresa {empresa_id}, transaction_id {transaction_id}: {e}")
         raise
 
+# 🔹 Pagamento por TXID
+async def get_payment_by_txid(txid: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca no Supabase o pagamento que tenha o txid informado.
+    """
+    try:
+        resp = (
+            supabase.table("payments")
+            .select("*")
+            .eq("txid", txid)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception as e:
+        logger.error(f"❌ Erro ao recuperar pagamento pelo TXID {txid}: {e}")
+        raise
+
+async def update_payment_status_by_txid(txid: str, status: str) -> Optional[Dict[str, Any]]:
+    """
+    Atualiza status do pagamento usando apenas o txid.
+    Retorna o pagamento atualizado ou None se não encontrado.
+    """
+    try:
+        payment = await get_payment_by_txid(txid)
+        if not payment:
+            logger.warning(f"⚠️ Nenhum pagamento encontrado para TXID: {txid}")
+            return None
+        return await update_payment_status(
+            transaction_id=payment["transaction_id"],
+            empresa_id=payment["empresa_id"],
+            status=status
+        )
+    except Exception as e:
+        logger.error(f"❌ Erro ao atualizar status pelo TXID {txid}: {e}")
+        raise
+
+
 # 🔹 Consulta por chave Pix
 async def get_empresa_by_chave_pix(chave_pix: str) -> dict:
     try:

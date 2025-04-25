@@ -3,17 +3,29 @@
 try:
     # Métodos principais do banco de dados
     from .database import (
+        # Pagamentos
         save_payment,
         get_payment,
+        get_payment_by_txid,            # 🔹 Novo método
+        update_payment_status_by_txid,  # 🔹 Novo método
+        # Empresas
         save_empresa,
+        get_empresa,
+        get_empresa_by_token,
         get_empresa_by_chave_pix,
         get_empresa_config,
+        # Cartões
+        save_tokenized_card,
         get_tokenized_card,
-        get_empresa_certificados,       # 🔹 Adicionado
-        save_empresa_certificados,      # 🔹 Adicionado
-        atualizar_config_gateway,       # ✅ Novo método para configuração de gateways
-        get_empresa_gateways,           # ✅ Novo método para leitura de gateways
-        get_sicredi_token_or_refresh    # ✅ Novo método de token controlado via banco
+        delete_tokenized_card,
+        # Certificados RSA
+        get_empresa_certificados,
+        save_empresa_certificados,
+        # Gateways
+        atualizar_config_gateway,
+        get_empresa_gateways,
+        # Sicredi
+        get_sicredi_token_or_refresh,
     )
 
     # Redis desativado — mantendo como referência
@@ -24,7 +36,7 @@ except ImportError as e:
 
 
 def init_database():
-    """Configura e valida as conexões do módulo de banco de dados"""
+    """Configura e valida as conexões do módulo de banco de dados."""
     try:
         # Redis desativado — validação removida
         # if not test_redis_connection():
@@ -33,9 +45,16 @@ def init_database():
         required_methods = [
             save_payment,
             get_payment,
-            get_tokenized_card,
+            get_payment_by_txid,
+            update_payment_status_by_txid,
+            save_empresa,
+            get_empresa,
+            get_empresa_by_token,
             get_empresa_by_chave_pix,
             get_empresa_config,
+            save_tokenized_card,
+            get_tokenized_card,
+            delete_tokenized_card,
             get_empresa_certificados,
             save_empresa_certificados,
             atualizar_config_gateway,
@@ -53,7 +72,7 @@ def init_database():
 
 
 def shutdown_database():
-    """Encerra conexões do banco de dados de forma segura"""
+    """Encerra conexões do banco de dados de forma segura."""
     try:
         # Redis desativado — encerramento removido
         # get_redis_client().close()
@@ -63,18 +82,30 @@ def shutdown_database():
 
 
 __all__ = [
+    # Pagamentos
     "save_payment",
     "get_payment",
+    "get_payment_by_txid",
+    "update_payment_status_by_txid",
+    # Empresas
     "save_empresa",
-    "get_empresa_config",
+    "get_empresa",
+    "get_empresa_by_token",
     "get_empresa_by_chave_pix",
+    "get_empresa_config",
+    # Cartões
+    "save_tokenized_card",
     "get_tokenized_card",
-    "get_empresa_certificados",       # 🔹 Adicionado
-    "save_empresa_certificados",      # 🔹 Adicionado
-    "atualizar_config_gateway",       # ✅ Novo
-    "get_empresa_gateways",           # ✅ Novo
-    "get_sicredi_token_or_refresh",   # ✅ Novo
-    # "get_redis_client",              # 🔹 Desativado
+    "delete_tokenized_card",
+    # Certificados RSA
+    "get_empresa_certificados",
+    "save_empresa_certificados",
+    # Gateways
+    "atualizar_config_gateway",
+    "get_empresa_gateways",
+    # Sicredi
+    "get_sicredi_token_or_refresh",
+    # Inicialização/Desligamento
     "init_database",
-    "shutdown_database"
+    "shutdown_database",
 ]
