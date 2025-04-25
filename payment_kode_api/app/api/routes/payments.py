@@ -257,72 +257,65 @@ async def create_pix_payment(
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
-    txid = payment_data.txid or generate_txid()
+    txid = payment_data.txid or uuid4().hex  # já é 32 hex chars
 
+    # evita duplicação
     if await get_payment(transaction_id, empresa_id):
-        return {
-            "status": "already_processed",
-            "message": "Pagamento já foi processado",
-            "transaction_id": transaction_id
-        }
+        return {"status": "already_processed", "transaction_id": transaction_id}
 
-    if not await get_empresa_config(empresa_id):
-        raise HTTPException(400, "Empresa não encontrada ou sem credenciais configuradas.")
-
-    # Salva como pending
+    # salva o pending
     await save_payment({
-        "empresa_id": empresa_id,
+        "empresa_id":    empresa_id,
         "transaction_id": transaction_id,
-        "amount": payment_data.amount,
-        "payment_type": "pix",
-        "status": "pending",
-        "webhook_url": payment_data.webhook_url,
-        "txid": txid
+        "amount":         payment_data.amount,
+        "payment_type":  "pix",
+        "status":        "pending",
+        "webhook_url":   payment_data.webhook_url,
+        "txid":          txid
     })
 
+    # monta e envia ao Sicredi
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
-
     try:
-        logger.info(f"🚀 Criando cobrança Pix no Sicredi (txid={txid})")
+        logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid})")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
-        # monta resposta
-        result = {
-            "status": resp["status"].lower(),
-            "transaction_id": transaction_id,
-            "pix_link": resp["pix_link"],
-            "expiration": resp["expiration"]
-        }
+        # usa sempre o copy‐and‐paste code como pix_link :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1}
+        pix_copy = resp["qr_code"]            # é o data["pixCopiaECola"]
+        expires  = resp["expiration"]
 
-        # gera QR Code PNG → base64
-        qr_data = resp["qr_code"]  # este é o pixCopiaECola
-        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M)
-        qr.add_data(qr_data)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-
+        # gera imagem PNG e converte pra base64
+        img = qrcode.make(pix_copy)
         buf = BytesIO()
         img.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode()
-        result["qr_code_base64"] = f"data:image/png;base64,{b64}"
+        qr_png = f"data:image/png;base64,{b64}"
 
-        return result
+        return {
+            "status":          resp["status"].lower(),  # ex: "ativa"
+            "transaction_id":  transaction_id,
+            "pix_link":        pix_copy,                # agora é o copy‐and‐paste
+            "expiration":      expires,
+            "qr_code_base64":  qr_png                   # PNG em base64
+        }
 
     except Exception as e:
-        logger.error(f"❌ Sicredi falhou ({transaction_id}): {e}")
+        logger.error(f"❌ Erro Sicredi txid={txid}: {e!r}")
 
         # fallback Asaas
-        logger.warning(f"⚠️ Fallback Asaas para Pix (txid={txid})")
-        asaas_payload = map_to_asaas_pix_payload({**payment_data.dict(), "txid": txid})
-        as_resp = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
-
-        if as_resp and as_resp.get("status") == "approved":
+        logger.warning(f"⚠️ Fallback Asaas txid={txid}")
+        asaas_payload = {"amount": float(payment_data.amount), "chave_pix": payment_data.chave_pix, "txid": txid}
+        resp = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
+        if resp.get("status") == "approved":
             return {
-                "status": as_resp["status"].lower(),
+                "status":         resp["status"].lower(),
                 "transaction_id": transaction_id,
-                "pix_key": as_resp.get("pixKey"),
-                "qr_code_base64": as_resp.get("qrCode"),                # se já vier em base64
-                "expiration": as_resp.get("expirationDateTime")
+                "pix_link":       resp.get("pixKey"),
+                "qr_code_base64": resp.get("qrCode"),         # se Asaas retornar já em base64
+                "expiration":     resp.get("expirationDateTime")
             }
 
-        raise HTTPException(500, "Falha no pagamento via Sicredi e Asaas")
+        raise HTTPException(
+            status_code=500,
+            detail="Falha no pagamento via Sicredi e Asaas"
+        )
