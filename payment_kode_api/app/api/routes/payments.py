@@ -267,7 +267,8 @@ async def create_pix_payment(
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
-    txid = payment_data.txid or uuid4().hex
+    # normaliza TXID para uppercase (evita mismatch)
+    txid = (payment_data.txid or uuid4().hex).upper()
 
     logger.info(f"🔖 [create_pix_payment] iniciar: empresa={empresa_id} txid={txid} transaction_id={transaction_id}")
 
@@ -380,6 +381,7 @@ async def _poll_sicredi_status(
             token = await get_sicredi_token_or_refresh(empresa_id)
             logger.debug(f"🔑 [_poll] token (prefixo): {token[:10]}...")
 
+            # usa v3 e TXID em uppercase
             url = f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}"
             logger.debug(f"📡 [_poll] GET {url}")
             res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
