@@ -39,17 +39,26 @@ def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mapeia os dados do pagamento para o formato do gateway Asaas (PIX).
-    - Recebe 'amount', 'chave_pix' e opcionalmente 'customer_id' e 'descricao'.
+    - Recebe 'amount', 'chave_pix', e opcionalmente 'customer_id', 'descricao' e 'txid'.
     """
     if not data.get("chave_pix"):
         raise ValueError("A chave Pix (chave_pix) é obrigatória para pagamentos via PIX.")
-    return {
-        "customer": data.get("customer_id", "cus_default"),
+
+    payload: Dict[str, Any] = {
+        # Identifica o cliente na Asaas
+        "customer": data.get("customer_id", ""),
+        # Tipo de cobrança PIX
         "billingType": "PIX",
+        # Valor em reais
         "value": round(data["amount"], 2),
+        # Chave Pix do recebedor
         "pixKey": data["chave_pix"],
-        "description": data.get("descricao", "Pagamento via Pix (fallback Sicredi)")
+        # Referência externa para reconciliação
+        "externalReference": data.get("txid", ""),
+        # Descrição opcional da cobrança
+        "description": data.get("descricao") or f"Pagamento via Pix (txid {data.get('txid')})"
     }
+    return payload
 
 
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -63,9 +72,13 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        "amount": int(data["amount"] * 100),  # em centavos
-        "installments": data["installments"],
+        # Valor em centavos
+        "amount": int(data["amount"] * 100),
+        # Parcelas
+        "installments": data.get("installments", 1),
+        # Capturar automaticamente
         "capture": True,
+        # Descriptor opcional
         "softDescriptor": data.get("soft_descriptor", "Minha Empresa")
     }
 
@@ -93,10 +106,10 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        "customer": data.get("customer_id", "cus_default"),
+        "customer": data.get("customer_id", ""),
         "billingType": "CREDIT_CARD",
         "value": round(data["amount"], 2),
-        "installmentCount": data["installments"],
+        "installmentCount": data.get("installments", 1),
     }
 
     if support_tokenization and data.get("card_token"):
@@ -110,7 +123,7 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
             "ccv": data["security_code"]
         }
         payload["creditCardHolderInfo"] = {
-            "name": data["cardholder_name"],
+            "name": data.get("cardholder_name", ""),
             "cpfCnpj": data.get("cpf_cnpj", ""),
             "postalCode": data.get("postal_code", ""),
             "addressNumber": data.get("address_number", ""),

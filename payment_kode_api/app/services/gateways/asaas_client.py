@@ -1,182 +1,226 @@
-import httpx
-from fastapi import HTTPException
-from ...utilities.logging_config import logger
-from ...database.payment_operations import update_payment_status
-from ..config_service import get_empresa_credentials
-import asyncio
+# services/gateways/asaas_client.py
 
-async def get_asaas_headers(empresa_id: str):
+import httpx
+import asyncio
+from fastapi import HTTPException
+from typing import Any, Dict, Optional
+
+from ...utilities.logging_config import logger
+from ..config_service import get_empresa_credentials
+from payment_kode_api.app.database.supabase_client import supabase
+
+# ⏱️ Timeout padrão para conexões Asaas
+TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+
+
+async def get_asaas_headers(empresa_id: str) -> Dict[str, str]:
     """
     Retorna os headers necessários para autenticação na API do Asaas da empresa específica.
     """
-    credentials = get_empresa_credentials(empresa_id)
-    if not credentials or not credentials.get("asaas_api_key"):
-        raise ValueError(f"API Key do Asaas não encontrada para empresa {empresa_id}")
-
+    creds = await get_empresa_credentials(empresa_id)
+    api_key = creds.get("asaas_api_key") if creds else None
+    if not api_key:
+        logger.error(f"❌ Asaas API key não configurada para empresa {empresa_id}")
+        raise HTTPException(status_code=400, detail="Asaas API key não configurada.")
     return {
-        "Authorization": f"Bearer {credentials['asaas_api_key']}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
-async def tokenize_asaas_card(empresa_id: str, card_data: dict):
+
+async def tokenize_asaas_card(empresa_id: str, card_data: Dict[str, Any]) -> str:
     """
     Tokeniza os dados do cartão na API do Asaas.
     """
-    try:
-        headers = await get_asaas_headers(empresa_id)
-        credentials = get_empresa_credentials(empresa_id)
-        use_sandbox = credentials.get("use_sandbox", "true").lower() == "true"
-        asaas_api_url = "https://sandbox.asaas.com/api/v3/creditCard/tokenize" if use_sandbox else "https://api.asaas.com/v3/creditCard/tokenize"
+    headers = await get_asaas_headers(empresa_id)
+    creds = await get_empresa_credentials(empresa_id)
+    use_sandbox = creds.get("use_sandbox", True)
+    url = (
+        "https://sandbox.asaas.com/api/v3/creditCard/tokenize"
+        if use_sandbox else
+        "https://api.asaas.com/v3/creditCard/tokenize"
+    )
 
-        payload = {
-            "holderName": card_data["cardholder_name"],
-            "number": card_data["card_number"],
-            "expiryMonth": card_data["expiration_month"],
-            "expiryYear": card_data["expiration_year"],
-            "ccv": card_data["security_code"]
-        }
+    payload = {
+        "holderName":     card_data["cardholder_name"],
+        "number":         card_data["card_number"],
+        "expiryMonth":    card_data["expiration_month"],
+        "expiryYear":     card_data["expiration_year"],
+        "ccv":            card_data["security_code"]
+    }
 
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(asaas_api_url, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json().get("creditCardToken")
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        try:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json().get("creditCardToken")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP {e.response.status_code} ao tokenizar Asaas: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="Erro ao tokenizar cartão no Asaas")
+        except Exception as e:
+            logger.error(f"❌ Erro na tokenização Asaas: {e}")
+            raise HTTPException(status_code=500, detail="Erro inesperado na tokenização Asaas")
 
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Erro HTTP ao tokenizar cartão no Asaas: {e.response.status_code} - {e.response.text}")
-        raise HTTPException(status_code=e.response.status_code, detail="Erro ao tokenizar cartão no Asaas")
-
-    except httpx.RequestError as e:
-        logger.error(f"Erro de conexão ao tokenizar cartão no Asaas: {e}")
-        raise HTTPException(status_code=500, detail="Erro de conexão ao tokenizar cartão no Asaas")
-
-    except Exception as e:
-        logger.error(f"Erro inesperado na tokenização de cartão no Asaas: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro inesperado na tokenização de cartão no Asaas")
 
 async def create_asaas_payment(
     empresa_id: str,
     amount: float,
     payment_type: str,
     transaction_id: str,
-    customer: dict,
-    card_data: dict = None,
-    card_token: str = None,
+    customer: Dict[str, Any],
+    card_data: Optional[Dict[str, Any]] = None,
+    card_token: Optional[str] = None,
     installments: int = 1,
     retries: int = 2
-):
+) -> Dict[str, Any]:
     """
-    Cria um pagamento no Asaas para a empresa específica, permitindo tanto cartões tokenizados quanto dados brutos.
+    Cria um pagamento no Asaas para a empresa específica.
+    Suporta PIX e Cartão de Crédito.
     """
-
-    credentials = get_empresa_credentials(empresa_id)
     headers = await get_asaas_headers(empresa_id)
+    creds = await get_empresa_credentials(empresa_id)
+    use_sandbox = creds.get("use_sandbox", True)
+    base_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
+    callback = creds.get("webhook_pix")
 
-    # Define a URL correta
-    use_sandbox = credentials.get("use_sandbox", "true").lower() == "true"
-    asaas_api_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
-
-    # Webhook dinâmico por empresa
-    webhook_pix = credentials.get("webhook_pix")
-
+    # Monta payload conforme tipo
     if payment_type == "pix":
         payload = {
-            "customer": customer.get("id"),
-            "value": amount,
-            "billingType": "PIX",
-            "dueDate": customer.get("due_date"),
-            "description": f"Pagamento Pix {transaction_id}",
-            "externalReference": transaction_id,
-            "postalService": False,
-            "callbackUrl": webhook_pix
+            "customer":           customer.get("id"),
+            "value":              amount,
+            "billingType":        "PIX",
+            "dueDate":            customer.get("due_date"),
+            "description":        f"PIX {transaction_id}",
+            "externalReference":  transaction_id,
+            "postalService":      False,
+            "callbackUrl":        callback
         }
     elif payment_type == "credit_card":
-        installments = max(1, min(installments, 12))  # Garante que o número de parcelas está dentro do limite
-
+        installments = max(1, min(installments, 12))
+        common = {
+            "customer":          customer.get("id"),
+            "value":             amount,
+            "billingType":       "CREDIT_CARD",
+            "dueDate":           customer.get("due_date"),
+            "description":       f"Cartão {transaction_id}",
+            "externalReference": transaction_id,
+            "callbackUrl":       callback,
+            "installmentCount":  installments
+        }
         if card_token:
-            # Se o token do cartão foi fornecido, usa tokenização para pagamento
-            payload = {
-                "customer": customer.get("id"),
-                "value": amount,
-                "billingType": "CREDIT_CARD",
-                "dueDate": customer.get("due_date"),
-                "description": f"Pagamento Cartão {transaction_id}",
-                "externalReference": transaction_id,
-                "callbackUrl": webhook_pix,
-                "installmentCount": installments,
-                "creditCardToken": card_token
-            }
+            payload = {**common, "creditCardToken": card_token}
         else:
             if not card_data:
-                raise HTTPException(status_code=400, detail="Dados do cartão são obrigatórios para pagamentos com cartão de crédito.")
-
-            # Se não há token, envia os dados do cartão manualmente
+                raise HTTPException(status_code=400, detail="Dados do cartão obrigatórios.")
             payload = {
-                "customer": customer.get("id"),
-                "value": amount,
-                "billingType": "CREDIT_CARD",
-                "dueDate": customer.get("due_date"),
-                "description": f"Pagamento Cartão {transaction_id}",
-                "externalReference": transaction_id,
-                "callbackUrl": webhook_pix,
-                "installmentCount": installments,
+                **common,
                 "creditCard": {
-                    "holderName": card_data["cardholder_name"],
-                    "number": card_data["card_number"],
+                    "holderName":  card_data["cardholder_name"],
+                    "number":      card_data["card_number"],
                     "expiryMonth": card_data["expiration_month"],
-                    "expiryYear": card_data["expiration_year"],
-                    "ccv": card_data["security_code"]
+                    "expiryYear":  card_data["expiration_year"],
+                    "ccv":         card_data["security_code"]
                 },
                 "creditCardHolderInfo": {
-                    "name": card_data["cardholder_name"],
-                    "email": customer.get("email"),
-                    "cpfCnpj": customer.get("document"),
-                    "postalCode": customer.get("postal_code"),
+                    "name":      card_data["cardholder_name"],
+                    "email":     customer.get("email"),
+                    "cpfCnpj":   customer.get("document"),
+                    "postalCode":customer.get("postal_code"),
                     "addressNumber": customer.get("address_number"),
-                    "phone": customer.get("phone")
+                    "phone":       customer.get("phone")
                 }
             }
     else:
-        raise HTTPException(status_code=400, detail="Tipo de pagamento inválido")
+        raise HTTPException(status_code=400, detail="Tipo de pagamento inválido.")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        for attempt in range(retries):
+    # Tenta criar pagamento com retries
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        for attempt in range(1, retries + 1):
             try:
-                response = await client.post(asaas_api_url, json=payload, headers=headers)
-                response.raise_for_status()
-                return response.json()
-
+                resp = await client.post(base_url, json=payload, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
             except httpx.HTTPStatusError as e:
-                logger.error(f"Erro HTTP ao criar pagamento no Asaas (tentativa {attempt+1}): {e.response.status_code} - {e.response.text}")
+                logger.error(f"❌ HTTP {e.response.status_code} Asaas payment attempt {attempt}: {e.response.text}")
                 if e.response.status_code in {400, 402, 403}:
-                    raise HTTPException(status_code=e.response.status_code, detail="Erro ao processar pagamento no Asaas")
+                    raise HTTPException(status_code=e.response.status_code, detail="Erro no pagamento Asaas")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro conexão Asaas attempt {attempt}: {e}")
+            await asyncio.sleep(2)
 
-            except httpx.RequestError as e:
-                logger.warning(f"Erro de conexão ao criar pagamento no Asaas (tentativa {attempt+1}): {e}")
+    raise HTTPException(status_code=500, detail="Falha no pagamento Asaas após múltiplas tentativas")
 
-            await asyncio.sleep(2)  # Espera um pouco antes de tentar novamente
 
-    raise HTTPException(status_code=500, detail="Falha ao processar pagamento no Asaas após múltiplas tentativas")
-
-async def get_asaas_payment_status(empresa_id: str, transaction_id: str):
-    """Verifica o status de um pagamento no Asaas para a empresa específica."""
-    
+async def get_asaas_payment_status(empresa_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Verifica o status de um pagamento no Asaas usando externalReference.
+    """
     headers = await get_asaas_headers(empresa_id)
-    credentials = get_empresa_credentials(empresa_id)
-    use_sandbox = credentials.get("use_sandbox", "true").lower() == "true"
-    asaas_api_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
+    creds = await get_empresa_credentials(empresa_id)
+    use_sandbox = creds.get("use_sandbox", True)
+    base_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
+    url = f"{base_url}?externalReference={transaction_id}"
 
-    url = f"{asaas_api_url}?externalReference={transaction_id}"
-
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("data"):
-                return data["data"][0]
-            else:
-                logger.warning(f"Pagamento não encontrado para transaction_id: {transaction_id}")
-                return None
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            return data[0] if data else None
         except Exception as e:
-            logger.error(f"Erro ao buscar status do pagamento no Asaas: {str(e)}")
-            raise HTTPException(status_code=500, detail="Erro ao buscar status do pagamento no Asaas")
+            logger.error(f"❌ Erro ao buscar status Asaas: {e}")
+            raise HTTPException(status_code=500, detail="Erro ao buscar status Asaas")
+
+
+async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str, Any]:
+    """
+    Solicita estorno (refund) de um pagamento aprovado na Asaas.
+    POST /payments/{transaction_id}/refund
+    """
+    # Busca a API Key direto no Supabase, caso prefira
+    resp = (
+        await supabase
+        .table("empresas_config")
+        .select("asaas_api_key")
+        .eq("empresa_id", empresa_id)
+        .limit(1)
+        .execute()
+    )
+    config = resp.data[0] if resp.data else {}
+    api_key = config.get("asaas_api_key")
+    if not api_key:
+        logger.error(f"❌ Asaas API key não encontrada para refund empresa {empresa_id}")
+        raise HTTPException(status_code=400, detail="Asaas API key não configurada para refund.")
+
+    use_sandbox = (await get_empresa_credentials(empresa_id)).get("use_sandbox", True)
+    base_url = "https://sandbox.asaas.com/api/v3" if use_sandbox else "https://api.asaas.com/v3"
+    url = f"{base_url}/payments/{transaction_id}/refund"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json"
+    }
+
+    logger.info(f"🔄 Solicitando estorno Asaas: POST {url}")
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        try:
+            resp = await client.post(url, headers=headers)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP {e.response.status_code} refund Asaas: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="Erro no estorno Asaas")
+        except Exception as e:
+            logger.error(f"❌ Erro inesperado refund Asaas: {e}")
+            raise HTTPException(status_code=500, detail="Erro inesperado no estorno Asaas")
+
+    data = resp.json()
+    status = data.get("status", "").lower()
+    logger.info(f"✅ Refund Asaas para {transaction_id}: {status}")
+    return {"status": status, **data}
+
+
+__all__ = [
+    "tokenize_asaas_card",
+    "create_asaas_payment",
+    "get_asaas_payment_status",
+    "create_asaas_refund",
+]

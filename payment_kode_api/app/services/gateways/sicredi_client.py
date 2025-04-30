@@ -238,3 +238,48 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
 #     logger.debug(f"🔑 key.key md5: {get_md5(cert_data['key_path'])}")
 #     logger.debug(f"🔑 ca.pem   md5: {get_md5(cert_data['ca_path'])}")
 #     return cert_file, key_file, ca_file
+
+
+async def create_sicredi_pix_refund(
+    empresa_id: str,
+    txid: str,
+    valor: Optional[float] = None
+) -> Dict[str, Any]:
+    """
+    Solicita devolução (estorno) de um pix já cobrado no Sicredi.
+    Se `valor` não for informado, devolve o valor total da cobrança.
+    """
+    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
+
+    # 1) pega token
+    token = await get_sicredi_token_or_refresh(empresa_id)
+    creds = await get_empresa_credentials(empresa_id)
+    env  = creds.get("sicredi_env", "production").lower()
+    base = "https://api-h.pix.sicredi.com.br/api/v2" if env=="homologation" else "https://api-pix.sicredi.com.br/api/v2"
+    url  = f"{base}/cob/{txid}/devolucao"
+
+    # 2) monta headers e body
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    body: Dict[str, Any] = {}
+    if valor:
+        # precisa informar valor a devolver
+        body["valor"] = {"original": f"{valor:.2f}"}
+    # 3) SSLContext
+    certs = await load_certificates_from_bucket(empresa_id)
+    ssl_ctx = build_ssl_context_from_memory(
+        cert_pem=certs["cert_path"],
+        key_pem=certs["key_path"],
+        ca_pem=certs["ca_path"]
+    )
+
+    # 4) faz a chamada
+    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+        resp = await client.put(url, json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    # 5) retorna status da devolução (esperamos "DEVOLVIDA")
+    return {"status": data.get("status"), **data}

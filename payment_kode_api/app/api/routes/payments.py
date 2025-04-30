@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field, field_validator
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
 import httpx
@@ -8,6 +8,10 @@ import secrets
 from io import BytesIO
 import base64
 import qrcode
+import asyncio
+from datetime import datetime, timedelta, timezone
+from payment_kode_api.app.core.config import settings
+from payment_kode_api.app.database.supabase_client import supabase
 from payment_kode_api.app.database.database import (
     get_empresa_config,
     save_payment,
@@ -15,7 +19,9 @@ from payment_kode_api.app.database.database import (
     save_tokenized_card,
     get_payment_by_txid,
     update_payment_status_by_txid,
-    get_tokenized_card
+    get_tokenized_card,
+    get_sicredi_token_or_refresh,
+    update_payment_status
 )
 from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
 from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
@@ -29,6 +35,8 @@ from payment_kode_api.app.services.gateways.payment_payload_mapper import (
 from payment_kode_api.app.services import notify_user_webhook
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.security.auth import validate_access_token
+from payment_kode_api.app.core.config import settings
+
 
 router = APIRouter()
 
@@ -253,25 +261,26 @@ async def create_credit_card_payment(
 @router.post("/payment/pix")
 async def create_pix_payment(
     payment_data: PixPaymentRequest,
+    background_tasks: BackgroundTasks,
     empresa: dict = Depends(validate_access_token)
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
-    txid = payment_data.txid or uuid4().hex  # já é 32 hex chars
+    txid = payment_data.txid or uuid4().hex  # 32 chars hex
 
     # evita duplicação
     if await get_payment(transaction_id, empresa_id):
         return {"status": "already_processed", "transaction_id": transaction_id}
 
-    # salva o pending
+    # salva como pending
     await save_payment({
-        "empresa_id":    empresa_id,
+        "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
         "amount":         payment_data.amount,
-        "payment_type":  "pix",
-        "status":        "pending",
-        "webhook_url":   payment_data.webhook_url,
-        "txid":          txid
+        "payment_type":   "pix",
+        "status":         "pending",
+        "webhook_url":    payment_data.webhook_url,
+        "txid":           txid
     })
 
     # monta e envia ao Sicredi
@@ -280,8 +289,8 @@ async def create_pix_payment(
         logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid})")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
-        # usa sempre o copy‐and‐paste code como pix_link :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1}
-        pix_copy = resp["qr_code"]            # é o data["pixCopiaECola"]
+        # copy-and-paste code
+        pix_copy = resp["qr_code"]   # data["pixCopiaECola"]
         expires  = resp["expiration"]
 
         # gera imagem PNG e converte pra base64
@@ -291,10 +300,20 @@ async def create_pix_payment(
         b64 = base64.b64encode(buf.getvalue()).decode()
         qr_png = f"data:image/png;base64,{b64}"
 
+        # agenda polling para confirmar pagamento REAL e notificar externo
+        if payment_data.webhook_url:
+            background_tasks.add_task(
+                _poll_sicredi_status,
+                txid,
+                empresa_id,
+                transaction_id,
+                payment_data.webhook_url
+            )
+
         return {
             "status":          resp["status"].lower(),  # ex: "ativa"
             "transaction_id":  transaction_id,
-            "pix_link":        pix_copy,                # agora é o copy‐and‐paste
+            "pix_link":        pix_copy,                # copy-and-paste
             "expiration":      expires,
             "qr_code_base64":  qr_png                   # PNG em base64
         }
@@ -304,18 +323,70 @@ async def create_pix_payment(
 
         # fallback Asaas
         logger.warning(f"⚠️ Fallback Asaas txid={txid}")
-        asaas_payload = {"amount": float(payment_data.amount), "chave_pix": payment_data.chave_pix, "txid": txid}
-        resp = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
-        if resp.get("status") == "approved":
+        asaas_payload = {
+            "amount":     float(payment_data.amount),
+            "chave_pix":  payment_data.chave_pix,
+            "txid":       txid
+        }
+        resp2 = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
+        if resp2.get("status") == "approved":
             return {
-                "status":         resp["status"].lower(),
+                "status":         resp2["status"].lower(),
                 "transaction_id": transaction_id,
-                "pix_link":       resp.get("pixKey"),
-                "qr_code_base64": resp.get("qrCode"),         # se Asaas retornar já em base64
-                "expiration":     resp.get("expirationDateTime")
+                "pix_link":       resp2.get("pixKey"),
+                "qr_code_base64": resp2.get("qrCode"),         # já base64
+                "expiration":     resp2.get("expirationDateTime")
             }
 
         raise HTTPException(
             status_code=500,
             detail="Falha no pagamento via Sicredi e Asaas"
         )
+
+
+async def _poll_sicredi_status(
+    txid: str,
+    empresa_id: str,
+    transaction_id: str,
+    webhook_url: str
+):
+    """
+    Polling da cobrança no Sicredi até mudança de status:
+    - 5s de intervalo nos primeiros 2min
+    - 10s até 15min
+    """
+    start = datetime.now(timezone.utc)
+    deadline = start + timedelta(minutes=15)
+    interval = 5
+
+    async with httpx.AsyncClient(
+        verify=settings.SICREDI_SSL_CONTEXT,
+        timeout=10
+    ) as client:
+        while datetime.now(timezone.utc) < deadline:
+            # 1) atualiza token
+            token = await get_sicredi_token_or_refresh(empresa_id)
+            res = await client.get(
+                f"{settings.SICREDI_BASE_URL}/api/v3/cob/{txid}",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            res.raise_for_status()
+            data = res.json()
+            status = data.get("status", "").lower()
+
+            # 2) se saiu de ativa/pendente, notifica e quebra loop
+            if status not in {"ativa", "pendente"}:
+                await update_payment_status(transaction_id, empresa_id, status)
+                await notify_user_webhook(webhook_url, {
+                    "transaction_id": transaction_id,
+                    "status": status,
+                    "provedor": "sicredi",
+                    "payload": data
+                })
+                return
+
+            # 3) após 2min, aumenta intervalo
+            if datetime.now(timezone.utc) - start > timedelta(minutes=2):
+                interval = 10
+
+            await asyncio.sleep(interval)

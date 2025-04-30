@@ -1,5 +1,6 @@
 import logging
 import hashlib
+import ssl
 from typing import Dict, Any, Optional
 
 from ..database.supabase_storage import download_cert_file, ensure_folder_exists
@@ -92,3 +93,18 @@ async def load_certificates_from_bucket(empresa_id: str) -> Dict[str, bytes]:
             raise ValueError(f"❌ [{empresa_id}] Certificado obrigatório faltando: {required}")
 
     return certs
+
+def build_ssl_context_from_certs(certs: Dict[str, bytes]) -> ssl.SSLContext:
+    """
+    Cria um SSLContext mTLS a partir dos bytes dos certs carregados.
+    """
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    ctx.load_verify_locations(cadata=certs["ca_path"].decode())
+    # Para carregar a chave e o cert em memória precisamos gravá-los
+    # temporariamente no disco ou usar TemporaryFile:
+    import tempfile
+    with tempfile.NamedTemporaryFile() as certf, tempfile.NamedTemporaryFile() as keyf:
+        certf.write(certs["cert_path"]); certf.flush()
+        keyf.write(certs["key_path"]);   keyf.flush()
+        ctx.load_cert_chain(certfile=certf.name, keyfile=keyf.name)
+    return ctx
