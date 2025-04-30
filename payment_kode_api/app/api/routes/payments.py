@@ -37,7 +37,7 @@ from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.core.config import settings
 from ...services.config_service import load_certificates_from_bucket
-from ...services.config_service import build_ssl_context_from_certs
+from payment_kode_api.app.utilities.cert_utils import build_ssl_context_from_memory
 
 router = APIRouter()
 
@@ -269,11 +269,9 @@ async def create_pix_payment(
     transaction_id = str(payment_data.transaction_id or uuid4())
     txid = payment_data.txid or uuid4().hex  # 32 chars hex
 
-    # evita duplicação
     if await get_payment(transaction_id, empresa_id):
         return {"status": "already_processed", "transaction_id": transaction_id}
 
-    # salva como pending
     await save_payment({
         "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
@@ -284,24 +282,20 @@ async def create_pix_payment(
         "txid":           txid
     })
 
-    # monta e envia ao Sicredi
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
     try:
-        logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid})")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
-        # copy-and-paste code
-        pix_copy = resp["qr_code"]   # data["pixCopiaECola"]
+        pix_copy = resp["qr_code"]
         expires  = resp["expiration"]
 
-        # gera imagem PNG e converte pra base64
+        # gera PNG + Base64
         img = qrcode.make(pix_copy)
         buf = BytesIO()
         img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        qr_png = f"data:image/png;base64,{b64}"
+        qr_png = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
-        # agenda polling para confirmar pagamento REAL e notificar externo
+        # agenda polling em background
         if payment_data.webhook_url:
             background_tasks.add_task(
                 _poll_sicredi_status,
@@ -312,37 +306,31 @@ async def create_pix_payment(
             )
 
         return {
-            "status":          resp["status"].lower(),  # ex: "ativa"
-            "transaction_id":  transaction_id,
-            "pix_link":        pix_copy,                # copy-and-paste
-            "expiration":      expires,
-            "qr_code_base64":  qr_png                   # PNG em base64
+            "status":         resp["status"].lower(),
+            "transaction_id": transaction_id,
+            "pix_link":       pix_copy,
+            "expiration":     expires,
+            "qr_code_base64": qr_png
         }
 
     except Exception as e:
-        logger.error(f"❌ Erro Sicredi txid={txid}: {e!r}")
-
-        # fallback Asaas
-        logger.warning(f"⚠️ Fallback Asaas txid={txid}")
-        asaas_payload = {
-            "amount":     float(payment_data.amount),
-            "chave_pix":  payment_data.chave_pix,
-            "txid":       txid
-        }
-        resp2 = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
+        # fallback Asaas — assinatura: create_asaas_payment(empresa_id, amount, payment_type, transaction_id, customer, ...)
+        resp2 = await create_asaas_payment(
+            empresa_id=empresa_id,
+            amount=float(payment_data.amount),
+            payment_type="pix",
+            transaction_id=transaction_id,
+            customer={"id": settings.ASAAS_DEFAULT_CUSTOMER, "due_date": datetime.now(timezone.utc).date().isoformat()},
+        )
         if resp2.get("status") == "approved":
             return {
                 "status":         resp2["status"].lower(),
                 "transaction_id": transaction_id,
                 "pix_link":       resp2.get("pixKey"),
-                "qr_code_base64": resp2.get("qrCode"),         # já base64
+                "qr_code_base64": resp2.get("qrCode"),
                 "expiration":     resp2.get("expirationDateTime")
             }
-
-        raise HTTPException(
-            status_code=500,
-            detail="Falha no pagamento via Sicredi e Asaas"
-        )
+        raise HTTPException(500, "Falha no pagamento via Sicredi e Asaas")
 
 
 async def _poll_sicredi_status(
@@ -351,33 +339,21 @@ async def _poll_sicredi_status(
     transaction_id: str,
     webhook_url: str
 ):
-    """
-    Polling da cobrança no Sicredi até mudança de status:
-    - 5s de intervalo nos primeiros 2min
-    - 10s até 15min
-    """
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=15)
     interval = 5
 
-    # 1) carrega certificados da empresa e monta SSLContext
+    # monta SSLContext mTLS
     certs = await load_certificates_from_bucket(empresa_id)
-    ssl_ctx = build_ssl_context_from_certs(
+    ssl_ctx = build_ssl_context_from_memory(
         cert_pem=certs["cert_path"],
         key_pem=certs["key_path"],
         ca_pem=certs.get("ca_path")
     )
 
-    # 2) cria cliente HTTP com mTLS
-    async with httpx.AsyncClient(
-        verify=ssl_ctx,
-        timeout=10.0
-    ) as client:
+    async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
         while datetime.now(timezone.utc) < deadline:
-            # obtém (ou renova) token do Sicredi
             token = await get_sicredi_token_or_refresh(empresa_id)
-
-            # consulta status da cobrança
             res = await client.get(
                 f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}",
                 headers={"Authorization": f"Bearer {token}"}
@@ -386,7 +362,6 @@ async def _poll_sicredi_status(
             data = res.json()
             status = data.get("status", "").lower()
 
-            # se saiu de ativa/pendente, grava e notifica
             if status not in {"ativa", "pendente"}:
                 await update_payment_status(transaction_id, empresa_id, status)
                 await notify_user_webhook(webhook_url, {
@@ -397,7 +372,6 @@ async def _poll_sicredi_status(
                 })
                 return
 
-            # após 2min, aumenta intervalo para 10s
             if datetime.now(timezone.utc) - start > timedelta(minutes=2):
                 interval = 10
 
