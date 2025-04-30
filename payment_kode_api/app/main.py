@@ -1,13 +1,14 @@
 import os
 from dotenv import load_dotenv; load_dotenv()  # 🔹 Carrega variáveis do .env
 
-from fastapi import FastAPI, APIRouter, Response
+from fastapi import FastAPI, Response
 from payment_kode_api.app.api.routes import (
     payments_router,
     webhooks_router,
     empresas_router,
-    upload_certificados_router,
-    auth_gateway_router
+    upload_certificados_router,    # ✅ Novo roteador
+    auth_gateway_router,           # ✅ Novo roteador para tokens Sicredi
+    refunds_router                 # ✅ Novo roteador de estornos
 )
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.core.error_handlers import add_error_handlers
@@ -28,8 +29,9 @@ def create_app() -> FastAPI:
     app.include_router(payments_router, prefix="/payments", tags=["Pagamentos"])
     app.include_router(webhooks_router, prefix="/webhooks", tags=["Webhooks"])
     app.include_router(empresas_router, prefix="/empresas", tags=["Empresas"])
-    app.include_router(upload_certificados_router)
-    app.include_router(auth_gateway_router)
+    app.include_router(upload_certificados_router, tags=["Certificados"])      # Mantém sem prefixo adicional
+    app.include_router(auth_gateway_router, tags=["Autenticação"])            # Mantém sem prefixo adicional
+    app.include_router(refunds_router, prefix="/payments", tags=["Estornos"])  # Inclui rota de estorno
 
     # Handlers de erro
     add_error_handlers(app)
