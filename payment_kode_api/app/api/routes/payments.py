@@ -365,6 +365,7 @@ async def _poll_sicredi_status(
     deadline = start + timedelta(minutes=15)
     interval = 5
 
+    # carrega certs e monta SSLContext
     certs = await load_certificates_from_bucket(empresa_id)
     ssl_ctx = build_ssl_context_from_memory(
         cert_pem=certs["cert_path"],
@@ -372,6 +373,13 @@ async def _poll_sicredi_status(
         ca_pem=certs.get("ca_path")
     )
     logger.debug(f"🔐 [_poll_sicredi_status] SSL context pronto para empresa {empresa_id}")
+
+    # mapeamento de status Sicredi → status internos
+    status_map = {
+        "concluida": "approved",
+        "removida_pelo_usuario_recebedor": "cancelled",
+        # Se precisar de mais mapeamentos, adicione aqui
+    }
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
         while datetime.now(timezone.utc) < deadline:
@@ -381,7 +389,7 @@ async def _poll_sicredi_status(
             token = await get_sicredi_token_or_refresh(empresa_id)
             logger.debug(f"🔑 [_poll] token (prefixo): {token[:10]}...")
 
-            # usa v3 e TXID em uppercase
+            # consulta v3 usando txid (já em uppercase)
             url = f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}"
             logger.debug(f"📡 [_poll] GET {url}")
             res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
@@ -395,15 +403,18 @@ async def _poll_sicredi_status(
             res.raise_for_status()
 
             data = res.json()
-            status = data.get("status", "").lower()
-            logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {status}")
+            sicredi_status = data.get("status", "").lower()
+            logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {sicredi_status}")
 
-            if status not in {"ativa", "pendente"}:
-                logger.info(f"✅ [_poll] status final detectado ({status}), atualizando DB e notificando")
-                await update_payment_status(transaction_id, empresa_id, status)
+            # se for final (não ativa nem pendente), aplica o mapeamento e encerra
+            if sicredi_status not in {"ativa", "pendente"}:
+                mapped_status = status_map.get(sicredi_status, sicredi_status)
+                logger.info(f"✅ [_poll] status final detectado ({sicredi_status}), mapeado para ({mapped_status}), atualizando DB e notificando")
+
+                await update_payment_status(transaction_id, empresa_id, mapped_status)
                 await notify_user_webhook(webhook_url, {
                     "transaction_id": transaction_id,
-                    "status": status,
+                    "status": mapped_status,
                     "provedor": "sicredi",
                     "payload": data
                 })
