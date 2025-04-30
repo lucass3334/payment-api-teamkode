@@ -269,12 +269,14 @@ async def create_pix_payment(
     transaction_id = str(payment_data.transaction_id or uuid4())
     txid = payment_data.txid or uuid4().hex
 
-    logger.info(f"🔖 Iniciando create_pix_payment: empresa={empresa_id} txid={txid} tx={transaction_id}")
+    logger.info(f"🔖 [create_pix_payment] iniciar: empresa={empresa_id} txid={txid} transaction_id={transaction_id}")
 
+    # evita duplicação
     if await get_payment(transaction_id, empresa_id):
-        logger.warning(f"⚠️ Pagamento já processado: transaction_id={transaction_id}")
+        logger.warning(f"⚠️ [create_pix_payment] já processado: transaction_id={transaction_id}")
         return {"status": "already_processed", "transaction_id": transaction_id}
 
+    # salva como pending
     await save_payment({
         "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
@@ -284,24 +286,27 @@ async def create_pix_payment(
         "webhook_url":    payment_data.webhook_url,
         "txid":           txid
     })
-    logger.debug(f"💾 Payment pending salvo no banco: {transaction_id}")
+    logger.debug(f"💾 [create_pix_payment] payment registrado como pending no DB")
 
+    # payload pra Sicredi
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
     try:
-        logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid}) payload={sicredi_payload}")
+        logger.info(f"🚀 [create_pix_payment] criando cobrança Sicredi (txid={txid}) payload={sicredi_payload!r}")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
-        logger.debug(f"✅ Sicredi retornou: {resp}")
+        logger.debug(f"✅ [create_pix_payment] Sicredi respondeu: {resp!r}")
 
         pix_copy = resp["qr_code"]
         expires  = resp["expiration"]
 
+        # gera PNG + base64
         img = qrcode.make(pix_copy)
         buf = BytesIO()
         img.save(buf, format="PNG")
         qr_png = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
+        # agenda polling
         if payment_data.webhook_url:
-            logger.info(f"🏷️ Agendando polling para txid={txid}")
+            logger.info(f"🏷️ [create_pix_payment] agendando polling para txid={txid}")
             background_tasks.add_task(
                 _poll_sicredi_status,
                 txid,
@@ -319,9 +324,10 @@ async def create_pix_payment(
         }
 
     except Exception as e:
-        logger.error(f"❌ Erro Sicredi txid={txid}: {e!r}")
+        logger.error(f"❌ [create_pix_payment] erro Sicredi txid={txid}: {e!r}")
 
-        logger.warning(f"⚠️ Fallback Asaas para transaction_id={transaction_id}")
+        # fallback Asaas
+        logger.warning(f"⚠️ [create_pix_payment] fallback Asaas txid={txid}")
         resp2 = await create_asaas_payment(
             empresa_id=empresa_id,
             amount=float(payment_data.amount),
@@ -332,9 +338,9 @@ async def create_pix_payment(
                 "due_date": datetime.now(timezone.utc).date().isoformat()
             },
         )
-        logger.debug(f"💬 Asaas response: {resp2}")
+        logger.debug(f"💬 [create_pix_payment] Asaas response: {resp2!r}")
         if resp2.get("status") == "approved":
-            logger.info(f"✅ Asaas approved for transaction_id={transaction_id}")
+            logger.info(f"✅ [create_pix_payment] Asaas approved for {transaction_id}")
             return {
                 "status":         resp2["status"].lower(),
                 "transaction_id": transaction_id,
@@ -343,7 +349,7 @@ async def create_pix_payment(
                 "expiration":     resp2.get("expirationDateTime")
             }
 
-        logger.critical(f"❌ Falha definitiva no pagamento Pix for {transaction_id}")
+        logger.critical(f"❌ [create_pix_payment] falha definitiva {transaction_id}")
         raise HTTPException(500, "Falha no pagamento via Sicredi e Asaas")
 
 
@@ -353,7 +359,7 @@ async def _poll_sicredi_status(
     transaction_id: str,
     webhook_url: str
 ):
-    logger.info(f"🔄 Iniciando polling Sicredi status: txid={txid} transaction_id={transaction_id}")
+    logger.info(f"🔄 [_poll_sicredi_status] iniciar: txid={txid} transaction_id={transaction_id}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=15)
     interval = 5
@@ -364,39 +370,34 @@ async def _poll_sicredi_status(
         key_pem=certs["key_path"],
         ca_pem=certs.get("ca_path")
     )
-    logger.debug(f"🔐 SSL context montado para empresa {empresa_id}")
+    logger.debug(f"🔐 [_poll_sicredi_status] SSL context pronto para empresa {empresa_id}")
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
-        while True:
-            now = datetime.now(timezone.utc)
-            if now >= deadline:
-                logger.warning(f"⌛ Polling deadline alcançada para txid={txid}")
-                break
-
-            elapsed = (now - start).total_seconds()
-            logger.debug(f"⏱️ Poll loop @ {elapsed:.1f}s, intervalo={interval}s")
+        while datetime.now(timezone.utc) < deadline:
+            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            logger.debug(f"⏱️ [_poll] elapsed={elapsed:.1f}s, interval={interval}s")
 
             token = await get_sicredi_token_or_refresh(empresa_id)
-            logger.debug(f"🔐 Token renovado para polling: {token[:10]}...")
+            logger.debug(f"🔑 [_poll] token (prefixo): {token[:10]}...")
 
-            url = f"{settings.SICREDI_API_URL}/api/v2/cob/{txid}"
-            logger.debug(f"📡 GET {url}")
+            url = f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}"
+            logger.debug(f"📡 [_poll] GET {url}")
             res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
 
             if res.status_code == 404:
-                logger.info(f"❓ Cobrança não encontrada ainda (404), txid={txid}")
+                logger.info(f"❓ [_poll] cobrança não encontrada (404), aguardando próximo loop")
                 await asyncio.sleep(interval)
                 continue
 
-            logger.debug(f"📥 Resposta HTTP {res.status_code}: {res.text}")
+            logger.debug(f"📥 [_poll] HTTP {res.status_code} → {res.text}")
             res.raise_for_status()
 
             data = res.json()
             status = data.get("status", "").lower()
-            logger.info(f"🔍 Status Sicredi para txid={txid}: {status}")
+            logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {status}")
 
             if status not in {"ativa", "pendente"}:
-                logger.info(f"✅ Status final detectado: {status}, atualizando DB e notificando")
+                logger.info(f"✅ [_poll] status final detectado ({status}), atualizando DB e notificando")
                 await update_payment_status(transaction_id, empresa_id, status)
                 await notify_user_webhook(webhook_url, {
                     "transaction_id": transaction_id,
@@ -406,9 +407,11 @@ async def _poll_sicredi_status(
                 })
                 return
 
+            # após 2min, aumento o intervalo
             if elapsed > 120:
                 interval = 10
 
             await asyncio.sleep(interval)
 
-    logger.error(f"❌ Polling terminou sem conclusão para txid={txid}")
+    logger.error(f"❌ [_poll] deadline atingida sem status final txid={txid}")
+
