@@ -267,9 +267,12 @@ async def create_pix_payment(
 ):
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
-    txid = payment_data.txid or uuid4().hex  # 32 chars hex
+    txid = payment_data.txid or uuid4().hex
+
+    logger.info(f"🔖 Iniciando create_pix_payment: empresa={empresa_id} txid={txid} tx={transaction_id}")
 
     if await get_payment(transaction_id, empresa_id):
+        logger.warning(f"⚠️ Pagamento já processado: transaction_id={transaction_id}")
         return {"status": "already_processed", "transaction_id": transaction_id}
 
     await save_payment({
@@ -281,23 +284,24 @@ async def create_pix_payment(
         "webhook_url":    payment_data.webhook_url,
         "txid":           txid
     })
+    logger.debug(f"💾 Payment pending salvo no banco: {transaction_id}")
 
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
     try:
-        logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid})")
+        logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid}) payload={sicredi_payload}")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
+        logger.debug(f"✅ Sicredi retornou: {resp}")
 
         pix_copy = resp["qr_code"]
         expires  = resp["expiration"]
 
-        # gera PNG + Base64
         img = qrcode.make(pix_copy)
         buf = BytesIO()
         img.save(buf, format="PNG")
         qr_png = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
-        # agenda polling em background
         if payment_data.webhook_url:
+            logger.info(f"🏷️ Agendando polling para txid={txid}")
             background_tasks.add_task(
                 _poll_sicredi_status,
                 txid,
@@ -317,8 +321,7 @@ async def create_pix_payment(
     except Exception as e:
         logger.error(f"❌ Erro Sicredi txid={txid}: {e!r}")
 
-        # fallback Asaas — assinatura atualizada:
-        # create_asaas_payment(empresa_id, amount, payment_type, transaction_id, customer, ...)
+        logger.warning(f"⚠️ Fallback Asaas para transaction_id={transaction_id}")
         resp2 = await create_asaas_payment(
             empresa_id=empresa_id,
             amount=float(payment_data.amount),
@@ -329,7 +332,9 @@ async def create_pix_payment(
                 "due_date": datetime.now(timezone.utc).date().isoformat()
             },
         )
+        logger.debug(f"💬 Asaas response: {resp2}")
         if resp2.get("status") == "approved":
+            logger.info(f"✅ Asaas approved for transaction_id={transaction_id}")
             return {
                 "status":         resp2["status"].lower(),
                 "transaction_id": transaction_id,
@@ -338,6 +343,7 @@ async def create_pix_payment(
                 "expiration":     resp2.get("expirationDateTime")
             }
 
+        logger.critical(f"❌ Falha definitiva no pagamento Pix for {transaction_id}")
         raise HTTPException(500, "Falha no pagamento via Sicredi e Asaas")
 
 
@@ -347,37 +353,50 @@ async def _poll_sicredi_status(
     transaction_id: str,
     webhook_url: str
 ):
+    logger.info(f"🔄 Iniciando polling Sicredi status: txid={txid} transaction_id={transaction_id}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=15)
     interval = 5
 
-    # monta SSLContext mTLS
     certs = await load_certificates_from_bucket(empresa_id)
     ssl_ctx = build_ssl_context_from_memory(
         cert_pem=certs["cert_path"],
         key_pem=certs["key_path"],
         ca_pem=certs.get("ca_path")
     )
+    logger.debug(f"🔐 SSL context montado para empresa {empresa_id}")
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
-        while datetime.now(timezone.utc) < deadline:
-            token = await get_sicredi_token_or_refresh(empresa_id)
+        while True:
+            now = datetime.now(timezone.utc)
+            if now >= deadline:
+                logger.warning(f"⌛ Polling deadline alcançada para txid={txid}")
+                break
 
-            # aqui mudamos de /api/v3 para /api/v2
-            res = await client.get(
-                f"{settings.SICREDI_API_URL}/api/v2/cob/{txid}",
-                headers={"Authorization": f"Bearer {token}"}
-            )
-            # se ainda não existir (404), simplesmente aguardamos o próximo loop
+            elapsed = (now - start).total_seconds()
+            logger.debug(f"⏱️ Poll loop @ {elapsed:.1f}s, intervalo={interval}s")
+
+            token = await get_sicredi_token_or_refresh(empresa_id)
+            logger.debug(f"🔐 Token renovado para polling: {token[:10]}...")
+
+            url = f"{settings.SICREDI_API_URL}/api/v2/cob/{txid}"
+            logger.debug(f"📡 GET {url}")
+            res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+
             if res.status_code == 404:
+                logger.info(f"❓ Cobrança não encontrada ainda (404), txid={txid}")
                 await asyncio.sleep(interval)
                 continue
 
+            logger.debug(f"📥 Resposta HTTP {res.status_code}: {res.text}")
             res.raise_for_status()
+
             data = res.json()
             status = data.get("status", "").lower()
+            logger.info(f"🔍 Status Sicredi para txid={txid}: {status}")
 
             if status not in {"ativa", "pendente"}:
+                logger.info(f"✅ Status final detectado: {status}, atualizando DB e notificando")
                 await update_payment_status(transaction_id, empresa_id, status)
                 await notify_user_webhook(webhook_url, {
                     "transaction_id": transaction_id,
@@ -387,7 +406,9 @@ async def _poll_sicredi_status(
                 })
                 return
 
-            if datetime.now(timezone.utc) - start > timedelta(minutes=2):
+            if elapsed > 120:
                 interval = 10
 
             await asyncio.sleep(interval)
+
+    logger.error(f"❌ Polling terminou sem conclusão para txid={txid}")
