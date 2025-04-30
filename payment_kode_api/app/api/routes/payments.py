@@ -36,7 +36,8 @@ from payment_kode_api.app.services import notify_user_webhook
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.core.config import settings
-
+from ...services.config_service import load_certificates_from_bucket
+from ...services.config_service import build_ssl_context_from_certs
 
 router = APIRouter()
 
@@ -359,22 +360,33 @@ async def _poll_sicredi_status(
     deadline = start + timedelta(minutes=15)
     interval = 5
 
+    # 1) carrega certificados da empresa e monta SSLContext
+    certs = await load_certificates_from_bucket(empresa_id)
+    ssl_ctx = build_ssl_context_from_certs(
+        cert_pem=certs["cert_path"],
+        key_pem=certs["key_path"],
+        ca_pem=certs.get("ca_path")
+    )
+
+    # 2) cria cliente HTTP com mTLS
     async with httpx.AsyncClient(
-        verify=settings.SICREDI_SSL_CONTEXT,
-        timeout=10
+        verify=ssl_ctx,
+        timeout=10.0
     ) as client:
         while datetime.now(timezone.utc) < deadline:
-            # 1) atualiza token
+            # obtém (ou renova) token do Sicredi
             token = await get_sicredi_token_or_refresh(empresa_id)
+
+            # consulta status da cobrança
             res = await client.get(
-                f"{settings.SICREDI_BASE_URL}/api/v3/cob/{txid}",
+                f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}",
                 headers={"Authorization": f"Bearer {token}"}
             )
             res.raise_for_status()
             data = res.json()
             status = data.get("status", "").lower()
 
-            # 2) se saiu de ativa/pendente, notifica e quebra loop
+            # se saiu de ativa/pendente, grava e notifica
             if status not in {"ativa", "pendente"}:
                 await update_payment_status(transaction_id, empresa_id, status)
                 await notify_user_webhook(webhook_url, {
@@ -385,7 +397,7 @@ async def _poll_sicredi_status(
                 })
                 return
 
-            # 3) após 2min, aumenta intervalo
+            # após 2min, aumenta intervalo para 10s
             if datetime.now(timezone.utc) - start > timedelta(minutes=2):
                 interval = 10
 
