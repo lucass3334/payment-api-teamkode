@@ -284,6 +284,7 @@ async def create_pix_payment(
 
     sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
     try:
+        logger.info(f"🚀 Criando cobrança Pix Sicredi (txid={txid})")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
 
         pix_copy = resp["qr_code"]
@@ -314,13 +315,19 @@ async def create_pix_payment(
         }
 
     except Exception as e:
-        # fallback Asaas — assinatura: create_asaas_payment(empresa_id, amount, payment_type, transaction_id, customer, ...)
+        logger.error(f"❌ Erro Sicredi txid={txid}: {e!r}")
+
+        # fallback Asaas — assinatura atualizada:
+        # create_asaas_payment(empresa_id, amount, payment_type, transaction_id, customer, ...)
         resp2 = await create_asaas_payment(
             empresa_id=empresa_id,
             amount=float(payment_data.amount),
             payment_type="pix",
             transaction_id=transaction_id,
-            customer={"id": settings.ASAAS_DEFAULT_CUSTOMER, "due_date": datetime.now(timezone.utc).date().isoformat()},
+            customer={
+                "id": settings.ASAAS_DEFAULT_CUSTOMER,
+                "due_date": datetime.now(timezone.utc).date().isoformat()
+            },
         )
         if resp2.get("status") == "approved":
             return {
@@ -330,6 +337,7 @@ async def create_pix_payment(
                 "qr_code_base64": resp2.get("qrCode"),
                 "expiration":     resp2.get("expirationDateTime")
             }
+
         raise HTTPException(500, "Falha no pagamento via Sicredi e Asaas")
 
 
@@ -354,10 +362,17 @@ async def _poll_sicredi_status(
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
         while datetime.now(timezone.utc) < deadline:
             token = await get_sicredi_token_or_refresh(empresa_id)
+
+            # aqui mudamos de /api/v3 para /api/v2
             res = await client.get(
-                f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}",
+                f"{settings.SICREDI_API_URL}/api/v2/cob/{txid}",
                 headers={"Authorization": f"Bearer {token}"}
             )
+            # se ainda não existir (404), simplesmente aguardamos o próximo loop
+            if res.status_code == 404:
+                await asyncio.sleep(interval)
+                continue
+
             res.raise_for_status()
             data = res.json()
             status = data.get("status", "").lower()
