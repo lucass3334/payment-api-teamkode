@@ -377,7 +377,7 @@ async def _poll_sicredi_status(
     # mapeamento de status Sicredi → status internos
     status_map = {
         "concluida": "approved",
-        "removida_pelo_usuario_recebedor": "cancelled",
+        "removida_pelo_usuario_recebedor": "canceled",
         # Se precisar de mais mapeamentos, adicione aqui
     }
 

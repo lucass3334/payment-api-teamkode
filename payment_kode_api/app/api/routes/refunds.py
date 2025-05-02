@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, Optional
 from uuid import UUID
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from loguru import logger
@@ -38,6 +39,12 @@ async def refund_pix(
         logger.warning(f"❌ [refund_pix] pagamento não encontrado: {tx_id}")
         raise HTTPException(404, "Pagamento não encontrado")
 
+    # 1.1) Verifica prazo de estorno: máximo de 7 dias após o pagamento
+    pagamento_ts = datetime.fromisoformat(payment["created_at"])
+    if datetime.now(timezone.utc) - pagamento_ts > timedelta(days=7):
+        logger.error(f"❌ [refund_pix] prazo de estorno expirado para {tx_id}")
+        raise HTTPException(400, "Prazo de estorno expirado: máximo de 7 dias após pagamento")
+
     txid = payment.get("txid")
     if not txid:
         logger.error(f"❌ [refund_pix] txid não configurado: {tx_id}")
@@ -72,7 +79,7 @@ async def refund_pix(
                     return {"status": new_status, "transaction_id": tx_id}
             except HTTPException as he:
                 if he.status_code == 404:
-                    # se cobrança não existe, não tenta fallback
+                    # Cobrança não existe no Sicredi → aborta sem fallback
                     raise
                 logger.error(f"❌ [refund_pix] erro Sicredi: {he.detail}")
             except Exception as e:

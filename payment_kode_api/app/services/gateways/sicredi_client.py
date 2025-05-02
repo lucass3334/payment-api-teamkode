@@ -103,7 +103,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     credentials = await get_empresa_credentials(empresa_id)
     env = credentials.get("sicredi_env", "production").lower()
     base_url = (
-        "https://api-h.pix.sicredi.com.br/api/v2"
+        "https://api-h.pix.sicredi.com.br/api/v2"  # homologação
         if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
@@ -163,12 +163,17 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     # 7) Registra (ou confirma) o webhook no Sicredi
     await register_sicredi_webhook(empresa_id, payload["chave"])
 
-    # 8) Retorna o resultado ao chamador
+    # 8) Retorna o resultado ao chamador, incluindo prazo de estorno (7 dias)
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    refund_deadline = (now + timedelta(days=7)).isoformat()
+
     return {
-        "qr_code": data.get("pixCopiaECola"),
-        "pix_link": data.get("location"),
-        "status": data.get("status"),
-        "expiration": data["calendario"]["expiracao"]
+        "qr_code":         data.get("pixCopiaECola"),
+        "pix_link":        data.get("location"),
+        "status":          data.get("status"),
+        "expiration":      data["calendario"]["expiracao"],
+        "refund_deadline": refund_deadline
     }
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
     """
@@ -252,7 +257,7 @@ async def create_sicredi_pix_refund(
     """
     logger.info(f"🔄 [create_sicredi_pix_refund] iniciar: empresa={empresa_id} txid={txid} valor={valor}")
 
-    # 1) Token
+    # 1) Token + validação
     token = await get_sicredi_token_or_refresh(empresa_id)
     if not token:
         logger.error("❌ Token Sicredi inválido ou expirado")
@@ -267,13 +272,11 @@ async def create_sicredi_pix_refund(
         else "https://api-pix.sicredi.com.br/api/v2"
     )
     url = f"{base}/cob/{txid}/devolucao"
-    logger.debug(f"📡 [create_sicredi_pix_refund] URL: {url}")
 
-    # 3) Monta body
+    # 3) Body opcional
     body: Dict[str, Any] = {}
     if valor is not None:
         body["valor"] = {"original": f"{valor:.2f}"}
-    logger.debug(f"📑 [create_sicredi_pix_refund] body: {body}")
 
     # 4) SSLContext mTLS
     certs = await load_certificates_from_bucket(empresa_id)
@@ -282,28 +285,27 @@ async def create_sicredi_pix_refund(
         key_pem=certs["key_path"],
         ca_pem=certs.get("ca_path")
     )
-    logger.debug("🔐 [create_sicredi_pix_refund] SSL context pronto")
 
-    # 5) Chamada PUT
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+    # 5) Chamada
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
         try:
             resp = await client.put(url, json=body, headers=headers)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            logger.error(f"❌ [create_sicredi_pix_refund] HTTP {e.response.status_code}: {e.response.text}")
-            if e.response.status_code == 404:
-                # Cobrança não encontrada
+            code = e.response.status_code
+            text = e.response.text
+            logger.error(f"❌ [create_sicredi_pix_refund] HTTP {code}: {text}")
+            if code == 404:
                 raise HTTPException(status_code=404, detail="Cobrança não encontrada no Sicredi")
-            raise HTTPException(
-                status_code=e.response.status_code,
-                detail=f"Erro no gateway Sicredi: {e.response.text}"
-            ) from e
+            if code in (400, 409):
+                # prazo de 7 dias expirado
+                raise HTTPException(
+                    status_code=400,
+                    detail="Prazo de estorno expirado (apenas 7 dias após a cobrança)"
+                )
+            raise HTTPException(status_code=code, detail=f"Erro no gateway Sicredi: {text}") from e
 
     data = resp.json()
     logger.info(f"✅ [create_sicredi_pix_refund] resposta Sicredi: status={data.get('status')}")
-
     return data
