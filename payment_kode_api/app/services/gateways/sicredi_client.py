@@ -96,7 +96,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     Caso contrário, cria cobrança imediata via PUT /cob/{txid}.
     """
     # quebrou ciclo de import
-    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh, get_empresa_credentials
+    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh, get_empresa_config
     from payment_kode_api.app.services.gateways.sicredi_client import register_sicredi_webhook
 
     # 1) Token Sicredi
@@ -105,7 +105,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado.")
 
     # 2) URL base (prod ou homolog)
-    credentials = await get_empresa_credentials(empresa_id)
+    credentials = await get_empresa_config(empresa_id)
     env = credentials.get("sicredi_env", "production").lower()
     base_url = (
         "https://api-h.pix.sicredi.com.br/api/v2" if env == "homologation"
@@ -189,6 +189,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
         result["expiration"] = data["calendario"].get("expiracao")
 
     return result
+
 
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:

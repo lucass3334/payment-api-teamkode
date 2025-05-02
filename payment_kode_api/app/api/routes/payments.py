@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
+from datetime import date
 import httpx
 import secrets
 from io import BytesIO
@@ -63,6 +64,7 @@ class PixPaymentRequest(BaseModel):
     txid: Optional[str] = None
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
+    due_date: Optional[date] = None  # ✅ Faltava isso
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -290,7 +292,12 @@ async def create_pix_payment(
     logger.debug(f"💾 [create_pix_payment] payment registrado como pending no DB")
 
     # payload pra Sicredi
-    sicredi_payload = map_to_sicredi_payload({**payment_data.dict(), "txid": txid})
+    sicredi_payload = map_to_sicredi_payload({
+    **payment_data.dict(exclude_unset=False),
+    "txid": txid,
+    "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
+})
+    logger.debug(f"📦 [create_pix_payment] payload Sicredi: {sicredi_payload!r}")
     try:
         logger.info(f"🚀 [create_pix_payment] criando cobrança Sicredi (txid={txid}) payload={sicredi_payload!r}")
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
