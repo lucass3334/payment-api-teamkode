@@ -43,7 +43,7 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
         "Authorization": f"Basic {auth_header}",
         "Content-Type": "application/json"
     }
-    full_url = f"{auth_url}?grant_type=client_credentials&scope=cob.read%20cob.write%20pix.read"
+    full_url = f"{auth_url}?grant_type=client_credentials&scope=cob.read%20cob.write%20pix.read%20pix.write"
 
     certs = await load_certificates_from_bucket(empresa_id)
     try:
