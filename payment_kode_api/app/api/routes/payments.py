@@ -296,11 +296,19 @@ async def create_pix_payment(
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
         logger.debug(f"✅ [create_pix_payment] Sicredi respondeu: {resp!r}")
 
-        pix_copy = resp["qr_code"]
-        expires  = resp["expiration"]
+        # extrai sempre o QR-code "pixCopiaECola"
+        qr = resp["qr_code"]
+        # o link de pagamento (se quiser expor)
+        link = resp["pix_link"]
+        # data de vencimento (quando agendada) ou None
+        due_date = resp.get("due_date")
+        # prazo limite para estorno
+        refund_deadline = resp["refund_deadline"]
+        # em cobrança imediata vem expiration
+        expiration = resp.get("expiration")
 
         # gera PNG + base64
-        img = qrcode.make(pix_copy)
+        img = qrcode.make(qr)
         buf = BytesIO()
         img.save(buf, format="PNG")
         qr_png = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
@@ -316,13 +324,20 @@ async def create_pix_payment(
                 payment_data.webhook_url
             )
 
-        return {
-            "status":         resp["status"].lower(),
-            "transaction_id": transaction_id,
-            "pix_link":       pix_copy,
-            "expiration":     expires,
-            "qr_code_base64": qr_png
+        # monta o retorno
+        result = {
+            "status":           resp["status"].lower(),
+            "transaction_id":   transaction_id,
+            "pix_link":         link,
+            "qr_code_base64":   qr_png,
+            "refund_deadline":  refund_deadline
         }
+        if expiration is not None:
+            result["expiration"] = expiration
+        if due_date:
+            result["due_date"] = due_date
+
+        return result
 
     except Exception as e:
         logger.error(f"❌ [create_pix_payment] erro Sicredi txid={txid}: {e!r}")

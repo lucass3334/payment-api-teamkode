@@ -7,6 +7,8 @@ import asyncio
 from fastapi import HTTPException
 from typing import Any, Dict, Optional
 import re
+from payment_kode_api.app.database.database import get_payment
+from datetime import datetime, timezone, timedelta
 
 from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
 
@@ -89,39 +91,46 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
 
 async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[str, Any]:
     """
-    Cria ou altera uma cobrança Pix imediata no Sicredi usando PUT /cob/{txid}.
+    Cria ou altera uma cobrança Pix no Sicredi.
+    Se `due_date` for fornecido, cria cobrança com vencimento via PUT /cobv/{txid}.
+    Caso contrário, cria cobrança imediata via PUT /cob/{txid}.
     """
-    # Import dinâmico para quebrar ciclo de importação
-    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
+    # quebrou ciclo de import
+    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh, get_empresa_credentials
+    from payment_kode_api.app.services.gateways.sicredi_client import register_sicredi_webhook
 
-    # 1) Obtém (ou renova) o token Sicredi
+    # 1) Token Sicredi
     token = await get_sicredi_token_or_refresh(empresa_id)
     if not token:
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado.")
 
-    # 2) Carrega credenciais e define URL base
+    # 2) URL base (prod ou homolog)
     credentials = await get_empresa_credentials(empresa_id)
     env = credentials.get("sicredi_env", "production").lower()
     base_url = (
-        "https://api-h.pix.sicredi.com.br/api/v2"  # homologação
-        if env == "homologation"
+        "https://api-h.pix.sicredi.com.br/api/v2" if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    # 3) Sanitiza o txid para atender ao schema do Bacen (até 35 chars, alfanumérico)
+    # 3) Sanitiza txid
     raw_txid = payload.get("txid", "")
     txid = re.sub(r'[^A-Za-z0-9]', '', raw_txid).upper()[:35]
     if not txid:
         raise HTTPException(status_code=400, detail="txid inválido após sanitização.")
 
-    # 4) Monta o corpo da requisição (sem repetir o txid, que já vai na URL)
+    # 4) Define tipo de cobrança pelo presence de due_date
+    is_scheduled = "due_date" in payload
+    if is_scheduled:
+        body_calendario = {
+            "dataDeVencimento": payload["due_date"],
+            "validadeAposVencimento": 7
+        }
+    else:
+        body_calendario = {"expiracao": 900}
+
+    # 5) Monta body
     body: Dict[str, Any] = {
-        "calendario": {"expiracao": 900},
+        "calendario": body_calendario,
         "chave": payload["chave"],
         "valor": {"original": payload["valor"]["original"]},
     }
@@ -130,7 +139,7 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    # 5) Carrega certificados em memória e monta SSLContext
+    # 6) SSLContext mTLS
     certs = await load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
@@ -142,14 +151,21 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
         logger.error(f"❌ Erro ao montar SSLContext (cobrança): {e}")
         raise HTTPException(status_code=500, detail="Erro com certificados da empresa.")
 
-    # 6) Envia o PUT e faz logging detalhado
-    endpoint = f"{base_url}/cob/{txid}"
-    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
-        # Log antes de enviar
-        logger.info(f"📤 Enviando Pix para Sicredi: PUT {endpoint} – body: {body}")
+    # 7) Escolhe endpoint conforme tipo
+    endpoint = f"{base_url}/{'cobv' if is_scheduled else 'cob'}/{txid}"
 
+    # 8) Envia requisição
+    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+        logger.info(f"📤 Enviando Pix para Sicredi: PUT {endpoint} – body: {body}")
         try:
-            resp = await client.put(endpoint, json=body, headers=headers)
+            resp = await client.put(
+                endpoint,
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                }
+            )
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ Sicredi retornou HTTP {e.response.status_code}: {e.response.text}")
@@ -157,24 +173,29 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
                 status_code=e.response.status_code,
                 detail=f"Erro no gateway Sicredi: {e.response.text}"
             ) from e
-
         data = resp.json()
 
-    # 7) Registra (ou confirma) o webhook no Sicredi
+    # 9) (Re)registra webhook
     await register_sicredi_webhook(empresa_id, payload["chave"])
 
-    # 8) Retorna o resultado ao chamador, incluindo prazo de estorno (7 dias)
-    from datetime import datetime, timezone, timedelta
+    # 10) Calcula prazo de estorno (7 dias a partir de agora)
     now = datetime.now(timezone.utc)
     refund_deadline = (now + timedelta(days=7)).isoformat()
 
-    return {
-        "qr_code":         data.get("pixCopiaECola"),
-        "pix_link":        data.get("location"),
-        "status":          data.get("status"),
-        "expiration":      data["calendario"]["expiracao"],
+    # 11) Prepara retorno
+    result: Dict[str, Any] = {
+        "qr_code": data.get("pixCopiaECola"),
+        "pix_link": data.get("location"),
+        "status": data.get("status"),
         "refund_deadline": refund_deadline
     }
+    if is_scheduled:
+        result["due_date"] = payload["due_date"]
+    else:
+        result["expiration"] = data["calendario"].get("expiracao")
+
+    return result
+
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
     """
     Consulta e, se ausente, registra o webhook no Sicredi via PUT /webhook/{chave}.
@@ -263,7 +284,7 @@ async def create_sicredi_pix_refund(
         logger.error("❌ Token Sicredi inválido ou expirado")
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado")
 
-    # 2) Base URL
+    # 2) Base URL (produção ou homologação)
     creds = await get_empresa_credentials(empresa_id)
     env = creds.get("sicredi_env", "production").lower()
     base = (
@@ -272,11 +293,13 @@ async def create_sicredi_pix_refund(
         else "https://api-pix.sicredi.com.br/api/v2"
     )
     url = f"{base}/cob/{txid}/devolucao"
+    logger.debug(f"📡 [create_sicredi_pix_refund] URL: {url}")
 
     # 3) Body opcional
     body: Dict[str, Any] = {}
     if valor is not None:
         body["valor"] = {"original": f"{valor:.2f}"}
+    logger.debug(f"📑 [create_sicredi_pix_refund] body: {body}")
 
     # 4) SSLContext mTLS
     certs = await load_certificates_from_bucket(empresa_id)
@@ -285,9 +308,13 @@ async def create_sicredi_pix_refund(
         key_pem=certs["key_path"],
         ca_pem=certs.get("ca_path")
     )
+    logger.debug("🔐 [create_sicredi_pix_refund] SSL context pronto")
 
-    # 5) Chamada
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # 5) Chamada PUT
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
         try:
             resp = await client.put(url, json=body, headers=headers)
@@ -297,6 +324,7 @@ async def create_sicredi_pix_refund(
             text = e.response.text
             logger.error(f"❌ [create_sicredi_pix_refund] HTTP {code}: {text}")
             if code == 404:
+                # Cobrança não encontrada
                 raise HTTPException(status_code=404, detail="Cobrança não encontrada no Sicredi")
             if code in (400, 409):
                 # prazo de 7 dias expirado
@@ -308,4 +336,6 @@ async def create_sicredi_pix_refund(
 
     data = resp.json()
     logger.info(f"✅ [create_sicredi_pix_refund] resposta Sicredi: status={data.get('status')}")
+
+    # 6) Retorna JSON bruto para quem chamou decidir o next step
     return data
