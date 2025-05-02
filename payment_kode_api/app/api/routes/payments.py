@@ -64,18 +64,12 @@ class PixPaymentRequest(BaseModel):
     txid: Optional[str] = None
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
-    due_date: Optional[date] = None  # ✅ Faltava isso
+    due_date: Optional[date] = None
 
-    @field_validator("amount", mode="before")
-    @classmethod
-    def normalize_amount(cls, v):
-        try:
-            decimal_value = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if decimal_value <= 0:
-                raise ValueError("O valor de 'amount' deve ser maior que 0.")
-            return decimal_value
-        except Exception as e:
-            raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
+    # NOVOS CAMPOS
+    nome_devedor: Optional[str] = None
+    cpf: Optional[str] = None
+    cnpj: Optional[str] = None
 
 
 class TokenizeCardRequest(BaseModel):
@@ -274,6 +268,13 @@ async def create_pix_payment(
 
     logger.info(f"🔖 [create_pix_payment] iniciar: empresa={empresa_id} txid={txid} transaction_id={transaction_id}")
 
+    # validação para cobranças com vencimento
+    if payment_data.due_date:
+        if not payment_data.nome_devedor:
+            raise HTTPException(status_code=400, detail="Para cobrança com vencimento, 'nome_devedor' é obrigatório.")
+        if not (payment_data.cpf or payment_data.cnpj):
+            raise HTTPException(status_code=400, detail="Para cobrança com vencimento, 'cpf' ou 'cnpj' é obrigatório.")
+
     # evita duplicação
     if await get_payment(transaction_id, empresa_id):
         logger.warning(f"⚠️ [create_pix_payment] já processado: transaction_id={transaction_id}")
@@ -293,10 +294,10 @@ async def create_pix_payment(
 
     # payload pra Sicredi
     sicredi_payload = map_to_sicredi_payload({
-    **payment_data.dict(exclude_unset=False),
-    "txid": txid,
-    "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
-})
+        **payment_data.dict(exclude_unset=False),
+        "txid": txid,
+        "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
+    })
     logger.debug(f"📦 [create_pix_payment] payload Sicredi: {sicredi_payload!r}")
     try:
         logger.info(f"🚀 [create_pix_payment] criando cobrança Sicredi (txid={txid}) payload={sicredi_payload!r}")

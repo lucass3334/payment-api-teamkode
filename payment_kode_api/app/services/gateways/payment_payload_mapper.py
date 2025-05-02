@@ -6,7 +6,7 @@ from typing import Dict, Any
 def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mapeia os dados do pagamento para o formato do gateway Sicredi (Pix).
-    - Recebe 'amount', 'chave_pix', 'txid', e opcionalmente 'cpf', 'cnpj', 'solicitacaoPagador' e 'due_date'.
+    - Recebe 'amount', 'chave_pix', 'txid', e opcionalmente 'cpf', 'cnpj', 'nome_devedor', 'solicitacaoPagador' e 'due_date'.
     - Se 'due_date' for fornecido, será criada uma cobrança com vencimento (cobv), caso contrário, uma cobrança imediata (cob).
     """
     if not data.get("chave_pix"):
@@ -32,13 +32,19 @@ def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "chave": data["chave_pix"],
     }
 
-    # devedor: CPF ou CNPJ, se fornecido
-    devedor: Dict[str, Any] = {}
-    if data.get("cpf"):
-        devedor["cpf"] = data["cpf"]
-    elif data.get("cnpj"):
-        devedor["cnpj"] = data["cnpj"]
-    if devedor:
+    # devedor: obrigatório em cobranças com vencimento
+    if data.get("due_date"):
+        if not data.get("nome_devedor"):
+            raise ValueError("Para cobranças com vencimento, 'nome_devedor' é obrigatório.")
+        if not data.get("cpf") and not data.get("cnpj"):
+            raise ValueError("Para cobranças com vencimento, 'cpf' ou 'cnpj' é obrigatório.")
+
+        devedor: Dict[str, Any] = {"nome": data["nome_devedor"]}
+        if data.get("cpf"):
+            devedor["cpf"] = data["cpf"]
+        elif data.get("cnpj"):
+            devedor["cnpj"] = data["cnpj"]
+
         payload["devedor"] = devedor
 
     # solicitacaoPagador: descrição opcional
