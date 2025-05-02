@@ -29,77 +29,77 @@ async def refund_pix(
     empresa: dict = Depends(validate_access_token)
 ):
     empresa_id = empresa["empresa_id"]
-    transaction_id = str(refund_data.transaction_id)
-    logger.info(f"🔄 [refund_pix] iniciar: empresa={empresa_id} transaction_id={transaction_id}")
+    tx_id = str(refund_data.transaction_id)
+    logger.info(f"🔖 [refund_pix] iniciar: empresa={empresa_id} transaction_id={tx_id}")
 
-    # 1) Recupera o pagamento no DB
-    payment = await get_payment(transaction_id, empresa_id)
+    # 1) Busca pagamento
+    payment = await get_payment(tx_id, empresa_id)
     if not payment:
-        logger.warning(f"⚠️ [refund_pix] pagamento não encontrado: {transaction_id}")
+        logger.warning(f"❌ [refund_pix] pagamento não encontrado: {tx_id}")
         raise HTTPException(404, "Pagamento não encontrado")
 
     txid = payment.get("txid")
     if not txid:
-        logger.error(f"❌ [refund_pix] txid não configurado: {transaction_id}")
+        logger.error(f"❌ [refund_pix] txid não configurado: {tx_id}")
         raise HTTPException(400, "Transação sem txid configurado")
 
-    # 2) Decide ordem de provedores via empresas_config
-    config: Optional[Dict[str, Any]] = await get_empresa_config(empresa_id)
-    primary = (config or {}).get("pix_provider", "sicredi").lower()
+    # 2) Orquestra provedores
+    config = await get_empresa_config(empresa_id) or {}
+    primary = config.get("pix_provider", "sicredi").lower()
     secondary = "asaas" if primary == "sicredi" else "sicredi"
-    logger.debug(f"🔧 [refund_pix] ordem provedores: primary={primary}, secondary={secondary}")
+    logger.debug(f"🔧 [refund_pix] provedores: primary={primary}, secondary={secondary}")
 
-    # 3) Tenta estornar em cada provedor
+    # 3) Tenta estorno em cada provedor
     for provider in (primary, secondary):
         if provider == "sicredi":
-            logger.info(f"🚀 [refund_pix] tentando estorno no Sicredi (txid={txid})")
+            logger.info(f"🚀 [refund_pix] tentando Sicredi (txid={txid})")
             try:
-                resp = await create_sicredi_pix_refund(empresa_id=empresa_id, txid=txid)
-                logger.debug(f"📥 [refund_pix] resposta Sicredi: {resp!r}")
-
-                if resp.get("status", "").upper() == "DEVOLVIDA":
-                    await update_payment_status(transaction_id, empresa_id, "canceled")
-                    logger.info(f"✅ [refund_pix] Sicredi devolvida: {transaction_id}")
-                    if payment.get("webhook_url"):
-                        await notify_user_webhook(payment["webhook_url"], {
-                            "transaction_id": transaction_id,
-                            "status": "canceled",
+                resp = await create_sicredi_pix_refund(empresa_id, txid)
+                status_ret = resp.get("status", "").upper()
+                logger.debug(f"📥 [refund_pix] Sicredi status: {status_ret}")
+                if status_ret == "DEVOLVIDA":
+                    new_status = "canceled"
+                    await update_payment_status(tx_id, empresa_id, new_status)
+                    logger.success(f"✅ [refund_pix] Sicredi devolvida: {tx_id}")
+                    if webhook := payment.get("webhook_url"):
+                        await notify_user_webhook(webhook, {
+                            "transaction_id": tx_id,
+                            "status": new_status,
                             "provedor": "sicredi",
-                            "txid": txid
+                            "txid": txid,
+                            "payload": resp
                         })
-                    return {"status": "canceled", "transaction_id": transaction_id}
-
-                logger.error(f"❌ [refund_pix] Sicredi retornou status inesperado: {resp.get('status')}")
+                    return {"status": new_status, "transaction_id": tx_id}
+            except HTTPException as he:
+                if he.status_code == 404:
+                    # se cobrança não existe, não tenta fallback
+                    raise
+                logger.error(f"❌ [refund_pix] erro Sicredi: {he.detail}")
             except Exception as e:
-                logger.error(f"❌ [refund_pix] erro Sicredi: {e!r}")
-                # passa para o próximo provedor
-                continue
+                logger.error(f"❌ [refund_pix] exceção Sicredi: {e!r}")
 
         else:  # Asaas
-            logger.info(f"⚙️ [refund_pix] tentando estorno no Asaas (transaction_id={transaction_id})")
+            logger.info(f"⚙️ [refund_pix] tentando Asaas (tx_id={tx_id})")
             try:
-                resp2 = await create_asaas_refund(
-                    empresa_id=empresa_id,
-                    transaction_id=transaction_id
-                )
-                logger.debug(f"📥 [refund_pix] resposta Asaas: {resp2!r}")
-
-                if resp2.get("status", "").lower() == "refunded":
-                    await update_payment_status(transaction_id, empresa_id, "canceled")
-                    logger.info(f"✅ [refund_pix] Asaas refunded: {transaction_id}")
-                    if payment.get("webhook_url"):
-                        await notify_user_webhook(payment["webhook_url"], {
-                            "transaction_id": transaction_id,
-                            "status": "canceled",
-                            "provedor": "asaas"
+                resp2 = await create_asaas_refund(empresa_id, tx_id)
+                status2 = resp2.get("status", "").lower()
+                logger.debug(f"📥 [refund_pix] Asaas status: {status2}")
+                if status2 == "refunded":
+                    new_status = "canceled"
+                    await update_payment_status(tx_id, empresa_id, new_status)
+                    logger.success(f"✅ [refund_pix] Asaas refunded: {tx_id}")
+                    if webhook := payment.get("webhook_url"):
+                        await notify_user_webhook(webhook, {
+                            "transaction_id": tx_id,
+                            "status": new_status,
+                            "provedor": "asaas",
+                            "payload": resp2
                         })
-                    return {"status": "canceled", "transaction_id": transaction_id}
-
-                logger.error(f"❌ [refund_pix] Asaas retornou status inesperado: {resp2.get('status')}")
+                    return {"status": new_status, "transaction_id": tx_id}
             except Exception as e:
                 logger.error(f"❌ [refund_pix] erro Asaas: {e!r}")
-                continue
+                continue  # tenta próximo
 
-    # 4) Se nenhum provedor obteve sucesso
-    logger.critical(f"❌ [refund_pix] falha definitiva: {transaction_id}")
-    raise HTTPException(status_code=500, detail="Falha no estorno via Sicredi e Asaas")
+    # 4) falha geral
+    logger.critical(f"❌ [refund_pix] falha definitiva: {tx_id}")
+    raise HTTPException(500, "Falha no estorno via Sicredi e Asaas")
