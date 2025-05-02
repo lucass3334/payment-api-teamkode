@@ -6,16 +6,28 @@ from typing import Dict, Any
 def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mapeia os dados do pagamento para o formato do gateway Sicredi (Pix).
-    - Recebe 'amount', 'chave_pix', 'txid', e opcionalmente 'cpf', 'cnpj' e 'solicitacaoPagador'.
+    - Recebe 'amount', 'chave_pix', 'txid', e opcionalmente 'cpf', 'cnpj', 'solicitacaoPagador' e 'due_date'.
+    - Se 'due_date' for fornecido, será criada uma cobrança com vencimento (cobv), caso contrário, uma cobrança imediata (cob).
     """
     if not data.get("chave_pix"):
         raise ValueError("A chave Pix (chave_pix) é obrigatória para pagamentos via Pix.")
     if not data.get("txid"):
         raise ValueError("O txid é obrigatório para pagamentos via Sicredi Pix.")
 
+    # Define o campo 'calendario' com base na presença de 'due_date'
+    if data.get("due_date"):
+        calendario = {
+            "dataDeVencimento": data["due_date"],
+            "validadeAposVencimento": 7
+        }
+    else:
+        calendario = {
+            "expiracao": 900
+        }
+
     payload: Dict[str, Any] = {
         "txid": data["txid"],
-        "calendario": {"expiracao": 900},
+        "calendario": calendario,
         "valor": {"original": f"{round(data['amount'], 2):.2f}"},
         "chave": data["chave_pix"],
     }
@@ -45,17 +57,11 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("A chave Pix (chave_pix) é obrigatória para pagamentos via PIX.")
 
     payload: Dict[str, Any] = {
-        # Identifica o cliente na Asaas
         "customer": data.get("customer_id", ""),
-        # Tipo de cobrança PIX
         "billingType": "PIX",
-        # Valor em reais
         "value": round(data["amount"], 2),
-        # Chave Pix do recebedor
         "pixKey": data["chave_pix"],
-        # Referência externa para reconciliação
         "externalReference": data.get("txid", ""),
-        # Descrição opcional da cobrança
         "description": data.get("descricao") or f"Pagamento via Pix (txid {data.get('txid')})"
     }
     return payload
@@ -72,13 +78,9 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        # Valor em centavos
         "amount": int(data["amount"] * 100),
-        # Parcelas
         "installments": data.get("installments", 1),
-        # Capturar automaticamente
         "capture": True,
-        # Descriptor opcional
         "softDescriptor": data.get("soft_descriptor", "Minha Empresa")
     }
 

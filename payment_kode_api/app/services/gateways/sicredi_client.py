@@ -118,15 +118,9 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     if not txid:
         raise HTTPException(status_code=400, detail="txid inválido após sanitização.")
 
-    # 4) Define tipo de cobrança pelo presence de due_date
-    is_scheduled = "due_date" in payload
-    if is_scheduled:
-        body_calendario = {
-            "dataDeVencimento": payload["due_date"],
-            "validadeAposVencimento": 7
-        }
-    else:
-        body_calendario = {"expiracao": 900}
+    # 4) Define tipo de cobrança pelo conteúdo do calendário
+    is_scheduled = "dataDeVencimento" in payload.get("calendario", {})
+    body_calendario = payload["calendario"]
 
     # 5) Monta body
     body: Dict[str, Any] = {
@@ -190,11 +184,12 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
         "refund_deadline": refund_deadline
     }
     if is_scheduled:
-        result["due_date"] = payload["due_date"]
+        result["due_date"] = payload["calendario"]["dataDeVencimento"]
     else:
         result["expiration"] = data["calendario"].get("expiracao")
 
     return result
+
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
     """
@@ -292,7 +287,7 @@ async def create_sicredi_pix_refund(
         if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
-    url = f"{base}/cob/{txid}/devolucao"
+    url = f"{base}/cobv/{txid}/devolucao"  # <- ALTERADO: usa cobv para cobranças com vencimento
     logger.debug(f"📡 [create_sicredi_pix_refund] URL: {url}")
 
     # 3) Body opcional
