@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from typing import Any, Dict, Optional
 import re
 
+from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
 
 from ...utilities.logging_config import logger
 from ..config_service import get_empresa_credentials, load_certificates_from_bucket
@@ -246,17 +247,22 @@ async def create_sicredi_pix_refund(
     valor: Optional[float] = None
 ) -> Dict[str, Any]:
     """
-    Solicita devolução (estorno) de um pix já cobrado no Sicredi.
+    Solicita devolução (estorno) de um PIX já cobrado no Sicredi.
     Se `valor` não for informado, devolve o valor total da cobrança.
     """
-    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
+    logger.info(f"🔄 [create_sicredi_pix_refund] iniciar: empresa={empresa_id} txid={txid} valor={valor}")
 
-    # 1) pega token
+    # 1) busca token e credenciais
     token = await get_sicredi_token_or_refresh(empresa_id)
     creds = await get_empresa_credentials(empresa_id)
-    env  = creds.get("sicredi_env", "production").lower()
-    base = "https://api-h.pix.sicredi.com.br/api/v2" if env=="homologation" else "https://api-pix.sicredi.com.br/api/v2"
-    url  = f"{base}/cob/{txid}/devolucao"
+    env = creds.get("sicredi_env", "production").lower()
+    base = (
+        "https://api-h.pix.sicredi.com.br/api/v2"
+        if env == "homologation"
+        else "https://api-pix.sicredi.com.br/api/v2"
+    )
+    url = f"{base}/cob/{txid}/devolucao"
+    logger.debug(f"🔧 [create_sicredi_pix_refund] URL selecionada ({env}): {url}")
 
     # 2) monta headers e body
     headers = {
@@ -264,22 +270,35 @@ async def create_sicredi_pix_refund(
         "Content-Type": "application/json"
     }
     body: Dict[str, Any] = {}
-    if valor:
-        # precisa informar valor a devolver
+    if valor is not None:
         body["valor"] = {"original": f"{valor:.2f}"}
-    # 3) SSLContext
+    logger.debug(f"📦 [create_sicredi_pix_refund] body: {body or '(valor total)'}")
+
+    # 3) monta SSLContext mTLS
     certs = await load_certificates_from_bucket(empresa_id)
     ssl_ctx = build_ssl_context_from_memory(
         cert_pem=certs["cert_path"],
         key_pem=certs["key_path"],
-        ca_pem=certs["ca_path"]
+        ca_pem=certs.get("ca_path")
     )
+    logger.debug("🔐 [create_sicredi_pix_refund] SSLContext criado com mTLS")
 
-    # 4) faz a chamada
-    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
-        resp = await client.put(url, json=body, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+    # 4) chama Sicredi
+    try:
+        async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+            resp = await client.put(url, json=body, headers=headers)
+            logger.debug(f"📥 [create_sicredi_pix_refund] HTTP {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ [create_sicredi_pix_refund] HTTPError {e.response.status_code}: {e.response.text}")
+        raise
+    except Exception as e:
+        logger.error(f"❌ [create_sicredi_pix_refund] Erro de conexão/timeout: {e!r}")
+        raise
 
-    # 5) retorna status da devolução (esperamos "DEVOLVIDA")
-    return {"status": data.get("status"), **data}
+    status = data.get("status", "").upper()
+    logger.info(f"✅ [create_sicredi_pix_refund] status devolução Sicredi: {status}")
+
+    # 5) devolve todo o payload (inclui "status" e demais campos)
+    return data

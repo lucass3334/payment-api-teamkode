@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 from ...utilities.logging_config import logger
 from ..config_service import get_empresa_credentials
 from payment_kode_api.app.database.supabase_client import supabase
+from payment_kode_api.app.core.config import settings
+from payment_kode_api.app.database.database import get_empresa_config
 
 # ⏱️ Timeout padrão para conexões Asaas
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
@@ -177,44 +179,39 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
     Solicita estorno (refund) de um pagamento aprovado na Asaas.
     POST /payments/{transaction_id}/refund
     """
-    # Busca a API Key direto no Supabase, caso prefira
-    resp = (
-        await supabase
-        .table("empresas_config")
-        .select("asaas_api_key")
-        .eq("empresa_id", empresa_id)
-        .limit(1)
-        .execute()
-    )
-    config = resp.data[0] if resp.data else {}
+    # 1) lê toda a config da empresa de uma vez
+    config = await get_empresa_config(empresa_id) or {}
     api_key = config.get("asaas_api_key")
     if not api_key:
         logger.error(f"❌ Asaas API key não encontrada para refund empresa {empresa_id}")
-        raise HTTPException(status_code=400, detail="Asaas API key não configurada para refund.")
+        raise HTTPException(400, "Asaas API key não configurada para refund.")
 
-    use_sandbox = (await get_empresa_credentials(empresa_id)).get("use_sandbox", True)
+    use_sandbox = config.get("use_sandbox", True)
     base_url = "https://sandbox.asaas.com/api/v3" if use_sandbox else "https://api.asaas.com/v3"
     url = f"{base_url}/payments/{transaction_id}/refund"
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type":  "application/json"
     }
 
-    logger.info(f"🔄 Solicitando estorno Asaas: POST {url}")
+    logger.info(f"🔄 [create_asaas_refund] solicitando estorno Asaas: POST {url}")
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         try:
             resp = await client.post(url, headers=headers)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ HTTP {e.response.status_code} refund Asaas: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail="Erro no estorno Asaas")
+            raise HTTPException(e.response.status_code, "Erro no estorno Asaas")
         except Exception as e:
-            logger.error(f"❌ Erro inesperado refund Asaas: {e}")
-            raise HTTPException(status_code=500, detail="Erro inesperado no estorno Asaas")
+            logger.error(f"❌ Erro inesperado refund Asaas: {e!r}")
+            raise HTTPException(500, "Erro inesperado no estorno Asaas")
 
     data = resp.json()
     status = data.get("status", "").lower()
-    logger.info(f"✅ Refund Asaas para {transaction_id}: {status}")
+    logger.info(f"✅ [create_asaas_refund] status Asaas para {transaction_id}: {status}")
+
+    # retorna o payload completo pra onde for manipular
     return {"status": status, **data}
 
 
