@@ -24,7 +24,10 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
     """
     Solicita um novo token diretamente na API Sicredi via client_credentials.
     """
-    credentials = await get_empresa_credentials(empresa_id)
+    # troca get_empresa_credentials por get_empresa_config
+    from payment_kode_api.app.database.database import get_empresa_config
+
+    credentials = await get_empresa_config(empresa_id)
     if not credentials:
         raise ValueError("❌ Credenciais do Sicredi não configuradas corretamente.")
 
@@ -43,7 +46,12 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
         "Authorization": f"Basic {auth_header}",
         "Content-Type": "application/json"
     }
-    full_url = f"{auth_url}?grant_type=?grant_type=client_credentials&scope=cob.read%20cob.write%20cobv.read%20cobv.write"
+    # corrige a query string, removendo duplicação de grant_type e incluindo apenas scopes válidos
+    full_url = (
+        f"{auth_url}"
+        "?grant_type=client_credentials"
+        "&scope=cob.read%20cob.write%20cobv.read%20cobv.write"
+    )
 
     certs = await load_certificates_from_bucket(empresa_id)
     try:
