@@ -1,5 +1,3 @@
-# payment_kode_api/app/services/gateways/asaas_client.py
-
 import httpx
 import asyncio
 from fastapi import HTTPException
@@ -8,9 +6,9 @@ from datetime import datetime, timezone
 
 from ...utilities.logging_config import logger
 from ..config_service import get_empresa_credentials
-from payment_kode_api.app.database.supabase_client import supabase
+from payment_kode_api.app.database.database import get_empresa_config
 from payment_kode_api.app.core.config import settings
-from payment_kode_api.app.database.get_or_create_asaas_customer import get_or_create_asaas_customer
+from payment_kode_api.app.database.customers import get_or_create_asaas_customer
 
 # ⏱️ Timeout padrão para conexões Asaas
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
@@ -86,14 +84,14 @@ async def create_asaas_payment(
         empresa_id=empresa_id,
         local_customer_id=customer_data.get("local_id", transaction_id),
         customer_data={
-            "name": customer_data.get("name"),
-            "email": customer_data.get("email"),
-            "cpfCnpj": customer_data.get("cpfCnpj") or customer_data.get("cpf"),
-            "phone": customer_data.get("phone"),
-            "mobilePhone": customer_data.get("mobilePhone"),
-            "postalCode": customer_data.get("postalCode"),
-            "address": customer_data.get("address"),
-            "addressNumber": customer_data.get("addressNumber"),
+            "name":              customer_data.get("name"),
+            "email":             customer_data.get("email"),
+            "cpfCnpj":           customer_data.get("cpfCnpj") or customer_data.get("cpf"),
+            "phone":             customer_data.get("phone"),
+            "mobilePhone":       customer_data.get("mobilePhone"),
+            "postalCode":        customer_data.get("postalCode"),
+            "address":           customer_data.get("address"),
+            "addressNumber":     customer_data.get("addressNumber"),
             "externalReference": customer_data.get("externalReference", transaction_id)
         }
     )

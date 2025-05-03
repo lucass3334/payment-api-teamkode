@@ -32,6 +32,7 @@ try:
     from .customers import (
         get_asaas_customer,
         save_asaas_customer,
+        get_or_create_asaas_customer
     )
 
     # Redis desativado — mantendo como referência
@@ -65,6 +66,7 @@ def init_database():
             # Asaas customers
             get_asaas_customer,
             save_asaas_customer,
+            get_or_create_asaas_customer,
         ]
         if None in required_methods:
             raise ImportError("Métodos essenciais do banco de dados não carregados")
@@ -113,6 +115,7 @@ __all__ = [
     # Asaas Customers
     "get_asaas_customer",
     "save_asaas_customer",
+    "get_or_create_asaas_customer",
     # Inicialização/Desligamento
     "init_database",
     "shutdown_database",
