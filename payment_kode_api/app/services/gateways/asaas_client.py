@@ -1,15 +1,16 @@
-# services/gateways/asaas_client.py
+# payment_kode_api/app/services/gateways/asaas_client.py
 
 import httpx
 import asyncio
 from fastapi import HTTPException
 from typing import Any, Dict, Optional
+from datetime import datetime, timezone
 
 from ...utilities.logging_config import logger
 from ..config_service import get_empresa_credentials
 from payment_kode_api.app.database.supabase_client import supabase
 from payment_kode_api.app.core.config import settings
-from payment_kode_api.app.database.database import get_empresa_config
+from payment_kode_api.app.database.get_or_create_asaas_customer import get_or_create_asaas_customer
 
 # ⏱️ Timeout padrão para conexões Asaas
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
@@ -44,11 +45,11 @@ async def tokenize_asaas_card(empresa_id: str, card_data: Dict[str, Any]) -> str
     )
 
     payload = {
-        "holderName":     card_data["cardholder_name"],
-        "number":         card_data["card_number"],
-        "expiryMonth":    card_data["expiration_month"],
-        "expiryYear":     card_data["expiration_year"],
-        "ccv":            card_data["security_code"]
+        "holderName":  card_data["cardholder_name"],
+        "number":      card_data["card_number"],
+        "expiryMonth": card_data["expiration_month"],
+        "expiryYear":  card_data["expiration_year"],
+        "ccv":         card_data["security_code"]
     }
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -69,7 +70,7 @@ async def create_asaas_payment(
     amount: float,
     payment_type: str,
     transaction_id: str,
-    customer: Dict[str, Any],
+    customer_data: Dict[str, Any],
     card_data: Optional[Dict[str, Any]] = None,
     card_token: Optional[str] = None,
     installments: int = 1,
@@ -78,32 +79,54 @@ async def create_asaas_payment(
     """
     Cria um pagamento no Asaas para a empresa específica.
     Suporta PIX e Cartão de Crédito.
+    Garante que o cliente exista via get_or_create_asaas_customer.
     """
+    # 1) Obtém ou cria cliente na Asaas
+    asaas_customer_id = await get_or_create_asaas_customer(
+        empresa_id=empresa_id,
+        local_customer_id=customer_data.get("local_id", transaction_id),
+        customer_data={
+            "name": customer_data.get("name"),
+            "email": customer_data.get("email"),
+            "cpfCnpj": customer_data.get("cpfCnpj") or customer_data.get("cpf"),
+            "phone": customer_data.get("phone"),
+            "mobilePhone": customer_data.get("mobilePhone"),
+            "postalCode": customer_data.get("postalCode"),
+            "address": customer_data.get("address"),
+            "addressNumber": customer_data.get("addressNumber"),
+            "externalReference": customer_data.get("externalReference", transaction_id)
+        }
+    )
+    
     headers = await get_asaas_headers(empresa_id)
     creds = await get_empresa_credentials(empresa_id)
     use_sandbox = creds.get("use_sandbox", True)
-    base_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
+    base_url = (
+        "https://sandbox.asaas.com/api/v3/payments"
+        if use_sandbox else
+        "https://api.asaas.com/v3/payments"
+    )
     callback = creds.get("webhook_pix")
 
-    # Monta payload conforme tipo
+    # 2) Monta payload conforme tipo
     if payment_type == "pix":
         payload = {
-            "customer":           customer.get("id"),
-            "value":              amount,
-            "billingType":        "PIX",
-            "dueDate":            customer.get("due_date"),
-            "description":        f"PIX {transaction_id}",
-            "externalReference":  transaction_id,
-            "postalService":      False,
-            "callbackUrl":        callback
+            "customer":          asaas_customer_id,
+            "value":             amount,
+            "billingType":       "PIX",
+            "dueDate":           customer_data.get("due_date"),
+            "description":       f"PIX {transaction_id}",
+            "externalReference": transaction_id,
+            "postalService":     False,
+            "callbackUrl":       callback
         }
     elif payment_type == "credit_card":
         installments = max(1, min(installments, 12))
         common = {
-            "customer":          customer.get("id"),
+            "customer":          asaas_customer_id,
             "value":             amount,
             "billingType":       "CREDIT_CARD",
-            "dueDate":           customer.get("due_date"),
+            "dueDate":           customer_data.get("due_date"),
             "description":       f"Cartão {transaction_id}",
             "externalReference": transaction_id,
             "callbackUrl":       callback,
@@ -116,26 +139,20 @@ async def create_asaas_payment(
                 raise HTTPException(status_code=400, detail="Dados do cartão obrigatórios.")
             payload = {
                 **common,
-                "creditCard": {
-                    "holderName":  card_data["cardholder_name"],
-                    "number":      card_data["card_number"],
-                    "expiryMonth": card_data["expiration_month"],
-                    "expiryYear":  card_data["expiration_year"],
-                    "ccv":         card_data["security_code"]
-                },
+                "creditCard": card_data,
                 "creditCardHolderInfo": {
-                    "name":      card_data["cardholder_name"],
-                    "email":     customer.get("email"),
-                    "cpfCnpj":   customer.get("document"),
-                    "postalCode":customer.get("postal_code"),
-                    "addressNumber": customer.get("address_number"),
-                    "phone":       customer.get("phone")
+                    "name":           customer_data.get("name"),
+                    "email":          customer_data.get("email"),
+                    "cpfCnpj":        customer_data.get("cpfCnpj") or customer_data.get("cpf"),
+                    "postalCode":     customer_data.get("postalCode"),
+                    "addressNumber":  customer_data.get("addressNumber"),
+                    "phone":          customer_data.get("phone")
                 }
             }
     else:
         raise HTTPException(status_code=400, detail="Tipo de pagamento inválido.")
 
-    # Tenta criar pagamento com retries
+    # 3) Tenta criar pagamento com retries
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         for attempt in range(1, retries + 1):
             try:
@@ -160,7 +177,11 @@ async def get_asaas_payment_status(empresa_id: str, transaction_id: str) -> Opti
     headers = await get_asaas_headers(empresa_id)
     creds = await get_empresa_credentials(empresa_id)
     use_sandbox = creds.get("use_sandbox", True)
-    base_url = "https://sandbox.asaas.com/api/v3/payments" if use_sandbox else "https://api.asaas.com/v3/payments"
+    base_url = (
+        "https://sandbox.asaas.com/api/v3/payments"
+        if use_sandbox else
+        "https://api.asaas.com/v3/payments"
+    )
     url = f"{base_url}?externalReference={transaction_id}"
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -179,7 +200,6 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
     Solicita estorno (refund) de um pagamento aprovado na Asaas.
     POST /payments/{transaction_id}/refund
     """
-    # 1) lê toda a config da empresa de uma vez
     config = await get_empresa_config(empresa_id) or {}
     api_key = config.get("asaas_api_key")
     if not api_key:
@@ -187,7 +207,9 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
         raise HTTPException(400, "Asaas API key não configurada para refund.")
 
     use_sandbox = config.get("use_sandbox", True)
-    base_url = "https://sandbox.asaas.com/api/v3" if use_sandbox else "https://api.asaas.com/v3"
+    base_url = (
+        "https://sandbox.asaas.com/api/v3" if use_sandbox else "https://api.asaas.com/v3"
+    )
     url = f"{base_url}/payments/{transaction_id}/refund"
 
     headers = {
@@ -211,7 +233,6 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
     status = data.get("status", "").lower()
     logger.info(f"✅ [create_asaas_refund] status Asaas para {transaction_id}: {status}")
 
-    # retorna o payload completo pra onde for manipular
     return {"status": status, **data}
 
 
@@ -220,4 +241,5 @@ __all__ = [
     "create_asaas_payment",
     "get_asaas_payment_status",
     "create_asaas_refund",
+    "get_or_create_asaas_customer"
 ]

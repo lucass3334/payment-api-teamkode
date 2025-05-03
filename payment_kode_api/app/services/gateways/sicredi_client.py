@@ -180,9 +180,17 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     # 9) (Re)registra webhook
     await register_sicredi_webhook(empresa_id, payload["chave"])
 
-    # 10) Calcula prazo de estorno (7 dias a partir de agora)
-    now = datetime.now(timezone.utc)
-    refund_deadline = (now + timedelta(days=7)).isoformat()
+    # 10) Calcula prazo de estorno (7 dias após vencimento se agendada; senão, 7 dias a partir de agora)
+    if is_scheduled:
+        due_date_str = payload["calendario"]["dataDeVencimento"]
+        try:
+            due_date_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            due_date_date = datetime.fromisoformat(due_date_str).date()
+        refund_deadline = (due_date_date + timedelta(days=7)).isoformat()
+    else:
+        now = datetime.now(timezone.utc)
+        refund_deadline = (now + timedelta(days=7)).isoformat()
 
     # 11) Prepara retorno
     result: Dict[str, Any] = {
@@ -197,8 +205,6 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
         result["expiration"] = data["calendario"].get("expiracao")
 
     return result
-
-
 
 async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
     """
@@ -334,7 +340,7 @@ async def create_sicredi_pix_refund(
                 # prazo de 7 dias expirado
                 raise HTTPException(
                     status_code=400,
-                    detail="Prazo de estorno expirado (apenas 7 dias após a cobrança)"
+                    detail="Prazo de estorno expirado (apenas 7 dias após o vencimento)"
                 )
             raise HTTPException(status_code=code, detail=f"Erro no gateway Sicredi: {text}") from e
 

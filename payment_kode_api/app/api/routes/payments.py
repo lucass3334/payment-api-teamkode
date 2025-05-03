@@ -40,6 +40,7 @@ from payment_kode_api.app.core.config import settings
 from ...services.config_service import load_certificates_from_bucket
 from payment_kode_api.app.utilities.cert_utils import build_ssl_context_from_memory
 
+
 router = APIRouter()
 
 # Tipagens para validação
@@ -180,79 +181,138 @@ async def create_credit_card_payment(
     empresa_id = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
 
-    existing_payment = await get_payment(transaction_id, empresa_id)
-    if existing_payment:
-        return {"status": "already_processed", "message": "Pagamento já foi processado", "transaction_id": transaction_id}
+    # evita duplicação
+    existing = await get_payment(transaction_id, empresa_id)
+    if existing:
+        return {
+            "status": "already_processed",
+            "message": "Pagamento já processado",
+            "transaction_id": transaction_id
+        }
 
-    credentials = await get_empresa_config(empresa_id)
-    if not credentials:
-        raise HTTPException(status_code=400, detail="Empresa não encontrada ou sem credenciais configuradas.")
+    # busca configuração de gateways
+    config = await get_empresa_config(empresa_id)
+    if not config:
+        raise HTTPException(
+            status_code=400,
+            detail="Empresa não encontrada ou sem configuração de gateways."
+        )
+    credit_provider = config.get("credit_provider", "rede").lower()
+    logger.info(f"🔍 credit_provider configurado: {credit_provider}")
 
+    # prepara dados do cartão (tokenização ou dados brutos)
     if payment_data.card_token:
         card_data = await get_tokenized_card(payment_data.card_token)
         if not card_data:
             raise HTTPException(status_code=400, detail="Cartão não encontrado ou expirado.")
     elif payment_data.card_data:
-        card_data = payment_data.card_data.dict()
-        token_response = await tokenize_card(payment_data.card_data, empresa)
-        card_data["card_token"] = token_response["card_token"]
+        token_resp = await tokenize_card(payment_data.card_data, empresa)
+        card_data = {
+            **payment_data.card_data.dict(),
+            "card_token": token_resp["card_token"]
+        }
     else:
-        raise HTTPException(status_code=400, detail="É necessário fornecer um `card_token` ou `card_data`.")
+        raise HTTPException(
+            status_code=400,
+            detail="É necessário fornecer `card_token` ou `card_data`."
+        )
 
+    # salva como pending
     await save_payment({
-        "empresa_id": empresa_id,
+        "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
-        "amount": payment_data.amount,
-        "payment_type": "credit_card",
-        "status": "pending",
-        "webhook_url": payment_data.webhook_url
+        "amount":         payment_data.amount,
+        "payment_type":   "credit_card",
+        "status":         "pending",
+        "webhook_url":    payment_data.webhook_url
     })
 
-    rede_payload = map_to_rede_payload(card_data)
+    # dados base para mapeamento
+    base_data   = {**payment_data.dict(exclude_unset=False), "transaction_id": transaction_id}
+    mapper_data = {**base_data, **card_data}
 
-    try:
-        logger.info(f"🚀 Tentando processar pagamento Cartão via Rede para {transaction_id}")
-        response = await create_rede_payment(empresa_id=empresa_id, **rede_payload)
+    # ——— Rede ———
+    if credit_provider == "rede":
+        payload = map_to_rede_payload(mapper_data)
+        try:
+            logger.info(f"🚀 Processando pagamento via Rede: txid={transaction_id}")
+            resp = await create_rede_payment(empresa_id=empresa_id, **payload)
+        except Exception as e:
+            logger.error(f"❌ Erro Rede: {e}")
+            raise HTTPException(status_code=502, detail="Erro no gateway Rede.")
 
-        if response and response.get("status") == "approved":
-            logger.info(f"✅ Pagamento Cartão via Rede aprovado para {transaction_id}")
-
+        if resp.get("status") == "approved":
             if payment_data.webhook_url:
                 await notify_user_webhook(payment_data.webhook_url, {
                     "transaction_id": transaction_id,
                     "status": "approved",
                     "provedor": "rede"
                 })
+            return {
+                "status": "approved",
+                "message": "Pagamento aprovado via Rede",
+                "transaction_id": transaction_id
+            }
+        raise HTTPException(status_code=402, detail="Pagamento recusado pela Rede.")
 
-            return {"status": "approved", "message": "Pagamento aprovado via Rede", "transaction_id": transaction_id}
+    # ——— Asaas ———
+    elif credit_provider == "asaas":
+        # 1) mapeia payload para extrair valores
+        asaas_info = map_to_asaas_credit_payload(mapper_data)
 
-        raise Exception("Erro desconhecido na Rede")
-
-    except Exception as e:
-        logger.error(f"❌ Erro no gateway Rede para {transaction_id}: {str(e)}")
+        # 2) prepara customer_data
+        customer_data = {
+            "local_id":          transaction_id,
+            "name":              mapper_data.get("cardholder_name"),
+            "email":             mapper_data.get("customer_email"),
+            "cpfCnpj":           mapper_data.get("cpf") or mapper_data.get("cnpj"),
+            "phone":             mapper_data.get("customer_phone"),
+            "mobilePhone":       mapper_data.get("customer_mobile"),
+            "postalCode":        mapper_data.get("postal_code"),
+            "address":           mapper_data.get("address"),
+            "addressNumber":     mapper_data.get("address_number"),
+            "externalReference": transaction_id,
+            "due_date":          None
+        }
 
         try:
-            logger.info(f"🔄 Tentando fallback via Asaas para {transaction_id}")
-            asaas_payload = map_to_asaas_credit_payload(card_data)
-            response = await create_asaas_payment(empresa_id=empresa_id, **asaas_payload)
+            logger.info(f"🚀 Processando pagamento via Asaas: txid={transaction_id}")
+            resp = await create_asaas_payment(
+                empresa_id=empresa_id,
+                amount=asaas_info["value"],
+                payment_type="credit_card",
+                transaction_id=transaction_id,
+                customer_data=customer_data,
+                card_token=asaas_info.get("creditCardToken"),
+                card_data=asaas_info.get("creditCard"),
+                installments=asaas_info.get("installmentCount", 1)
+            )
+        except Exception as e:
+            logger.error(f"❌ Erro Asaas: {e}")
+            raise HTTPException(status_code=502, detail="Erro no gateway Asaas.")
 
-            if response and response.get("status") == "approved":
-                logger.info(f"✅ Pagamento Cartão via Asaas aprovado para {transaction_id}")
+        if resp.get("status", "").lower() == "approved":
+            if payment_data.webhook_url:
+                await notify_user_webhook(payment_data.webhook_url, {
+                    "transaction_id": transaction_id,
+                    "status": "approved",
+                    "provedor": "asaas"
+                })
+            return {
+                "status": "approved",
+                "message": "Pagamento aprovado via Asaas",
+                "transaction_id": transaction_id
+            }
+        raise HTTPException(status_code=402, detail="Pagamento recusado pela Asaas.")
 
-                if payment_data.webhook_url:
-                    await notify_user_webhook(payment_data.webhook_url, {
-                        "transaction_id": transaction_id,
-                        "status": "approved",
-                        "provedor": "asaas"
-                    })
+    # ——— Provedor desconhecido ———
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provedor de crédito desconhecido: {credit_provider}"
+        )
 
-                return {"status": "approved", "message": "Rede falhou, Asaas aprovado", "transaction_id": transaction_id}
 
-            raise HTTPException(status_code=500, detail="Falha no pagamento via Rede e Asaas")
-
-        except Exception as fallback_error:
-            logger.error(f"❌ Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
-            raise HTTPException(status_code=500, detail="Falha no pagamento via Rede e Asaas")
 
 
 @router.post("/payment/pix")
@@ -261,10 +321,9 @@ async def create_pix_payment(
     background_tasks: BackgroundTasks,
     empresa: dict = Depends(validate_access_token)
 ):
-    empresa_id = empresa["empresa_id"]
-    transaction_id = str(payment_data.transaction_id or uuid4())
-    # normaliza TXID para uppercase (evita mismatch)
-    txid = (payment_data.txid or uuid4().hex).upper()
+    empresa_id      = empresa["empresa_id"]
+    transaction_id  = str(payment_data.transaction_id or uuid4())
+    txid            = (payment_data.txid or uuid4().hex).upper()  # normalize uppercase
 
     logger.info(f"🔖 [create_pix_payment] iniciar: empresa={empresa_id} txid={txid} transaction_id={transaction_id}")
 
@@ -292,38 +351,33 @@ async def create_pix_payment(
     })
     logger.debug(f"💾 [create_pix_payment] payment registrado como pending no DB")
 
-    # payload pra Sicredi
-    sicredi_payload = map_to_sicredi_payload({
-        **payment_data.dict(exclude_unset=False),
-        "txid": txid,
-        "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
-    })
-    logger.debug(f"📦 [create_pix_payment] payload Sicredi: {sicredi_payload!r}")
-    try:
-        logger.info(f"🚀 [create_pix_payment] criando cobrança Sicredi (txid={txid}) payload={sicredi_payload!r}")
+    # determina o provider de PIX configurado para esta empresa
+    config       = await get_empresa_config(empresa_id)
+    pix_provider = config.get("pix_provider", "sicredi").lower()
+    logger.info(f"🔍 [create_pix_payment] pix_provider configurado: {pix_provider}")
+
+    if pix_provider == "sicredi":
+        # ——— Fluxo Sicredi ———
+        sicredi_payload = map_to_sicredi_payload({
+            **payment_data.dict(exclude_unset=False),
+            "txid": txid,
+            "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
+        })
+        logger.debug(f"📦 [create_pix_payment] payload Sicredi: {sicredi_payload!r}")
+
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
         logger.debug(f"✅ [create_pix_payment] Sicredi respondeu: {resp!r}")
 
-        # extrai sempre o QR-code "pixCopiaECola"
-        qr = resp["qr_code"]
-        # o link de pagamento (se quiser expor)
-        link = resp["pix_link"]
-        # data de vencimento (quando agendada) ou None
-        due_date = resp.get("due_date")
-        # prazo limite para estorno
-        refund_deadline = resp["refund_deadline"]
-        # em cobrança imediata vem expiration
-        expiration = resp.get("expiration")
-
+        qr_copy = resp["qr_code"]  # copia-e-cola
         # gera PNG + base64
-        img = qrcode.make(qr)
+        img = qrcode.make(qr_copy)
         buf = BytesIO()
         img.save(buf, format="PNG")
         qr_png = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
-        # agenda polling
+        # agenda polling Sicredi se houver webhook
         if payment_data.webhook_url:
-            logger.info(f"🏷️ [create_pix_payment] agendando polling para txid={txid}")
+            logger.info(f"🏷️ [create_pix_payment] agendando polling Sicredi para txid={txid}")
             background_tasks.add_task(
                 _poll_sicredi_status,
                 txid,
@@ -332,50 +386,58 @@ async def create_pix_payment(
                 payment_data.webhook_url
             )
 
-        # monta o retorno
         result = {
-            "status":           resp["status"].lower(),
-            "transaction_id":   transaction_id,
-            "pix_link":         link,
-            "qr_code_base64":   qr_png,
-            "refund_deadline":  refund_deadline
+            "status":          resp["status"].lower(),
+            "transaction_id":  transaction_id,
+            "pix_link":        qr_copy,
+            "qr_code_base64":  qr_png,
+            "refund_deadline": resp["refund_deadline"]
         }
-        if expiration is not None:
-            result["expiration"] = expiration
-        if due_date:
-            result["due_date"] = due_date
+        if resp.get("expiration") is not None:
+            result["expiration"] = resp["expiration"]
+        if resp.get("due_date"):
+            result["due_date"] = resp["due_date"]
 
         return result
 
-    except Exception as e:
-        logger.error(f"❌ [create_pix_payment] erro Sicredi txid={txid}: {e!r}")
+    elif pix_provider == "asaas":
+        # ——— Fluxo Asaas ———
+        # 1) prepara customer_data para criar/recuperar cliente na Asaas
+        customer_data = {
+            "local_id":          transaction_id,
+            "name":              payment_data.nome_devedor,
+            "cpfCnpj":           payment_data.cpf or payment_data.cnpj,
+            "externalReference": transaction_id,
+            "due_date":          (payment_data.due_date or datetime.now(timezone.utc).date()).isoformat()
+        }
 
-        # fallback Asaas
-        logger.warning(f"⚠️ [create_pix_payment] fallback Asaas txid={txid}")
+        logger.info(f"🚀 [create_pix_payment] criando cobrança Asaas para txid={txid}")
         resp2 = await create_asaas_payment(
             empresa_id=empresa_id,
             amount=float(payment_data.amount),
             payment_type="pix",
             transaction_id=transaction_id,
-            customer={
-                "id": settings.ASAAS_DEFAULT_CUSTOMER,
-                "due_date": datetime.now(timezone.utc).date().isoformat()
-            },
+            customer_data=customer_data
         )
-        logger.debug(f"💬 [create_pix_payment] Asaas response: {resp2!r}")
-        if resp2.get("status") == "approved":
-            logger.info(f"✅ [create_pix_payment] Asaas approved for {transaction_id}")
-            return {
-                "status":         resp2["status"].lower(),
-                "transaction_id": transaction_id,
-                "pix_link":       resp2.get("pixKey"),
-                "qr_code_base64": resp2.get("qrCode"),
-                "expiration":     resp2.get("expirationDateTime")
-            }
+        logger.debug(f"💬 [create_pix_payment] Asaas respondeu: {resp2!r}")
 
-        logger.critical(f"❌ [create_pix_payment] falha definitiva {transaction_id}")
-        raise HTTPException(500, "Falha no pagamento via Sicredi e Asaas")
+        if resp2.get("status", "").lower() != "approved":
+            logger.critical(f"❌ [create_pix_payment] erro Asaas {transaction_id}: {resp2}")
+            raise HTTPException(status_code=500, detail="Falha no pagamento via Asaas")
 
+        # monta resposta Asaas
+        return {
+            "status":         resp2["status"].lower(),
+            "transaction_id": transaction_id,
+            "pix_link":       resp2.get("pixKey"),
+            "qr_code_base64": resp2.get("qrCode"),
+            "expiration":     resp2.get("expirationDateTime")
+        }
+
+    else:
+        # provedor não suportado
+        logger.error(f"❌ [create_pix_payment] provedor PIX desconhecido: {pix_provider}")
+        raise HTTPException(status_code=400, detail=f"Provedor PIX desconhecido: {pix_provider}")
 
 async def _poll_sicredi_status(
     txid: str,

@@ -73,10 +73,12 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mapeia os dados do pagamento para o formato do gateway Rede (Cartão).
     - Usa 'card_token' se presente, senão faz mapeamento completo dos dados de cartão.
+    - Inclui 'reference' para rastrear a transação.
     """
     if not data.get("card_token") and not all(k in data for k in (
         "card_number", "expiration_month", "expiration_year", "security_code", "cardholder_name"
@@ -84,9 +86,11 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        "amount": int(data["amount"] * 100),
-        "installments": data.get("installments", 1),
         "capture": True,
+        "kind": "credit",
+        "reference": data.get("transaction_id", ""),
+        "amount": str(int(data["amount"] * 100)),
+        "installments": data.get("installments", 1),
         "softDescriptor": data.get("soft_descriptor", "Minha Empresa")
     }
 
@@ -95,7 +99,8 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     else:
         payload.update({
             "cardNumber": data["card_number"],
-            "cardExpirationDate": f"{int(data['expiration_month']):02d}{data['expiration_year'][-2:]}",
+            "expirationMonth": f"{int(data['expiration_month']):02d}",
+            "expirationYear": data["expiration_year"],
             "securityCode": data["security_code"],
             "cardHolderName": data["cardholder_name"],
         })
@@ -107,10 +112,11 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
     """
     Mapeia os dados do pagamento para o formato do gateway Asaas (Cartão de Crédito).
     - Usa tokenização se disponível e suportada, senão envia dados completos do cartão.
+    - Inclui 'externalReference' para rastrear a transação.
     """
     if not data.get("card_token") and not all(k in data for k in (
         "card_number", "expiration_month", "expiration_year", "security_code", "cardholder_name"
-    )):
+    )):  
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
@@ -118,6 +124,7 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
         "billingType": "CREDIT_CARD",
         "value": round(data["amount"], 2),
         "installmentCount": data.get("installments", 1),
+        "externalReference": data.get("transaction_id", "")
     }
 
     if support_tokenization and data.get("card_token"):

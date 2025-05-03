@@ -6,8 +6,8 @@ try:
         # Pagamentos
         save_payment,
         get_payment,
-        get_payment_by_txid,            # 🔹 Novo método
-        update_payment_status_by_txid,  # 🔹 Novo método
+        get_payment_by_txid,
+        update_payment_status_by_txid,
         # Empresas
         save_empresa,
         get_empresa,
@@ -28,6 +28,12 @@ try:
         get_sicredi_token_or_refresh,
     )
 
+    # Métodos de mapeamento Asaas Customers
+    from .customers import (
+        get_asaas_customer,
+        save_asaas_customer,
+    )
+
     # Redis desativado — mantendo como referência
     # from .redis_client import get_redis_client, test_redis_connection
 
@@ -38,10 +44,6 @@ except ImportError as e:
 def init_database():
     """Configura e valida as conexões do módulo de banco de dados."""
     try:
-        # Redis desativado — validação removida
-        # if not test_redis_connection():
-        #     raise ConnectionError("Falha na conexão com Redis")
-
         required_methods = [
             save_payment,
             get_payment,
@@ -59,7 +61,10 @@ def init_database():
             save_empresa_certificados,
             atualizar_config_gateway,
             get_empresa_gateways,
-            get_sicredi_token_or_refresh
+            get_sicredi_token_or_refresh,
+            # Asaas customers
+            get_asaas_customer,
+            save_asaas_customer,
         ]
         if None in required_methods:
             raise ImportError("Métodos essenciais do banco de dados não carregados")
@@ -105,6 +110,9 @@ __all__ = [
     "get_empresa_gateways",
     # Sicredi
     "get_sicredi_token_or_refresh",
+    # Asaas Customers
+    "get_asaas_customer",
+    "save_asaas_customer",
     # Inicialização/Desligamento
     "init_database",
     "shutdown_database",
