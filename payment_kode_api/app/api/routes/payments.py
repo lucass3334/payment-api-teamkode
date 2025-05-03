@@ -474,21 +474,32 @@ async def _poll_sicredi_status(
             token = await get_sicredi_token_or_refresh(empresa_id)
             logger.debug(f"🔑 [_poll] token (prefixo): {token[:10]}...")
 
-            # tenta ambos os endpoints v3: primeiro 'cob', depois 'cobv'
+            # consultar ambos endpoints em paralelo
+            base = settings.SICREDI_API_URL + "/api/v3"
+            urls = [f"{base}/cob/{txid}", f"{base}/cobv/{txid}"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            tasks = [client.get(u, headers=headers) for u in urls]
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+
             data = None
-            for path in ("cob", "cobv"):
-                url = f"{settings.SICREDI_API_URL}/api/v3/{path}/{txid}"
-                logger.debug(f"📡 [_poll] GET {url}")
-                res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-                if res.status_code == 404:
-                    logger.debug(f"❓ [_poll] {path} não encontrada (404), tentando próximo endpoint")
+            for res in responses:
+                # tratamento de erro de rede ou HTTP
+                if isinstance(res, Exception):
+                    logger.debug(f"⚠️ [_poll] erro na requisição Sicredi: {res}")
                     continue
+                if res.status_code == 404:
+                    # nenhuma cobrança encontrada ainda neste endpoint
+                    logger.debug(f"❓ [_poll] {res.url.path} retornou 404")
+                    continue
+                # sucesso: parse final
                 res.raise_for_status()
                 logger.debug(f"📥 [_poll] HTTP {res.status_code} → {res.text}")
                 data = res.json()
                 break
 
             if data is None:
+                # nenhum endpoint devolveu dados válidos
                 logger.info("❓ [_poll] nenhuma cobrança encontrada, aguardando próximo loop")
                 await asyncio.sleep(interval)
                 continue
@@ -496,7 +507,7 @@ async def _poll_sicredi_status(
             sicredi_status = data.get("status", "").lower()
             logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {sicredi_status}")
 
-            # se for final (não ativa nem pendente), aplica o mapeamento e encerra
+            # se for final (não 'ativa' nem 'pendente'), aplica o mapeamento e encerra
             if sicredi_status not in {"ativa", "pendente"}:
                 mapped_status = status_map.get(sicredi_status, sicredi_status)
                 logger.info(
@@ -513,7 +524,7 @@ async def _poll_sicredi_status(
                 })
                 return
 
-            # após 2min, aumento o intervalo
+            # após 2min, aumenta o intervalo entre polls
             if elapsed > 120:
                 interval = 10
 
