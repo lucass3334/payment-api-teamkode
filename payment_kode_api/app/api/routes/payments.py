@@ -474,27 +474,35 @@ async def _poll_sicredi_status(
             token = await get_sicredi_token_or_refresh(empresa_id)
             logger.debug(f"🔑 [_poll] token (prefixo): {token[:10]}...")
 
-            # consulta v3 usando txid (já em uppercase)
-            url = f"{settings.SICREDI_API_URL}/api/v3/cob/{txid}"
-            logger.debug(f"📡 [_poll] GET {url}")
-            res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            # tenta ambos os endpoints v3: primeiro 'cob', depois 'cobv'
+            data = None
+            for path in ("cob", "cobv"):
+                url = f"{settings.SICREDI_API_URL}/api/v3/{path}/{txid}"
+                logger.debug(f"📡 [_poll] GET {url}")
+                res = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+                if res.status_code == 404:
+                    logger.debug(f"❓ [_poll] {path} não encontrada (404), tentando próximo endpoint")
+                    continue
+                res.raise_for_status()
+                logger.debug(f"📥 [_poll] HTTP {res.status_code} → {res.text}")
+                data = res.json()
+                break
 
-            if res.status_code == 404:
-                logger.info(f"❓ [_poll] cobrança não encontrada (404), aguardando próximo loop")
+            if data is None:
+                logger.info("❓ [_poll] nenhuma cobrança encontrada, aguardando próximo loop")
                 await asyncio.sleep(interval)
                 continue
 
-            logger.debug(f"📥 [_poll] HTTP {res.status_code} → {res.text}")
-            res.raise_for_status()
-
-            data = res.json()
             sicredi_status = data.get("status", "").lower()
             logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {sicredi_status}")
 
             # se for final (não ativa nem pendente), aplica o mapeamento e encerra
             if sicredi_status not in {"ativa", "pendente"}:
                 mapped_status = status_map.get(sicredi_status, sicredi_status)
-                logger.info(f"✅ [_poll] status final detectado ({sicredi_status}), mapeado para ({mapped_status}), atualizando DB e notificando")
+                logger.info(
+                    f"✅ [_poll] status final detectado ({sicredi_status}), "
+                    f"mapeado para ({mapped_status}), atualizando DB e notificando"
+                )
 
                 await update_payment_status(transaction_id, empresa_id, mapped_status)
                 await notify_user_webhook(webhook_url, {
@@ -512,4 +520,3 @@ async def _poll_sicredi_status(
             await asyncio.sleep(interval)
 
     logger.error(f"❌ [_poll] deadline atingida sem status final txid={txid}")
-
