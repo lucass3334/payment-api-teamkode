@@ -445,6 +445,11 @@ async def _poll_sicredi_status(
     transaction_id: str,
     webhook_url: str
 ):
+    """
+    Polling de status de cobrança Pix Sicredi.
+    Tenta em paralelo /api/v3/cob/{txid} e /api/v2/cobv/{txid},
+    até encontrar um status final ou expirar o prazo de 15 minutos.
+    """
     logger.info(f"🔄 [_poll_sicredi_status] iniciar: txid={txid} transaction_id={transaction_id}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=15)
@@ -463,71 +468,73 @@ async def _poll_sicredi_status(
     status_map = {
         "concluida": "approved",
         "removida_pelo_usuario_recebedor": "canceled",
-        # Se precisar de mais mapeamentos, adicione aqui
+        # adicione aqui outros mapeamentos, se necessário
     }
+
+    base = settings.SICREDI_API_URL
+    url_cob  = f"{base}/api/v3/cob/{txid}"
+    url_cobv = f"{base}/api/v2/cobv/{txid}"
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
         while datetime.now(timezone.utc) < deadline:
             elapsed = (datetime.now(timezone.utc) - start).total_seconds()
             logger.debug(f"⏱️ [_poll] elapsed={elapsed:.1f}s, interval={interval}s")
 
+            # garante token fresco
             token = await get_sicredi_token_or_refresh(empresa_id)
-            logger.debug(f"🔑 [_poll] token (prefixo): {token[:10]}...")
-
-            # consultar ambos endpoints em paralelo
-            base = settings.SICREDI_API_URL + "/api/v3"
-            urls = [f"{base}/cob/{txid}", f"{base}/cobv/{txid}"]
             headers = {"Authorization": f"Bearer {token}"}
+            logger.debug(f"📡 [_poll] GET {url_cob} & {url_cobv}")
 
-            tasks = [client.get(u, headers=headers) for u in urls]
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            # dispara as duas requisições em paralelo
+            results = await asyncio.gather(
+                client.get(url_cob,  headers=headers),
+                client.get(url_cobv, headers=headers),
+                return_exceptions=True
+            )
 
-            data = None
-            for res in responses:
-                # tratamento de erro de rede ou HTTP
+            any_found = False
+            for res in results:
                 if isinstance(res, Exception):
-                    logger.debug(f"⚠️ [_poll] erro na requisição Sicredi: {res}")
+                    # falha de rede ou HTTPStatusError já será capturada abaixo
                     continue
+                # se 404, simples continue
                 if res.status_code == 404:
-                    # nenhuma cobrança encontrada ainda neste endpoint
-                    logger.debug(f"❓ [_poll] {res.url.path} retornou 404")
                     continue
-                # sucesso: parse final
-                res.raise_for_status()
+
+                any_found = True
                 logger.debug(f"📥 [_poll] HTTP {res.status_code} → {res.text}")
+                try:
+                    res.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"❌ [_poll] HTTP {e.response.status_code} erro: {e.response.text}")
+                    continue
+
                 data = res.json()
-                break
+                sicredi_status = data.get("status", "").lower()
+                logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {sicredi_status}")
 
-            if data is None:
-                # nenhum endpoint devolveu dados válidos
+                # se for final (não 'ativa' nem 'pendente'), mapeia e sai
+                if sicredi_status not in {"ativa", "pendente"}:
+                    mapped_status = status_map.get(sicredi_status, sicredi_status)
+                    logger.info(f"✅ [_poll] status final ({sicredi_status}) mapeado → {mapped_status}")
+
+                    await update_payment_status(transaction_id, empresa_id, mapped_status)
+                    await notify_user_webhook(webhook_url, {
+                        "transaction_id": transaction_id,
+                        "status": mapped_status,
+                        "provedor": "sicredi",
+                        "payload": data
+                    })
+                    return
+
+            if not any_found:
                 logger.info("❓ [_poll] nenhuma cobrança encontrada, aguardando próximo loop")
-                await asyncio.sleep(interval)
-                continue
 
-            sicredi_status = data.get("status", "").lower()
-            logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {sicredi_status}")
-
-            # se for final (não 'ativa' nem 'pendente'), aplica o mapeamento e encerra
-            if sicredi_status not in {"ativa", "pendente"}:
-                mapped_status = status_map.get(sicredi_status, sicredi_status)
-                logger.info(
-                    f"✅ [_poll] status final detectado ({sicredi_status}), "
-                    f"mapeado para ({mapped_status}), atualizando DB e notificando"
-                )
-
-                await update_payment_status(transaction_id, empresa_id, mapped_status)
-                await notify_user_webhook(webhook_url, {
-                    "transaction_id": transaction_id,
-                    "status": mapped_status,
-                    "provedor": "sicredi",
-                    "payload": data
-                })
-                return
-
-            # após 2min, aumenta o intervalo entre polls
+            # depois de 2 minutos, alarga intervalo
             if elapsed > 120:
                 interval = 10
 
             await asyncio.sleep(interval)
 
     logger.error(f"❌ [_poll] deadline atingida sem status final txid={txid}")
+
