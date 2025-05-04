@@ -285,13 +285,13 @@ async def create_sicredi_pix_refund(
     """
     Solicita devolução de um PIX no Sicredi.
     Se `valor` não for informado, devolve o total.
+    Tenta primeiro endpoint /cobv e, se não encontrado, /cob.
     """
     logger.info(f"🔄 [create_sicredi_pix_refund] iniciar: empresa={empresa_id} txid={txid} valor={valor}")
 
     # 1) Token + validação
     token = await get_sicredi_token_or_refresh(empresa_id)
     if not token:
-        logger.error("❌ Token Sicredi inválido ou expirado")
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado")
 
     # 2) Base URL (produção ou homologação)
@@ -302,50 +302,38 @@ async def create_sicredi_pix_refund(
         if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
-    url = f"{base}/cobv/{txid}/devolucao"  # <- ALTERADO: usa cobv para cobranças com vencimento
-    logger.debug(f"📡 [create_sicredi_pix_refund] URL: {url}")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json"
+    }
 
     # 3) Body opcional
     body: Dict[str, Any] = {}
     if valor is not None:
         body["valor"] = {"original": f"{valor:.2f}"}
-    logger.debug(f"📑 [create_sicredi_pix_refund] body: {body}")
 
-    # 4) SSLContext mTLS
-    certs = await load_certificates_from_bucket(empresa_id)
-    ssl_ctx = build_ssl_context_from_memory(
-        cert_pem=certs["cert_path"],
-        key_pem=certs["key_path"],
-        ca_pem=certs.get("ca_path")
-    )
-    logger.debug("🔐 [create_sicredi_pix_refund] SSL context pronto")
-
-    # 5) Chamada PUT
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
+    # 4) Tenta primeiro cobv, depois cob
+    last_error: Optional[HTTPException] = None
+    for endpoint_type in ("cobv", "cob"):
+        url = f"{base}/{endpoint_type}/{txid}/devolucao"
+        logger.info(f"🔄 [create_sicredi_pix_refund] tentando endpoint {endpoint_type}: PUT {url}")
         try:
-            resp = await client.put(url, json=body, headers=headers)
-            resp.raise_for_status()
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                resp = await client.put(url, json=body, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                logger.info(f"✅ [create_sicredi_pix_refund] sucesso no endpoint {endpoint_type}")
+                return data
         except httpx.HTTPStatusError as e:
             code = e.response.status_code
             text = e.response.text
-            logger.error(f"❌ [create_sicredi_pix_refund] HTTP {code}: {text}")
+            logger.error(f"❌ [create_sicredi_pix_refund] HTTP {code} no {endpoint_type}: {text}")
             if code == 404:
-                # Cobrança não encontrada
-                raise HTTPException(status_code=404, detail="Cobrança não encontrada no Sicredi")
-            if code in (400, 409):
-                # prazo de 7 dias expirado
-                raise HTTPException(
-                    status_code=400,
-                    detail="Prazo de estorno expirado (apenas 7 dias após o vencimento)"
-                )
+                # se não encontrou neste tipo, continua para o próximo
+                last_error = HTTPException(status_code=404, detail="Cobrança não encontrada no Sicredi")
+                continue
+            # para outros códigos, aborta imediatamente
             raise HTTPException(status_code=code, detail=f"Erro no gateway Sicredi: {text}") from e
 
-    data = resp.json()
-    logger.info(f"✅ [create_sicredi_pix_refund] resposta Sicredi: status={data.get('status')}")
-
-    # 6) Retorna JSON bruto para quem chamou decidir o next step
-    return data
+    # se nenhum endpoint encontrou a cobrança
+    raise last_error or HTTPException(status_code=404, detail="Cobrança não encontrada no Sicredi")
