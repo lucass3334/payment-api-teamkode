@@ -24,7 +24,7 @@ async def get_asaas_headers(empresa_id: str) -> Dict[str, str]:
         logger.error(f"❌ Asaas API key não configurada para empresa {empresa_id}")
         raise HTTPException(status_code=400, detail="Asaas API key não configurada.")
     return {
-        "access_token": f"{api_key}",
+        "access_token": api_key,
         "Content-Type": "application/json"
     }
 
