@@ -100,10 +100,10 @@ async def create_asaas_payment(
     Suporta PIX e Cartão de Crédito.
     Garante que o cliente exista via get_or_create_asaas_customer.
     """
-    # --- CONVERTENDO DECIMAL PARA FLOAT PARA EVITAR ERRO DE SERIALIZAÇÃO ---
+    # 1) Ajuste para evitar problemas de serialização
     amount = float(amount)
 
-    # 1) Obtém ou cria cliente na Asaas
+    # 2) Obtém ou cria cliente na Asaas
     asaas_customer_id = await get_or_create_asaas_customer(
         empresa_id=empresa_id,
         local_customer_id=customer_data.get("local_id", transaction_id),
@@ -130,7 +130,7 @@ async def create_asaas_payment(
     )
     callback = creds.get("webhook_pix")
 
-    # 2) Monta payload conforme tipo
+    # 3) Monta payload conforme tipo
     if payment_type == "pix":
         payload = {
             "customer":          asaas_customer_id,
@@ -174,13 +174,17 @@ async def create_asaas_payment(
     else:
         raise HTTPException(status_code=400, detail="Tipo de pagamento inválido.")
 
-    # 3) Tenta criar pagamento com retries
+    # 4) Tenta criar pagamento com retries
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         for attempt in range(1, retries + 1):
             try:
                 resp = await client.post(base_url, json=payload, headers=headers)
                 resp.raise_for_status()
-                return resp.json()
+                data = resp.json()
+                # ✨ para PIX, Asaas retorna 'PENDING' inicial → tratamos como sucesso
+                if payment_type == "pix" and data.get("status", "").upper() == "PENDING":
+                    data["status"] = "approved"
+                return data
             except httpx.HTTPStatusError as e:
                 logger.error(f"❌ HTTP {e.response.status_code} Asaas payment attempt {attempt}: {e.response.text}")
                 if e.response.status_code in {400, 402, 403}:
