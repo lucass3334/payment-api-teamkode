@@ -42,7 +42,7 @@ def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         devedor: Dict[str, Any] = {"nome": data["nome_devedor"]}
         if data.get("cpf"):
             devedor["cpf"] = data["cpf"]
-        elif data.get("cnpj"):
+        else:
             devedor["cnpj"] = data["cnpj"]
 
         payload["devedor"] = devedor
@@ -58,20 +58,20 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mapeia os dados do pagamento para o formato do gateway Asaas (PIX).
     - Recebe 'amount', 'chave_pix', e opcionalmente 'customer_id', 'descricao' e 'txid'.
+    - Inclui 'externalReference' para rastrear a transação.
     """
     if not data.get("chave_pix"):
         raise ValueError("A chave Pix (chave_pix) é obrigatória para pagamentos via PIX.")
 
     payload: Dict[str, Any] = {
-        "customer": data.get("customer_id", ""),
-        "billingType": "PIX",
-        "value": round(data["amount"], 2),
-        "pixKey": data["chave_pix"],
-        "externalReference": data.get("txid", ""),
-        "description": data.get("descricao") or f"Pagamento via Pix (txid {data.get('txid')})"
+        "customer":          data.get("customer_id", ""),
+        "billingType":       "PIX",
+        "value":             round(data["amount"], 2),
+        "pixKey":            data["chave_pix"],
+        "externalReference": data.get("transaction_id", ""),
+        "description":       data.get("descricao") or f"PIX (txid {data.get('transaction_id')})"
     }
     return payload
-
 
 
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -86,10 +86,10 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        "capture": True,
-        "kind": "credit",
-        "reference": data.get("transaction_id", ""),
-        "amount": str(int(data["amount"] * 100)),
+        "capture":      True,
+        "kind":         "credit",
+        "reference":    data.get("transaction_id", ""),
+        "amount":       str(int(data["amount"] * 100)),
         "installments": data.get("installments", 1),
         "softDescriptor": data.get("soft_descriptor", "Minha Empresa")
     }
@@ -98,11 +98,11 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         payload["cardToken"] = data["card_token"]
     else:
         payload.update({
-            "cardNumber": data["card_number"],
+            "cardNumber":      data["card_number"],
             "expirationMonth": f"{int(data['expiration_month']):02d}",
-            "expirationYear": data["expiration_year"],
-            "securityCode": data["security_code"],
-            "cardHolderName": data["cardholder_name"],
+            "expirationYear":  data["expiration_year"],
+            "securityCode":    data["security_code"],
+            "cardHolderName":  data["cardholder_name"],
         })
 
     return payload
@@ -116,14 +116,14 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
     """
     if not data.get("card_token") and not all(k in data for k in (
         "card_number", "expiration_month", "expiration_year", "security_code", "cardholder_name"
-    )):  
+    )):
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        "customer": data.get("customer_id", ""),
-        "billingType": "CREDIT_CARD",
-        "value": round(data["amount"], 2),
-        "installmentCount": data.get("installments", 1),
+        "customer":          data.get("customer_id", ""),
+        "billingType":       "CREDIT_CARD",
+        "value":             round(data["amount"], 2),
+        "installmentCount":  data.get("installments", 1),
         "externalReference": data.get("transaction_id", "")
     }
 
@@ -132,17 +132,17 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
     else:
         payload["creditCard"] = {
             "holderName": data["cardholder_name"],
-            "number": data["card_number"],
+            "number":     data["card_number"],
             "expiryMonth": f"{int(data['expiration_month']):02d}",
-            "expiryYear": data["expiration_year"],
-            "ccv": data["security_code"]
+            "expiryYear":  data["expiration_year"],
+            "ccv":         data["security_code"]
         }
         payload["creditCardHolderInfo"] = {
-            "name": data.get("cardholder_name", ""),
-            "cpfCnpj": data.get("cpf_cnpj", ""),
-            "postalCode": data.get("postal_code", ""),
+            "name":          data.get("cardholder_name", ""),
+            "cpfCnpj":       data.get("cpf_cnpj", ""),
+            "postalCode":    data.get("postal_code", ""),
             "addressNumber": data.get("address_number", ""),
-            "phone": data.get("phone", "")
+            "phone":         data.get("phone", "")
         }
 
     return payload

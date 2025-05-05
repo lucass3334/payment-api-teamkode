@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, EmailStr
 from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
@@ -24,7 +24,12 @@ from payment_kode_api.app.database.database import (
     get_sicredi_token_or_refresh,
     update_payment_status
 )
-from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
+from payment_kode_api.app.services.gateways.asaas_client import (
+    create_asaas_payment,
+    get_asaas_payment_status,
+    get_asaas_pix_qr_code,
+    validate_asaas_pix_key,
+    get_asaas_customer)
 from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
 from payment_kode_api.app.services.gateways.rede_client import create_rede_payment
 from payment_kode_api.app.services.gateways.payment_payload_mapper import (
@@ -71,7 +76,18 @@ class PixPaymentRequest(BaseModel):
     nome_devedor: Optional[str] = None
     cpf: Optional[str] = None
     cnpj: Optional[str] = None
+    email: Optional[EmailStr] = None  # incluído para cadastro no Asaas
 
+    @field_validator("amount", mode="before")
+    @classmethod
+    def normalize_amount(cls, v):
+        try:
+            decimal_value = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if decimal_value <= 0:
+                raise ValueError("O valor de 'amount' deve ser maior que 0.")
+            return decimal_value
+        except Exception as e:
+            raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
 class TokenizeCardRequest(BaseModel):
     customer_id: str
@@ -257,24 +273,24 @@ async def create_credit_card_payment(
 
     # ——— Asaas ———
     elif credit_provider == "asaas":
-        # 1) mapeia payload para extrair valores
+        # 1) mapeia payload padrão Asaas para extrair os campos
         asaas_info = map_to_asaas_credit_payload(mapper_data)
 
-        # 2) prepara customer_data
+        # 2) monta o dict customer_data para criar/recuperar cliente no Asaas
         customer_data = {
             "local_id":          transaction_id,
-            "name":              mapper_data.get("cardholder_name"),
-            "email":             mapper_data.get("customer_email"),
+            "name":              mapper_data["cardholder_name"],
+            "email":             mapper_data.get("email") or mapper_data.get("customer_email"),
             "cpfCnpj":           mapper_data.get("cpf") or mapper_data.get("cnpj"),
-            "phone":             mapper_data.get("customer_phone"),
-            "mobilePhone":       mapper_data.get("customer_mobile"),
+            "phone":             mapper_data.get("phone"),
+            "mobilePhone":       mapper_data.get("mobilePhone"),
             "postalCode":        mapper_data.get("postal_code"),
             "address":           mapper_data.get("address"),
             "addressNumber":     mapper_data.get("address_number"),
-            "externalReference": transaction_id,
-            "due_date":          None
+            "externalReference": transaction_id
         }
 
+        # 3) chama o Asaas
         try:
             logger.info(f"🚀 Processando pagamento via Asaas: txid={transaction_id}")
             resp = await create_asaas_payment(
@@ -285,7 +301,7 @@ async def create_credit_card_payment(
                 customer_data=customer_data,
                 card_token=asaas_info.get("creditCardToken"),
                 card_data=asaas_info.get("creditCard"),
-                installments=asaas_info.get("installmentCount", 1)
+                installments=asaas_info.get("installmentCount", 1),
             )
         except Exception as e:
             logger.error(f"❌ Erro Asaas: {e}")
@@ -303,6 +319,7 @@ async def create_credit_card_payment(
                 "message": "Pagamento aprovado via Asaas",
                 "transaction_id": transaction_id
             }
+
         raise HTTPException(status_code=402, detail="Pagamento recusado pela Asaas.")
 
     # ——— Provedor desconhecido ———
@@ -321,9 +338,9 @@ async def create_pix_payment(
     background_tasks: BackgroundTasks,
     empresa: dict = Depends(validate_access_token)
 ):
-    empresa_id      = empresa["empresa_id"]
-    transaction_id  = str(payment_data.transaction_id or uuid4())
-    txid            = (payment_data.txid or uuid4().hex).upper()  # normalize uppercase
+    empresa_id     = empresa["empresa_id"]
+    transaction_id = str(payment_data.transaction_id or uuid4())
+    txid           = (payment_data.txid or uuid4().hex).upper()
 
     logger.info(f"🔖 [create_pix_payment] iniciar: empresa={empresa_id} txid={txid} transaction_id={transaction_id}")
 
@@ -349,9 +366,9 @@ async def create_pix_payment(
         "webhook_url":    payment_data.webhook_url,
         "txid":           txid
     })
-    logger.debug(f"💾 [create_pix_payment] payment registrado como pending no DB")
+    logger.debug("💾 [create_pix_payment] payment registrado como pending no DB")
 
-    # determina o provider de PIX configurado para esta empresa
+    # determina provider
     config       = await get_empresa_config(empresa_id)
     pix_provider = config.get("pix_provider", "sicredi").lower()
     logger.info(f"🔍 [create_pix_payment] pix_provider configurado: {pix_provider}")
@@ -360,30 +377,24 @@ async def create_pix_payment(
         # ——— Fluxo Sicredi ———
         sicredi_payload = map_to_sicredi_payload({
             **payment_data.dict(exclude_unset=False),
-            "txid": txid,
-            "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
+            "txid":      txid,
+            "due_date":  payment_data.due_date.isoformat() if payment_data.due_date else None
         })
         logger.debug(f"📦 [create_pix_payment] payload Sicredi: {sicredi_payload!r}")
 
         resp = await create_sicredi_pix_payment(empresa_id=empresa_id, **sicredi_payload)
         logger.debug(f"✅ [create_pix_payment] Sicredi respondeu: {resp!r}")
 
-        qr_copy = resp["qr_code"]  # copia-e-cola
-        # gera PNG + base64
-        img = qrcode.make(qr_copy)
-        buf = BytesIO()
+        qr_copy = resp["qr_code"]
+        img     = qrcode.make(qr_copy)
+        buf     = BytesIO()
         img.save(buf, format="PNG")
-        qr_png = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
+        qr_png  = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
-        # agenda polling Sicredi se houver webhook
         if payment_data.webhook_url:
-            logger.info(f"🏷️ [create_pix_payment] agendando polling Sicredi para txid={txid}")
             background_tasks.add_task(
                 _poll_sicredi_status,
-                txid,
-                empresa_id,
-                transaction_id,
-                payment_data.webhook_url
+                txid, empresa_id, transaction_id, payment_data.webhook_url
             )
 
         result = {
@@ -402,10 +413,24 @@ async def create_pix_payment(
 
     elif pix_provider == "asaas":
         # ——— Fluxo Asaas ———
-        # 1) prepara customer_data para criar/recuperar cliente na Asaas
+        if not payment_data.chave_pix:
+            raise HTTPException(
+                status_code=400,
+                detail="Para Pix via Asaas, 'chave_pix' é obrigatório."
+            )
+
+        # valida chave cadastrada
+        await validate_asaas_pix_key(empresa_id, payment_data.chave_pix)
+
+        # monta payload e customer_data
+        pix_payload = map_to_asaas_pix_payload({
+            **payment_data.dict(exclude_unset=False),
+            "txid": txid
+        })
         customer_data = {
             "local_id":          transaction_id,
-            "name":              payment_data.nome_devedor,
+            "name":              payment_data.nome_devedor or "",
+            "email":             payment_data.email,
             "cpfCnpj":           payment_data.cpf or payment_data.cnpj,
             "externalReference": transaction_id,
             "due_date":          (payment_data.due_date or datetime.now(timezone.utc).date()).isoformat()
@@ -414,7 +439,7 @@ async def create_pix_payment(
         logger.info(f"🚀 [create_pix_payment] criando cobrança Asaas para txid={txid}")
         resp2 = await create_asaas_payment(
             empresa_id=empresa_id,
-            amount=float(payment_data.amount),
+            amount=pix_payload["value"],
             payment_type="pix",
             transaction_id=transaction_id,
             customer_data=customer_data
@@ -425,19 +450,24 @@ async def create_pix_payment(
             logger.critical(f"❌ [create_pix_payment] erro Asaas {transaction_id}: {resp2}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Asaas")
 
-        # monta resposta Asaas
+        # obtém QR-Code + copia-e-cola
+        qr_info = await get_asaas_pix_qr_code(empresa_id, resp2["id"])
+
         return {
-            "status":         resp2["status"].lower(),
-            "transaction_id": transaction_id,
-            "pix_link":       resp2.get("pixKey"),
-            "qr_code_base64": resp2.get("qrCode"),
-            "expiration":     resp2.get("expirationDateTime")
+            "status":           resp2["status"].lower(),
+            "transaction_id":   transaction_id,
+            "pix_link":         qr_info["pix_link"],
+            "qr_code_base64":   qr_info["qr_code_base64"],
+            "expiration":       qr_info.get("expiration")
         }
 
     else:
-        # provedor não suportado
+        # provider desconhecido
         logger.error(f"❌ [create_pix_payment] provedor PIX desconhecido: {pix_provider}")
-        raise HTTPException(status_code=400, detail=f"Provedor PIX desconhecido: {pix_provider}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provedor PIX desconhecido: {pix_provider}"
+        )
 
 async def _poll_sicredi_status(
     txid: str,
@@ -538,3 +568,38 @@ async def _poll_sicredi_status(
 
     logger.error(f"❌ [_poll] deadline atingida sem status final txid={txid}")
 
+async def _poll_asaas_pix_status(transaction_id: str, empresa_id: str, webhook_url: str, interval: int = 5, timeout_minutes: int = 15):
+    """
+    Polling de status de uma cobrança PIX via Asaas.
+    Consulta GET /payments?externalReference={transaction_id} até encontrar status final
+    (RECEIVED -> approved, REFUNDED -> canceled) ou expirar o prazo de 10 minutos.
+    """
+    start = datetime.now(timezone.utc)
+    deadline = start + timedelta(minutes=timeout_minutes)
+
+    while datetime.now(timezone.utc) < deadline:
+        data = await get_asaas_payment_status(empresa_id, transaction_id)
+        if data:
+            status = data.get("status", "").upper()
+            #mapear para nossos status internos
+            if status in {"RECEIVED", "CONFIRMED"}:
+                mapped = "approved"
+            elif status in {"REFUNDED", "REFUNDED_PARTIAL"}:
+                mapped = "canceled"
+            else:
+                mapped = None
+
+            if mapped:
+                logger.info(f"✅ [_poll_asaas_pix_status] {transaction_id} → {status} (mapeado para {mapped})")
+                await update_payment_status(transaction_id, empresa_id, mapped)
+                if webhook_url:
+                    await notify_user_webhook(webhook_url, {
+                        "transaction_id": transaction_id,
+                        "status": mapped,
+                        "provedor": "asaas",
+                        "payload": data
+                    })
+                return
+            
+            await asyncio.sleep(interval)
+        logger.error(f"❌ [_poll_asaas_pix_status] deadline atingida sem status final txid={transaction_id}")

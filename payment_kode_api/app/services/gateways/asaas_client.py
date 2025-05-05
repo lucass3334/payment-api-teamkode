@@ -63,6 +63,27 @@ async def tokenize_asaas_card(empresa_id: str, card_data: Dict[str, Any]) -> str
             raise HTTPException(status_code=500, detail="Erro inesperado na tokenização Asaas")
 
 
+async def list_asaas_pix_keys(empresa_id: str) -> list[Dict[str, Any]]:
+    """
+    Retorna todas as chaves Pix cadastradas para esta empresa no Asaas.
+    Endpoint: GET /v3/pix/addressKeys
+    """
+    headers = await get_asaas_headers(empresa_id)
+    creds = await get_empresa_credentials(empresa_id)
+    use_sandbox = creds.get("use_sandbox", True)
+    base_url = (
+        "https://sandbox.asaas.com/api/v3"
+        if use_sandbox else
+        "https://api.asaas.com/v3"
+    )
+    url = f"{base_url}/pix/addressKeys"
+
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+
+
 async def create_asaas_payment(
     empresa_id: str,
     amount: float,
@@ -95,7 +116,7 @@ async def create_asaas_payment(
             "externalReference": customer_data.get("externalReference", transaction_id)
         }
     )
-    
+
     headers = await get_asaas_headers(empresa_id)
     creds = await get_empresa_credentials(empresa_id)
     use_sandbox = creds.get("use_sandbox", True)
@@ -202,7 +223,7 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
     api_key = config.get("asaas_api_key")
     if not api_key:
         logger.error(f"❌ Asaas API key não encontrada para refund empresa {empresa_id}")
-        raise HTTPException(400, "Asaas API key não configurada para refund.")
+        raise HTTPException(status_code=400, detail="Asaas API key não configurada para refund.")
 
     use_sandbox = config.get("use_sandbox", True)
     base_url = (
@@ -222,22 +243,70 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ HTTP {e.response.status_code} refund Asaas: {e.response.text}")
-            raise HTTPException(e.response.status_code, "Erro no estorno Asaas")
+            raise HTTPException(status_code=e.response.status_code, detail="Erro no estorno Asaas")
         except Exception as e:
             logger.error(f"❌ Erro inesperado refund Asaas: {e!r}")
-            raise HTTPException(500, "Erro inesperado no estorno Asaas")
+            raise HTTPException(status_code=500, detail="Erro inesperado no estorno Asaas")
 
     data = resp.json()
     status = data.get("status", "").lower()
     logger.info(f"✅ [create_asaas_refund] status Asaas para {transaction_id}: {status}")
-
     return {"status": status, **data}
+
+async def validate_asaas_pix_key(empresa_id: str, chave_pix: str) -> None:
+    """
+    Lança HTTPException(400) se a chave_pix não estiver cadastrada no Asaas.
+    """
+    keys = await list_asaas_pix_keys(empresa_id)
+    if not any(k.get("key") == chave_pix for k in keys):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chave Pix '{chave_pix}' não cadastrada no Asaas. Cadastre-a no painel."
+        )
+
+
+async def get_asaas_pix_qr_code(
+    empresa_id: str,
+    payment_id: str
+) -> Dict[str, Any]:
+    """
+    Busca o QR-Code (base64 + copia e cola) de uma cobrança Pix no Asaas.
+    Endpoint: GET /v3/payments/{paymentId}/pixQrCode
+    """
+    headers = await get_asaas_headers(empresa_id)
+    creds = await get_empresa_credentials(empresa_id)
+    use_sandbox = creds.get("use_sandbox", True)
+    base = "https://sandbox.asaas.com/api/v3" if use_sandbox else "https://api.asaas.com/v3"
+    url = f"{base}/payments/{payment_id}/pixQrCode"
+
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ Pix QRCode Asaas HTTP {e.response.status_code}: {e.response.text}")
+            raise HTTPException(
+                status_code=502,
+                detail="Erro ao buscar QR-Code Pix no Asaas."
+            )
+
+    data = resp.json()
+    return {
+        "qr_code_base64": data.get("pixQrCodeBase64"),
+        "pix_link":       data.get("pixQrCodeCopiado"),
+        "expiration":    data.get("expirationDateTime")
+    }
+
 
 
 __all__ = [
     "tokenize_asaas_card",
+    "list_asaas_pix_keys",
     "create_asaas_payment",
     "get_asaas_payment_status",
     "create_asaas_refund",
-    "get_or_create_asaas_customer"
+    "get_or_create_asaas_customer",
+    "get_asaas_pix_qr_code",
+    "validate_asaas_pix_key",
+    "get_asaas_headers",
 ]
