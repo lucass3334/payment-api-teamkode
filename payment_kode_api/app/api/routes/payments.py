@@ -3,14 +3,14 @@ from pydantic import BaseModel, Field, field_validator, EmailStr
 from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import httpx
 import secrets
 from io import BytesIO
 import base64
 import qrcode
 import asyncio
-from datetime import datetime, timedelta, timezone
+
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.database.supabase_client import supabase
 from payment_kode_api.app.database.database import (
@@ -22,28 +22,29 @@ from payment_kode_api.app.database.database import (
     update_payment_status_by_txid,
     get_tokenized_card,
     get_sicredi_token_or_refresh,
-    update_payment_status
+    update_payment_status,
 )
+# pega o helper do cliente Asaas direto do módulo de banco
+from payment_kode_api.app.database.customers import get_asaas_customer
 from payment_kode_api.app.services.gateways.asaas_client import (
     create_asaas_payment,
     get_asaas_payment_status,
     get_asaas_pix_qr_code,
     validate_asaas_pix_key,
-    get_asaas_customer)
+)
 from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
 from payment_kode_api.app.services.gateways.rede_client import create_rede_payment
 from payment_kode_api.app.services.gateways.payment_payload_mapper import (
     map_to_sicredi_payload,
     map_to_asaas_pix_payload,
     map_to_rede_payload,
-    map_to_asaas_credit_payload
+    map_to_asaas_credit_payload,
 )
 from payment_kode_api.app.services import notify_user_webhook
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.security.auth import validate_access_token
-from payment_kode_api.app.core.config import settings
-from ...services.config_service import load_certificates_from_bucket
 from payment_kode_api.app.utilities.cert_utils import build_ssl_context_from_memory
+from ...services.config_service import load_certificates_from_bucket
 
 
 router = APIRouter()
