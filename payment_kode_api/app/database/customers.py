@@ -66,10 +66,10 @@ async def get_or_create_asaas_customer(
         raise HTTPException(status_code=400, detail="Asaas API key não configurada para esta empresa.")
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "access_token": api_key,
         "Content-Type":  "application/json"
     }
-    use_sandbox = creds.get("use_sandbox", True)
+    use_sandbox = creds.get("use_sandbox", False)
     base_url = "https://sandbox.asaas.com/api/v3/customers" if use_sandbox else "https://api.asaas.com/v3/customers"
 
     payload = {
