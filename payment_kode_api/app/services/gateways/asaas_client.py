@@ -100,6 +100,9 @@ async def create_asaas_payment(
     Suporta PIX e Cartão de Crédito.
     Garante que o cliente exista via get_or_create_asaas_customer.
     """
+    # --- CONVERTENDO DECIMAL PARA FLOAT PARA EVITAR ERRO DE SERIALIZAÇÃO ---
+    amount = float(amount)
+
     # 1) Obtém ou cria cliente na Asaas
     asaas_customer_id = await get_or_create_asaas_customer(
         empresa_id=empresa_id,
