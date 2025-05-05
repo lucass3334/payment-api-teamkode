@@ -147,5 +147,3 @@ Em caso de dúvidas ou erro `unable to get local issuer certificate`, revise a *
 ---
 
 ```
-
-Se quiser posso gerar este README.md automaticamente, te mandar um `.md` ou colar direto no repositório. Deseja?
