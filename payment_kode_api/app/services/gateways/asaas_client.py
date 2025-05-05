@@ -132,16 +132,21 @@ async def create_asaas_payment(
 
     # 3) Monta payload conforme tipo
     if payment_type == "pix":
+        pix_key = customer_data.get("pixKey")
+        if not pix_key:
+            raise HTTPException(400, "Para PIX, é obrigatório informar 'pixKey' em customer_data.")
         payload = {
             "customer":          asaas_customer_id,
             "value":             amount,
             "billingType":       "PIX",
+            "pixKey":            pix_key,                          # ← inclusão da chave Pix
             "dueDate":           customer_data.get("due_date"),
             "description":       f"PIX {transaction_id}",
             "externalReference": transaction_id,
             "postalService":     False,
             "callbackUrl":       callback
         }
+
     elif payment_type == "credit_card":
         installments = max(1, min(installments, 12))
         common = {
@@ -171,6 +176,7 @@ async def create_asaas_payment(
                     "phone":          customer_data.get("phone")
                 }
             }
+
     else:
         raise HTTPException(status_code=400, detail="Tipo de pagamento inválido.")
 
@@ -181,20 +187,22 @@ async def create_asaas_payment(
                 resp = await client.post(base_url, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
-                # ✨ para PIX, Asaas retorna 'PENDING' inicial → tratamos como sucesso
+                # para PIX, Asaas retorna 'PENDING' inicial → tratamos como sucesso
                 if payment_type == "pix" and data.get("status", "").upper() == "PENDING":
                     data["status"] = "approved"
                 return data
+
             except httpx.HTTPStatusError as e:
                 logger.error(f"❌ HTTP {e.response.status_code} Asaas payment attempt {attempt}: {e.response.text}")
                 if e.response.status_code in {400, 402, 403}:
                     raise HTTPException(status_code=e.response.status_code, detail="Erro no pagamento Asaas")
+
             except Exception as e:
                 logger.warning(f"⚠️ Erro conexão Asaas attempt {attempt}: {e}")
+
             await asyncio.sleep(2)
 
     raise HTTPException(status_code=500, detail="Falha no pagamento Asaas após múltiplas tentativas")
-
 
 async def get_asaas_payment_status(empresa_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
     """
