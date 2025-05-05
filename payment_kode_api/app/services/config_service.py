@@ -53,6 +53,7 @@ async def get_empresa_credentials(empresa_id: str) -> Dict[str, Any]:
         "rede_api_key":         config.get("rede_api_key"),
         "webhook_pix":          config.get("webhook_pix"),
         "sicredi_env":          config.get("sicredi_env", "production"),
+        "use_sandbox":        config.get("use_sandbox", settings.USE_SANDBOX),
     }
 
     # Avisar se faltar algo essencial

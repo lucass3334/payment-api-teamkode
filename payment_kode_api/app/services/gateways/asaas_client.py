@@ -70,7 +70,7 @@ async def list_asaas_pix_keys(empresa_id: str) -> list[Dict[str, Any]]:
     """
     headers = await get_asaas_headers(empresa_id)
     creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", True)
+    use_sandbox = creds.get("use_sandbox", False)
     base_url = (
         "https://sandbox.asaas.com/api/v3"
         if use_sandbox else
@@ -119,7 +119,7 @@ async def create_asaas_payment(
 
     headers = await get_asaas_headers(empresa_id)
     creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", True)
+    use_sandbox = creds.get("use_sandbox", False)
     base_url = (
         "https://sandbox.asaas.com/api/v3/payments"
         if use_sandbox else
