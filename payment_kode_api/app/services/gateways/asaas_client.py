@@ -306,10 +306,11 @@ async def get_asaas_pix_qr_code(
             )
 
     data = resp.json()
+    qr = data.get("qrCode", {})
     return {
-        "qr_code_base64": data.get("pixQrCodeBase64"),
-        "pix_link":       data.get("pixQrCodeCopiado"),
-        "expiration":    data.get("expirationDateTime")
+        "qr_code_base64": qr.get("encodedImage"),
+        "pix_link":       qr.get("payload"),
+        "expiration":     data.get("expirationDateTime")
     }
 
 
