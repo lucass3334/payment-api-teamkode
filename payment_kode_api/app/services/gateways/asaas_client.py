@@ -306,11 +306,27 @@ async def get_asaas_pix_qr_code(
             )
 
     data = resp.json()
-    qr = data.get("qrCode", {})
+    # O Asaas agora retorna os campos no root, não dentro de "qrCode"
+    success = data.get("success", False)
+    encoded = data.get("encodedImage")
+    payload = data.get("payload")
+    expiration = data.get("expirationDate") or data.get("expirationDateTime")
+
+    if success and encoded:
+        # Opcional: converta expiration para ISO 8601, se quiser
+        expiration_iso = expiration.replace(" ", "T") if expiration else None
+
+        return {
+            "qr_code_base64": encoded,
+            "pix_link":       payload,
+            "expiration":     expiration_iso
+        }
+
+    # Ainda não gerado
     return {
-        "qr_code_base64": qr.get("encodedImage"),
-        "pix_link":       qr.get("payload"),
-        "expiration":     data.get("expirationDateTime")
+        "qr_code_base64": None,
+        "pix_link":       None,
+        "expiration":     None
     }
 
 

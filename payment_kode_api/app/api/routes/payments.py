@@ -451,8 +451,16 @@ async def create_pix_payment(
             logger.critical(f"❌ [create_pix_payment] erro Asaas {transaction_id}: {resp2}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Asaas")
 
-        # Obtém QR-Code + copia-e-cola
-        qr_info = await get_asaas_pix_qr_code(empresa_id, resp2["id"])
+        # --> Polling do QR Code
+        max_retries = 5
+        Interval = 2
+        qr_info = {"qr_code_base64":None}
+        for _ in range(max_retries):
+            qr_info = await get_asaas_pix_qr_code(empresa_id, resp2["id"])
+            if qr_info["qr_code_base64"]:
+                break
+            await asyncio.sleep(Interval)
+            Interval *= 2
 
         return {
             "status":           resp2["status"].lower(),
