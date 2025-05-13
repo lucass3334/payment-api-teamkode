@@ -1,172 +1,158 @@
-import httpx
-from base64 import b64encode
-from fastapi import HTTPException
-from ...utilities.logging_config import logger
-from ..config_service import get_empresa_credentials
-from .asaas_client import create_asaas_payment  # Importando Asaas como fallback
+# payment_kode_api/app/services/gateways/rede_client.py
+
 import asyncio
+from base64 import b64encode
+from typing import Dict, Any, Optional
 
-async def get_rede_headers(empresa_id: str):
-    """
-    Retorna os headers necessários para autenticação na API da Rede para uma empresa específica.
-    """
-    credentials = get_empresa_credentials(empresa_id)
-    if not credentials or not credentials.get("rede_pv") or not credentials.get("rede_api_key"):
-        raise ValueError(f"Credenciais da Rede não encontradas para empresa {empresa_id}")
+import httpx
+from fastapi import HTTPException
 
-    auth_header = b64encode(f"{credentials['rede_pv']}:{credentials['rede_api_key']}".encode()).decode()
-    
+from payment_kode_api.app.database.database import get_empresa_config
+from payment_kode_api.app.services.gateways.payment_payload_mapper import map_to_rede_payload
+from payment_kode_api.app.utilities.logging_config import logger
+
+TIMEOUT = 15.0
+
+
+async def get_rede_headers(empresa_id: str) -> Dict[str, str]:
+    """
+    Retorna os headers necessários para autenticação na API da Rede.
+    """
+    config = await get_empresa_config(empresa_id)
+    pv = config.get("rede_pv")
+    api_key = config.get("rede_api_key")
+    if not pv or not api_key:
+        raise HTTPException(status_code=401, detail=f"Credenciais da Rede não encontradas para empresa {empresa_id}")
+
+    auth = b64encode(f"{pv}:{api_key}".encode()).decode()
     return {
-        "Authorization": f"Basic {auth_header}",
+        "Authorization": f"Basic {auth}",
         "Content-Type": "application/json",
     }
 
-async def get_rede_access_token(empresa_id: str, retries: int = 2):
-    """
-    Obtém um token de acesso para autenticação na API da Rede, com tentativas de fallback.
-    """
-    credentials = get_empresa_credentials(empresa_id)
-    if not credentials:
-        raise ValueError(f"Configuração da Rede não encontrada para empresa {empresa_id}")
 
-    auth_url = "https://api.userede.com.br/auth"
-
-    headers = await get_rede_headers(empresa_id)
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        for attempt in range(retries):
-            try:
-                response = await client.post(auth_url, headers=headers)
-                response.raise_for_status()
-                return response.json().get("access_token")
-
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Erro HTTP ao obter token da Rede (tentativa {attempt+1}): {e.response.status_code} - {e.response.text}")
-                if e.response.status_code in {401, 403}:  # Credenciais inválidas
-                    raise HTTPException(status_code=401, detail="Credenciais inválidas para a Rede")
-
-            except httpx.RequestError as e:
-                logger.warning(f"Erro de conexão ao autenticar na Rede (tentativa {attempt+1}): {e}")
-
-            await asyncio.sleep(2)
-
-    raise HTTPException(status_code=500, detail=f"Falha ao obter token da Rede para empresa {empresa_id} após {retries} tentativas")
-
-async def tokenize_rede_card(empresa_id: str, card_data: dict):
+async def tokenize_rede_card(empresa_id: str, card_data: Dict[str, Any]) -> str:
     """
     Tokeniza os dados do cartão na API da Rede.
     """
+    headers = await get_rede_headers(empresa_id)
+    url = "https://api.userede.com.br/ecomm/v1/card"
+    payload = {
+        "number": card_data["card_number"],
+        "expirationMonth": card_data["expiration_month"],
+        "expirationYear": card_data["expiration_year"],
+        "securityCode": card_data["security_code"],
+        "holderName": card_data["cardholder_name"]
+    }
     try:
-        token = await get_rede_access_token(empresa_id)
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-
-        tokenize_url = "https://api.userede.com.br/ecomm/v1/card"
-
-        payload = {
-            "number": card_data["card_number"],
-            "expirationMonth": card_data["expiration_month"],
-            "expirationYear": card_data["expiration_year"],
-            "securityCode": card_data["security_code"],
-            "holderName": card_data["cardholder_name"]
-        }
-
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(tokenize_url, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json().get("cardToken")
-
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json().get("cardToken")
     except httpx.HTTPStatusError as e:
-        logger.error(f"Erro HTTP ao tokenizar cartão na Rede: {e.response.status_code} - {e.response.text}")
-        raise HTTPException(status_code=e.response.status_code, detail="Erro ao tokenizar cartão na Rede")
-
-    except httpx.RequestError as e:
-        logger.error(f"Erro de conexão ao tokenizar cartão na Rede: {e}")
-        raise HTTPException(status_code=500, detail="Erro de conexão ao tokenizar cartão na Rede")
-
+        logger.error(f"❌ Rede tokenização HTTP {e.response.status_code}: {e.response.text}")
+        raise HTTPException(status_code=502, detail="Erro ao tokenizar cartão na Rede")
     except Exception as e:
-        logger.error(f"Erro inesperado na tokenização de cartão na Rede: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro inesperado na tokenização de cartão na Rede")
+        logger.error(f"❌ Rede tokenização erro: {e}")
+        raise HTTPException(status_code=502, detail="Erro de conexão ao tokenizar cartão na Rede")
+
 
 async def create_rede_payment(
-    empresa_id: str, 
-    transaction_id: str, 
-    amount: int, 
-    card_data: dict, 
-    installments: int = 1,
-    use_token: bool = False
-):
+    empresa_id: str,
+    base_data: Dict[str, Any],
+    tokenize: bool = False
+) -> Dict[str, Any]:
     """
-    Cria um pagamento via Cartão de Crédito na Rede com suporte a parcelamento.
-    Se a Rede falhar, automaticamente tenta o Asaas como fallback.
+    Cria um pagamento na Rede.
+    - base_data deve conter todos os campos necessários (transaction_id, amount, installments e dados do cartão).
+    - Se 'tokenize' for True e não houver cardToken, tenta tokenizar antes.
     """
-    try:
-        token = await get_rede_access_token(empresa_id)
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
+    # 1) Mapeia payload genérico para o formato Rede
+    payload = map_to_rede_payload(base_data)
 
-        transaction_url = "https://api.userede.com.br/ecomm/v1/transactions"
-
-        if use_token:
-            # Se o uso de token for especificado, assumimos que card_data contém o cardToken
-            payload = {
-                "capture": True,
-                "reference": transaction_id,
-                "amount": amount,
-                "installments": installments,
-                "kind": "credit",
-                "cardToken": card_data["card_token"]
-            }
+    # 2) Ajusta tokenização / card raw
+    if "cardToken" in payload:
+        # já tokenizado, segue
+        pass
+    else:
+        # payload contém cardNumber, expirationMonth, expirationYear, securityCode, cardHolderName
+        if tokenize:
+            # gera cardToken e reconstrói payload
+            token = await tokenize_rede_card(empresa_id, payload)
+            for k in ("cardNumber", "expirationMonth", "expirationYear", "securityCode", "cardHolderName"):
+                payload.pop(k, None)
+            payload["cardToken"] = token
         else:
-            # Se não for tokenizado, envia os dados do cartão normalmente
-            payload = {
-                "capture": True,
-                "reference": transaction_id,
-                "amount": amount,
-                "installments": installments,
-                "kind": "credit",
-                "card": {
-                    "number": card_data["card_number"],
-                    "expirationMonth": card_data["expiration_month"],
-                    "expirationYear": card_data["expiration_year"],
-                    "securityCode": card_data["security_code"],
-                    "holderName": card_data["cardholder_name"]
-                }
+            # agrupa em campo 'card'
+            card = {
+                "number": payload.pop("cardNumber"),
+                "expirationMonth": payload.pop("expirationMonth"),
+                "expirationYear": payload.pop("expirationYear"),
+                "securityCode": payload.pop("securityCode"),
+                "holderName": payload.pop("cardHolderName"),
             }
+            payload["card"] = card
 
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(transaction_url, json=payload, headers=headers)
-            response.raise_for_status()
-            return response.json()
+    # 3) Envia requisição
+    headers = await get_rede_headers(empresa_id)
+    url = "https://api.userede.com.br/ecomm/v1/transactions"
+    logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id} payload={payload!r}")
+
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        code, text = e.response.status_code, e.response.text
+        logger.error(f"❌ Rede retornou HTTP {code}: {text}")
+        if code in (400, 402, 403):
+            raise HTTPException(status_code=code, detail="Pagamento recusado pela Rede")
+        raise HTTPException(status_code=502, detail="Erro no gateway Rede")
+    except Exception as e:
+        logger.error(f"❌ Erro de conexão com a Rede: {e}")
+        raise HTTPException(status_code=502, detail="Erro de conexão ao processar pagamento na Rede")
+
+
+async def create_rede_refund(
+    empresa_id: str,
+    transaction_id: str,
+    amount: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Solicita estorno de uma transação na Rede.
+    - Se `amount` não for informado, estorna o valor total.
+    - Se `amount` for um inteiro (em centavos), faz estorno parcial.
+    Endpoint: POST /ecomm/v1/transactions/{transaction_id}/refunds
+    """
+    # 1) Cabeçalhos Basic Auth (PV + API Key)
+    headers = await get_rede_headers(empresa_id)
+
+    # 2) Monta URL de estorno
+    url = f"https://api.userede.com.br/ecomm/v1/transactions/{transaction_id}/refunds"
+
+    # 3) Payload opcional
+    payload: Dict[str, Any] = {}
+    if amount is not None:
+        payload["amount"] = amount
+
+    # 4) Chama a API da Rede
+    try:
+        logger.info(f"🔄 Solicitando estorno Rede: POST {url} – payload={payload}")
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"Erro HTTP ao criar pagamento na Rede: {e.response.status_code} - {e.response.text}")
-        if e.response.status_code in {400, 402, 403}:  
-            raise HTTPException(status_code=e.response.status_code, detail="Pagamento recusado pela Rede")
-
-    except httpx.RequestError as e:
-        logger.error(f"Erro de conexão ao criar pagamento na Rede: {e}")
-        raise HTTPException(status_code=500, detail="Erro de conexão ao processar pagamento na Rede")
+        status = e.response.status_code
+        text = e.response.text
+        logger.error(f"❌ Rede retornou HTTP {status} no estorno: {text}")
+        if status in (400, 402, 403, 404):
+            # 400 = requisição inválida, 402 = não autorizado, 403 = proibição, 404 = transação não encontrada
+            raise HTTPException(status_code=status, detail=f"Erro no estorno Rede: {text}")
+        raise HTTPException(status_code=502, detail="Erro no gateway Rede ao processar estorno")
 
     except Exception as e:
-        logger.error(f"Erro inesperado na Rede: {str(e)}")
-    
-    # Se falhar na Rede, tenta o Asaas como fallback
-    try:
-        logger.warning(f"Pagamento falhou na Rede, tentando fallback via Asaas para {transaction_id}")
-        return await create_asaas_payment(
-            empresa_id=empresa_id,
-            amount=amount / 100,  # Conversão para reais
-            payment_type="credit_card",
-            transaction_id=transaction_id,
-            customer={},  # Ajustar cliente se necessário
-            card_data=card_data,
-            installments=installments
-        )
-    except Exception as fallback_error:
-        logger.error(f"Erro no fallback via Asaas para {transaction_id}: {str(fallback_error)}")
-        raise HTTPException(status_code=500, detail="Falha no pagamento via Rede e Asaas")
+        logger.error(f"❌ Erro inesperado ao estornar na Rede: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao processar estorno na Rede")

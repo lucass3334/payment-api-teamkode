@@ -29,7 +29,7 @@ Para comunicação segura com a Sicredi via mTLS, precisamos:
 Acesse o portal Sicredi e baixe:
 
 - `22308504000106.cer` (ou nome similar)
-- `CadeiaCompletaSicredi.cer`
+- `CadeiaCompletaSicredi.cer` # não serve de porra nenhuma
 
 Renomeie:
 ```bash
@@ -147,5 +147,3 @@ Em caso de dúvidas ou erro `unable to get local issuer certificate`, revise a *
 ---
 
 ```
-
-Se quiser posso gerar este README.md automaticamente, te mandar um `.md` ou colar direto no repositório. Deseja?

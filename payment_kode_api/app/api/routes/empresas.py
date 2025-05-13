@@ -1,3 +1,5 @@
+#api/routes/empresas.py
+# -*- coding: utf-8 -*- 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pydantic.types import StringConstraints
@@ -15,6 +17,10 @@ import secrets
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 import base64
+
+#novos imports
+from payment_kode_api.app.models import EmpresaGatewayConfigSchema
+from payment_kode_api.app.database.database import  (atualizar_config_gateway, get_empresa_gateways)
 
 router = APIRouter()
 
@@ -124,3 +130,45 @@ async def validate_access_token(access_token: str):
     except Exception as e:
         logger.error(f"❌ Erro ao validar token: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro interno ao validar token.")
+
+
+@router.post("/empresa/configurar_gateway")
+async def configurar_gateway(schema: EmpresaGatewayConfigSchema):
+    """
+    Atualiza os gateways padrão (Pix e Crédito) da empresa.
+    """
+    try:
+        atualizado = await atualizar_config_gateway(schema.model_dump())
+
+        if not atualizado:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada ou configuração não atualizada.")
+
+        logger.info(f"✅ Gateways configurados com sucesso para empresa {schema.empresa_id}")
+        return {"status": "success", "message": "Gateways atualizados com sucesso."}
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Erro ao configurar gateways da empresa {schema.empresa_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao configurar gateways.")
+
+
+@router.get("/empresa/gateways/{empresa_id}")
+async def obter_gateways_empresa(empresa_id: str):
+    """
+    Retorna os providers configurados (Pix e Crédito) para a empresa.
+    """
+    try:
+        gateways = await get_empresa_gateways(empresa_id)
+
+        if not gateways:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada ou gateways não configurados.")
+
+        logger.info(f"📦 Providers retornados para empresa {empresa_id}: {gateways}")
+        return {"empresa_id": empresa_id, "gateways": gateways}
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ Erro ao obter gateways da empresa {empresa_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno ao consultar gateways.")

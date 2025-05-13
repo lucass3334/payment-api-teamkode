@@ -1,26 +1,20 @@
 import os
-from supabase import create_client, Client
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.utilities.logging_config import logger
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import uuid
 from decimal import Decimal
+from datetime import datetime, timezone, timedelta
+from .supabase_client import supabase
+
+
+
 
 datetime.now(timezone.utc)
 
 VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
 
-class SupabaseClient:
-    _client: Optional[Client] = None
-
-    @classmethod
-    def get_client(cls) -> Client:
-        if cls._client is None:
-            cls._client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        return cls._client
-
-supabase = SupabaseClient.get_client()
 
 # 🔹 Cartões tokenizados
 async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,18 +122,137 @@ async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ Erro ao buscar empresa pelo Access Token: {e}")
         raise
 
-async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
+
+# 🔹 Busca o token da Sicredi para uma empresa, atualizando se expirado
+async def get_sicredi_token_or_refresh(empresa_id: str) -> str:
+    """
+    Busca no Supabase o token Sicredi salvo; se expirou, solicita um novo
+    e atualiza a tabela `empresas_config`.
+    """
     try:
-        response = (
-            supabase.table("empresas_config")
-            .select("*")
+        # 1) Busca diretamente no Supabase (sem passar pelo config_service)
+        resp = (
+            supabase
+            .table("empresas_config")
+            .select("sicredi_token, sicredi_token_expires_at")
+            .eq("empresa_id", empresa_id)
+            .limit(1)
+            .execute()
+        )
+        row = resp.data[0] if resp.data else {}
+        token = row.get("sicredi_token")
+        expires_at = row.get("sicredi_token_expires_at")
+
+        # 2) Verifica validade
+        if token and expires_at:
+            now = datetime.now(timezone.utc)
+            try:
+                exp_dt = datetime.fromisoformat(expires_at)
+            except ValueError:
+                exp_dt = datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%S.%f")
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            # --- Fim do patch ---
+
+            if exp_dt > now:
+                logger.info(f"🟢 Reutilizando token Sicredi para {empresa_id}")
+                return token
+
+            logger.info(f"🔄 Token Sicredi expirado para {empresa_id}, renovando...")
+
+        # 3) Só agora importamos a função que vai chamar o Sicredi
+        from payment_kode_api.app.services.gateways.sicredi_client import get_access_token
+
+        new_token = await get_access_token(empresa_id)
+        # subtrai 60s pra dar folga
+        new_expires = datetime.now(timezone.utc) + timedelta(seconds=3600 - 60)
+
+        # 4) Atualiza no Supabase
+        upd = (
+            supabase
+            .table("empresas_config")
+            .update({
+                "sicredi_token": new_token,
+                "sicredi_token_expires_at": new_expires.isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            })
             .eq("empresa_id", empresa_id)
             .execute()
         )
-        return response.data[0] if response.data else None
+
+        if upd.data:
+            logger.info(f"✅ Token Sicredi atualizado no Supabase para {empresa_id}")
+        else:
+            logger.warning(f"⚠️ Não salvou token Sicredi para {empresa_id}")
+
+        return new_token
+
     except Exception as e:
-        logger.error(f"❌ Erro ao recuperar configuração da empresa {empresa_id}: {e}")
+        logger.error(f"❌ Erro em get_sicredi_token_or_refresh({empresa_id}): {e}")
         raise
+
+# 🔹 Atualiza os gateways padrão (Pix e Crédito) da empresa
+async def atualizar_config_gateway(payload: Dict[str, Any]) -> bool:
+    """
+    Atualiza os providers de Pix e Crédito para a empresa no Supabase.
+    """
+    try:
+        empresa_id = payload.get("empresa_id")
+        pix_provider = payload.get("pix_provider", "sicredi")
+        credit_provider = payload.get("credit_provider", "rede")
+
+        if not empresa_id:
+            raise ValueError("O campo 'empresa_id' é obrigatório.")
+
+        update_data = {
+            "pix_provider": pix_provider,
+            "credit_provider": credit_provider,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        response = (
+            supabase.table("empresas_config")
+            .update(update_data)
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"✅ Gateways atualizados para empresa {empresa_id}: Pix = {pix_provider}, Crédito = {credit_provider}")
+            return True
+        else:
+            logger.warning(f"⚠️ Nenhuma empresa encontrada com ID {empresa_id} para atualizar gateways.")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao atualizar os gateways da empresa {payload.get('empresa_id')}: {e}")
+        raise
+
+# 🔹 Retorna os providers atuais da empresa (Pix e Crédito)
+async def get_empresa_gateways(empresa_id: str) -> Optional[Dict[str, str]]:
+    """
+    Retorna os providers configurados para Pix e Crédito de uma empresa.
+    """
+    try:
+        response = (
+            supabase.table("empresas_config")
+            .select("pix_provider, credit_provider")
+            .eq("empresa_id", empresa_id)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+            logger.info(f"📦 Providers da empresa {empresa_id} retornados com sucesso.")
+            return response.data[0]
+
+        logger.warning(f"⚠️ Nenhum provider encontrado para empresa {empresa_id}.")
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar providers da empresa {empresa_id}: {e}")
+        return None
+
 
 # 🔹 Pagamentos
 async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -223,6 +336,44 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
         logger.error(f"❌ Erro ao atualizar status do pagamento para empresa {empresa_id}, transaction_id {transaction_id}: {e}")
         raise
 
+# 🔹 Pagamento por TXID
+async def get_payment_by_txid(txid: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca no Supabase o pagamento que tenha o txid informado.
+    """
+    try:
+        resp = (
+            supabase.table("payments")
+            .select("*")
+            .eq("txid", txid)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception as e:
+        logger.error(f"❌ Erro ao recuperar pagamento pelo TXID {txid}: {e}")
+        raise
+
+async def update_payment_status_by_txid(txid: str, status: str) -> Optional[Dict[str, Any]]:
+    """
+    Atualiza status do pagamento usando apenas o txid.
+    Retorna o pagamento atualizado ou None se não encontrado.
+    """
+    try:
+        payment = await get_payment_by_txid(txid)
+        if not payment:
+            logger.warning(f"⚠️ Nenhum pagamento encontrado para TXID: {txid}")
+            return None
+        return await update_payment_status(
+            transaction_id=payment["transaction_id"],
+            empresa_id=payment["empresa_id"],
+            status=status
+        )
+    except Exception as e:
+        logger.error(f"❌ Erro ao atualizar status pelo TXID {txid}: {e}")
+        raise
+
+
 # 🔹 Consulta por chave Pix
 async def get_empresa_by_chave_pix(chave_pix: str) -> dict:
     try:
@@ -303,3 +454,20 @@ async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"❌ Erro ao recuperar certificados RSA da empresa {empresa_id}: {e}")
         return None
+    
+
+
+# 🔹 Recupera config direto do supabase (quebra import circular)
+async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        resp = (
+            supabase
+            .table("empresas_config")
+            .select("*")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception as e:
+        logger.error(f"❌ Erro ao carregar config da empresa {empresa_id}: {e}")
+        raise

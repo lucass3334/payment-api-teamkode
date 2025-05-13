@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # REDIS_SSL_CERT_REQS: str = Field("CERT_NONE", env="REDIS_SSL_CERT_REQS")
 
     # 🔹 Controle de Ambiente
-    USE_SANDBOX: bool = Field(True, env="USE_SANDBOX")
+    USE_SANDBOX: bool = Field(False, env="USE_SANDBOX")
     API_LOCAL: bool = Field(False, env="API_LOCAL")  # ✅ Adicionado para controle local/remoto
 
     # 🔹 Suporte a Multiempresas

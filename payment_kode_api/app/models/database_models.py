@@ -45,6 +45,8 @@ class EmpresaConfigModel(BaseModel):
     sicredi_api_key: Optional[str] = None
     rede_pv: Optional[str] = None
     rede_api_key: Optional[str] = None
+    pix_provider: Optional[str] = 'sicredi'
+    credit_provider: Optional[str] = 'rede'
     created_at: datetime
     updated_at: datetime
 
