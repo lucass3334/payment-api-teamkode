@@ -276,6 +276,7 @@ async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
             "installments": sanitized_data.get("installments", 1),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "data_marketing": data["data_marketing"] if data.get("data_marketing") is not None else {},
         }
 
         if "txid" in data:

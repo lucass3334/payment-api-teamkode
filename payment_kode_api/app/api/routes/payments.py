@@ -79,6 +79,8 @@ class PixPaymentRequest(BaseModel):
     cnpj: Optional[str] = None
     email: Optional[EmailStr] = None  # incluído para cadastro no Asaas
 
+    data_marketing: Optional[Dict[str, Any]] = Field(default=None, description="Dados extras de marketing, serão armazenados e retornados no webhook")
+
     @field_validator("amount", mode="before")
     @classmethod
     def normalize_amount(cls, v):
@@ -242,6 +244,7 @@ async def create_credit_card_payment(
         "payment_type":   "credit_card",
         "status":         "pending",
         "webhook_url":    payment_data.webhook_url
+
     })
 
     # dados base para mapeamento
@@ -365,7 +368,8 @@ async def create_pix_payment(
         "payment_type":   "pix",
         "status":         "pending",
         "webhook_url":    payment_data.webhook_url,
-        "txid":           txid
+        "txid":           txid,
+        "data_marketing": payment_data.data_marketing
     })
     logger.debug("💾 [create_pix_payment] payment registrado como pending no DB")
 
@@ -499,112 +503,115 @@ async def _poll_sicredi_status(
     )
     logger.debug(f"🔐 [_poll_sicredi_status] SSL context pronto para empresa {empresa_id}")
 
-    # mapeamento de status Sicredi → status internos
     status_map = {
         "concluida": "approved",
         "removida_pelo_usuario_recebedor": "canceled",
-        # adicione aqui outros mapeamentos, se necessário
+        "removida_por_erro": "canceled",
     }
 
-    base = settings.SICREDI_API_URL
-    url_cob  = f"{base}/api/v3/cob/{txid}"
-    url_cobv = f"{base}/api/v2/cobv/{txid}"
+    base   = settings.SICREDI_API_URL
+    url_v3 = f"{base}/api/v3/cob/{txid}"
+    url_v2 = f"{base}/api/v2/cobv/{txid}"
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
         while datetime.now(timezone.utc) < deadline:
             elapsed = (datetime.now(timezone.utc) - start).total_seconds()
             logger.debug(f"⏱️ [_poll] elapsed={elapsed:.1f}s, interval={interval}s")
 
-            # garante token fresco
             token = await get_sicredi_token_or_refresh(empresa_id)
             headers = {"Authorization": f"Bearer {token}"}
-            logger.debug(f"📡 [_poll] GET {url_cob} & {url_cobv}")
 
-            # dispara as duas requisições em paralelo
             results = await asyncio.gather(
-                client.get(url_cob,  headers=headers),
-                client.get(url_cobv, headers=headers),
+                client.get(url_v3, headers=headers),
+                client.get(url_v2, headers=headers),
                 return_exceptions=True
             )
 
             any_found = False
             for res in results:
-                if isinstance(res, Exception):
-                    # falha de rede ou HTTPStatusError já será capturada abaixo
+                if isinstance(res, Exception) or res.status_code == 404:
                     continue
-                # se 404, simples continue
-                if res.status_code == 404:
-                    continue
-
                 any_found = True
-                logger.debug(f"📥 [_poll] HTTP {res.status_code} → {res.text}")
                 try:
                     res.raise_for_status()
                 except httpx.HTTPStatusError as e:
-                    logger.error(f"❌ [_poll] HTTP {e.response.status_code} erro: {e.response.text}")
+                    logger.error(f"❌ [_poll] HTTP {e.response.status_code}: {e.response.text}")
                     continue
 
                 data = res.json()
-                sicredi_status = data.get("status", "").lower()
-                logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {sicredi_status}")
+                status_raw = data.get("status", "").lower()
+                logger.info(f"🔍 [_poll] status Sicredi txid={txid} → {status_raw}")
 
-                # se for final (não 'ativa' nem 'pendente'), mapeia e sai
-                if sicredi_status not in {"ativa", "pendente"}:
-                    mapped_status = status_map.get(sicredi_status, sicredi_status)
-                    logger.info(f"✅ [_poll] status final ({sicredi_status}) mapeado → {mapped_status}")
+                if status_raw not in {"ativa", "pendente"}:
+                    mapped = status_map.get(status_raw, status_raw)
+                    await update_payment_status(transaction_id, empresa_id, mapped)
 
-                    await update_payment_status(transaction_id, empresa_id, mapped_status)
+                    # recupera data_marketing e notifica
+                    payment   = await get_payment(transaction_id, empresa_id)
+                    marketing = payment.get("data_marketing") if payment else None
+
                     await notify_user_webhook(webhook_url, {
-                        "transaction_id": transaction_id,
-                        "status": mapped_status,
-                        "provedor": "sicredi",
-                        "payload": data
+                        "transaction_id":  transaction_id,
+                        "status":          mapped,
+                        "provedor":        "sicredi",
+                        "payload":         data,
+                        "data_marketing":  marketing
                     })
                     return
 
             if not any_found:
                 logger.info("❓ [_poll] nenhuma cobrança encontrada, aguardando próximo loop")
 
-            # depois de 2 minutos, alarga intervalo
             if elapsed > 120:
                 interval = 10
-
             await asyncio.sleep(interval)
 
     logger.error(f"❌ [_poll] deadline atingida sem status final txid={txid}")
 
-async def _poll_asaas_pix_status(transaction_id: str, empresa_id: str, webhook_url: str, interval: int = 5, timeout_minutes: int = 15):
+
+async def _poll_asaas_pix_status(
+    transaction_id: str,
+    empresa_id: str,
+    webhook_url: str,
+    interval: int = 5,
+    timeout_minutes: int = 15
+):
     """
     Polling de status de uma cobrança PIX via Asaas.
     Consulta GET /payments?externalReference={transaction_id} até encontrar status final
-    (RECEIVED -> approved, REFUNDED -> canceled) ou expirar o prazo de 10 minutos.
+    (RECEIVED -> approved, REFUNDED -> canceled) ou expirar o prazo.
     """
-    start = datetime.now(timezone.utc)
+    start    = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=timeout_minutes)
 
     while datetime.now(timezone.utc) < deadline:
         data = await get_asaas_payment_status(empresa_id, transaction_id)
         if data:
-            status = data.get("status", "").upper()
-            #mapear para nossos status internos
-            if status in {"RECEIVED", "CONFIRMED"}:
+            status_raw = data.get("status", "").upper()
+            if status_raw in {"RECEIVED", "CONFIRMED"}:
                 mapped = "approved"
-            elif status in {"REFUNDED", "REFUNDED_PARTIAL"}:
+            elif status_raw in {"REFUNDED", "REFUNDED_PARTIAL"}:
                 mapped = "canceled"
             else:
                 mapped = None
 
             if mapped:
-                logger.info(f"✅ [_poll_asaas_pix_status] {transaction_id} → {status} (mapeado para {mapped})")
                 await update_payment_status(transaction_id, empresa_id, mapped)
+
+                # recupera data_marketing e notifica
+                payment   = await get_payment(transaction_id, empresa_id)
+                marketing = payment.get("data_marketing") if payment else None
+
                 if webhook_url:
                     await notify_user_webhook(webhook_url, {
-                        "transaction_id": transaction_id,
-                        "status": mapped,
-                        "provedor": "asaas",
-                        "payload": data
+                        "transaction_id":  transaction_id,
+                        "status":          mapped,
+                        "provedor":        "asaas",
+                        "payload":         data,
+                        "data_marketing":  marketing
                     })
                 return
-            
-            await asyncio.sleep(interval)
-        logger.error(f"❌ [_poll_asaas_pix_status] deadline atingida sem status final txid={transaction_id}")
+
+        await asyncio.sleep(interval)
+
+    logger.error(f"❌ [_poll_asaas_pix_status] deadline atingida sem status final txid={transaction_id}")
