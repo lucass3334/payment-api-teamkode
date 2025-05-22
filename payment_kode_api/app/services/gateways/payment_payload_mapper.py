@@ -77,19 +77,20 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Mapeia os dados do pagamento para o formato do gateway Rede (Cartão).
-    - Usa 'card_token' se presente, senão faz mapeamento completo dos dados de cartão.
+    - Usa 'card_token' se presente, senão mapeia os dados de cartão.
     - Inclui 'reference' para rastrear a transação.
     """
+    # validação mínima
     if not data.get("card_token") and not all(k in data for k in (
         "card_number", "expiration_month", "expiration_year", "security_code", "cardholder_name"
     )):
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
     payload: Dict[str, Any] = {
-        "capture":      True,
-        "kind":         "credit",
+        "capture":      data.get("capture", True),
+        "kind":         data.get("kind", "credit"),
         "reference":    data.get("transaction_id", ""),
-        "amount":       str(int(data["amount"] * 100)),
+        "amount":       int(data["amount"] * 100),       # agora é int, não str
         "installments": data.get("installments", 1),
         "softDescriptor": data.get("soft_descriptor", "Minha Empresa")
     }
@@ -97,12 +98,13 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     if data.get("card_token"):
         payload["cardToken"] = data["card_token"]
     else:
+        # dados brutos do cartão
         payload.update({
             "cardNumber":      data["card_number"],
-            "expirationMonth": f"{int(data['expiration_month']):02d}",
-            "expirationYear":  data["expiration_year"],
+            "expirationMonth": int(data["expiration_month"]),  # int
+            "expirationYear":  int(data["expiration_year"]),   # int
             "securityCode":    data["security_code"],
-            "cardHolderName":  data["cardholder_name"],
+            "cardholderName":  data["cardholder_name"],       # campo lowercase “h”
         })
 
     return payload

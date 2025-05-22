@@ -197,44 +197,31 @@ async def create_credit_card_payment(
     background_tasks: BackgroundTasks,
     empresa: dict = Depends(validate_access_token)
 ):
-    empresa_id = empresa["empresa_id"]
+    empresa_id     = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
 
     # evita duplicação
-    existing = await get_payment(transaction_id, empresa_id)
-    if existing:
+    if await get_payment(transaction_id, empresa_id):
         return {
             "status": "already_processed",
             "message": "Pagamento já processado",
             "transaction_id": transaction_id
         }
 
-    # busca configuração de gateways
+    # qual gateway usar?
     config = await get_empresa_config(empresa_id)
-    if not config:
-        raise HTTPException(
-            status_code=400,
-            detail="Empresa não encontrada ou sem configuração de gateways."
-        )
-    credit_provider = config.get("credit_provider", "rede").lower()
-    logger.info(f"🔍 credit_provider configurado: {credit_provider}")
+    credit_provider = (config or {}).get("credit_provider", "rede").lower()
 
-    # prepara dados do cartão (tokenização ou dados brutos)
+    # recupera ou gera token interno
     if payment_data.card_token:
         card_data = await get_tokenized_card(payment_data.card_token)
         if not card_data:
-            raise HTTPException(status_code=400, detail="Cartão não encontrado ou expirado.")
+            raise HTTPException(400, "Cartão não encontrado ou expirado.")
     elif payment_data.card_data:
         token_resp = await tokenize_card(payment_data.card_data, empresa)
-        card_data = {
-            **payment_data.card_data.dict(),
-            "card_token": token_resp["card_token"]
-        }
+        card_data  = {**payment_data.card_data.dict(), "card_token": token_resp["card_token"]}
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="É necessário fornecer `card_token` ou `card_data`."
-        )
+        raise HTTPException(400, "É necessário fornecer `card_token` ou `card_data`.")
 
     # salva como pending
     await save_payment({
@@ -244,59 +231,51 @@ async def create_credit_card_payment(
         "payment_type":   "credit_card",
         "status":         "pending",
         "webhook_url":    payment_data.webhook_url
-
     })
 
-    # dados base para mapeamento
+    # prepara dados para o mapper
     base_data   = {**payment_data.dict(exclude_unset=False), "transaction_id": transaction_id}
     mapper_data = {**base_data, **card_data}
 
     # ——— Rede ———
     if credit_provider == "rede":
-        payload = map_to_rede_payload(mapper_data)
         try:
-            logger.info(f"🚀 Processando pagamento via Rede: txid={transaction_id}")
-            resp = await create_rede_payment(empresa_id=empresa_id, **payload)
+            logger.info(f"🚀 Pagando via Rede: tx={transaction_id}")
+            resp = await create_rede_payment(
+                empresa_id=empresa_id,
+                base_data=mapper_data,
+                tokenize=True
+            )
+        except HTTPException:
+            raise  # repassa erros 4xx/5xx gerados pelo client
         except Exception as e:
             logger.error(f"❌ Erro Rede: {e}")
-            raise HTTPException(status_code=502, detail="Erro no gateway Rede.")
+            raise HTTPException(502, "Erro no gateway Rede.")
 
-        if resp.get("status") == "approved":
+        if resp.get("returnCode") == "00":
             if payment_data.webhook_url:
-                await notify_user_webhook(payment_data.webhook_url, {
-                    "transaction_id": transaction_id,
-                    "status": "approved",
-                    "provedor": "rede"
-                })
-            return {
-                "status": "approved",
-                "message": "Pagamento aprovado via Rede",
-                "transaction_id": transaction_id
-            }
-        raise HTTPException(status_code=402, detail="Pagamento recusado pela Rede.")
+                background_tasks.add_task(
+                    notify_user_webhook,
+                    payment_data.webhook_url,
+                    {"transaction_id": transaction_id, "status": "approved", "provedor": "rede"}
+                )
+            return {"status": "approved", "message": "Pagamento aprovado via Rede", "transaction_id": transaction_id}
+
+        raise HTTPException(402, f"Pagamento recusado pela Rede: {resp.get('returnMessage')}")
 
     # ——— Asaas ———
     elif credit_provider == "asaas":
-        # 1) mapeia payload padrão Asaas para extrair os campos
         asaas_info = map_to_asaas_credit_payload(mapper_data)
-
-        # 2) monta o dict customer_data para criar/recuperar cliente no Asaas
         customer_data = {
             "local_id":          transaction_id,
             "name":              mapper_data["cardholder_name"],
             "email":             mapper_data.get("email") or mapper_data.get("customer_email"),
             "cpfCnpj":           mapper_data.get("cpf") or mapper_data.get("cnpj"),
             "phone":             mapper_data.get("phone"),
-            "mobilePhone":       mapper_data.get("mobilePhone"),
-            "postalCode":        mapper_data.get("postal_code"),
-            "address":           mapper_data.get("address"),
-            "addressNumber":     mapper_data.get("address_number"),
             "externalReference": transaction_id
         }
-
-        # 3) chama o Asaas
         try:
-            logger.info(f"🚀 Processando pagamento via Asaas: txid={transaction_id}")
+            logger.info(f"🚀 Pagando via Asaas: tx={transaction_id}")
             resp = await create_asaas_payment(
                 empresa_id=empresa_id,
                 amount=asaas_info["value"],
@@ -309,30 +288,22 @@ async def create_credit_card_payment(
             )
         except Exception as e:
             logger.error(f"❌ Erro Asaas: {e}")
-            raise HTTPException(status_code=502, detail="Erro no gateway Asaas.")
+            raise HTTPException(502, "Erro no gateway Asaas.")
 
         if resp.get("status", "").lower() == "approved":
             if payment_data.webhook_url:
-                await notify_user_webhook(payment_data.webhook_url, {
-                    "transaction_id": transaction_id,
-                    "status": "approved",
-                    "provedor": "asaas"
-                })
-            return {
-                "status": "approved",
-                "message": "Pagamento aprovado via Asaas",
-                "transaction_id": transaction_id
-            }
+                background_tasks.add_task(
+                    notify_user_webhook,
+                    payment_data.webhook_url,
+                    {"transaction_id": transaction_id, "status": "approved", "provedor": "asaas"}
+                )
+            return {"status": "approved", "message": "Pagamento aprovado via Asaas", "transaction_id": transaction_id}
 
-        raise HTTPException(status_code=402, detail="Pagamento recusado pela Asaas.")
+        raise HTTPException(402, "Pagamento recusado pela Asaas.")
 
-    # ——— Provedor desconhecido ———
+    # ——— Provedor inválido ———
     else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Provedor de crédito desconhecido: {credit_provider}"
-        )
-
+        raise HTTPException(400, f"Provedor de crédito desconhecido: {credit_provider}")
 
 
 

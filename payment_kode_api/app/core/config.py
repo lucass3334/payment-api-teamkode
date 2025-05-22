@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = Field(..., env="SUPABASE_URL")
     SUPABASE_KEY: str = Field(..., env="SUPABASE_KEY")
     SUPABASE_BUCKET: str = Field("certificados-sicredi", env="SUPABASE_BUCKET")
+    REDE_AMBIENT: str = Field("production", env="REDE_AMBIENT")
 
     # 🔹 (Desativado) Configuração do Redis
     # REDIS_URL: Optional[str] = Field(None, env="REDIS_URL")
