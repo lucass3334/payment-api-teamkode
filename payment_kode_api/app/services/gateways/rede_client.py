@@ -7,14 +7,16 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 
 from payment_kode_api.app.core.config import settings
-from payment_kode_api.app.database.database import get_empresa_config
+from payment_kode_api.app.database.database import get_empresa_config, get_payment, update_payment_status
 from payment_kode_api.app.services.gateways.payment_payload_mapper import map_to_rede_payload
 from payment_kode_api.app.utilities.logging_config import logger
 
 TIMEOUT = 15.0
 
 # ─── URL BASE DINÂMICAS ────────────────────────────────────────────────
-if settings.REDE_AMBIENT.lower() == "sandbox":
+# 🔧 CORRIGIDO: Usar variável de ambiente do settings
+rede_env = getattr(settings, 'REDE_AMBIENT', 'production')
+if rede_env.lower() == "sandbox":
     ECOMM_BASE_URL = "https://sandbox-erede.useredecloud.com.br/ecomm/v1"
 else:
     ECOMM_BASE_URL = "https://api.userede.com.br/ecomm/v1"
@@ -71,14 +73,15 @@ async def tokenize_rede_card(empresa_id: str, card_data: Dict[str, Any]) -> str:
 
 async def create_rede_payment(
     empresa_id: str,
-    base_data: Dict[str, Any],
-    tokenize: bool = False
+    **payment_data: Any  # 🔧 MUDANÇA: Usar **kwargs para consistência
 ) -> Dict[str, Any]:
     """
     Autoriza (e captura, se capture=True) uma transação.
     Endpoint: POST /ecomm/v1/transactions
     """
-    payload = map_to_rede_payload(base_data)
+    # 🔧 CORRIGIDO: Usar payment_data diretamente
+    payload = map_to_rede_payload(payment_data)
+    tokenize = payment_data.get("tokenize", False)
 
     # ── Se for tokenização on-the-fly
     if "cardToken" not in payload:
@@ -88,28 +91,77 @@ async def create_rede_payment(
                 payload.pop(field, None)
             payload["cardToken"] = token
         else:
-            payload["card"] = {
-                "number":          payload.pop("cardNumber"),
-                "expirationMonth": payload.pop("expirationMonth"),
-                "expirationYear":  payload.pop("expirationYear"),
-                "securityCode":    payload.pop("securityCode"),
-                "holderName":      payload.pop("cardHolderName"),
-            }
+            # 🔧 CORRIGIDO: Verificar se campos existem antes de fazer pop
+            if "cardNumber" in payload:
+                payload["card"] = {
+                    "number":          payload.pop("cardNumber"),
+                    "expirationMonth": payload.pop("expirationMonth"),
+                    "expirationYear":  payload.pop("expirationYear"),
+                    "securityCode":    payload.pop("securityCode"),
+                    "holderName":      payload.pop("cardHolderName"),
+                }
 
     headers = await get_rede_headers(empresa_id)
-    logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id} payload={payload!r}")
+    logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
+    logger.debug(f"📦 Payload Rede: {payload}")
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(TRANSACTIONS_URL, json=payload, headers=headers)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            
+            # 🔧 NOVO: RESPONSE HANDLING MELHORADO
+            return_code = data.get("returnCode", "")
+            return_message = data.get("returnMessage", "")
+            tid = data.get("tid")
+            authorization_code = data.get("authorizationCode")
+            
+            logger.info(f"📥 Rede response: code={return_code}, message={return_message}, tid={tid}")
+            
+            # 🔧 NOVO: Atualizar pagamento no banco com dados da Rede
+            transaction_id = payment_data.get("transaction_id")
+            if transaction_id and return_code == "00":
+                # Salvar dados da Rede no banco
+                await update_payment_status(
+                    transaction_id=transaction_id,
+                    empresa_id=empresa_id,
+                    status="approved",
+                    extra_data={
+                        "rede_tid": tid,
+                        "authorization_code": authorization_code,
+                        "return_code": return_code,
+                        "return_message": return_message
+                    }
+                )
+            
+            # Retorno estruturado
+            if return_code == "00":  # Sucesso
+                return {
+                    "status": "approved",
+                    "transaction_id": transaction_id,
+                    "rede_tid": tid,
+                    "authorization_code": authorization_code,
+                    "return_code": return_code,
+                    "return_message": return_message,
+                    "raw_response": data
+                }
+            else:
+                # Pagamento recusado
+                logger.warning(f"⚠️ Pagamento Rede recusado: {return_code} - {return_message}")
+                return {
+                    "status": "failed",
+                    "transaction_id": transaction_id,
+                    "return_code": return_code,
+                    "return_message": return_message,
+                    "raw_response": data
+                }
 
     except httpx.HTTPStatusError as e:
         code, text = e.response.status_code, e.response.text
         logger.error(f"❌ Rede retornou HTTP {code}: {text}")
         if code in (400, 402, 403):
-            raise HTTPException(status_code=code, detail="Pagamento recusado pela Rede")
+            raise HTTPException(status_code=code, detail=f"Pagamento recusado pela Rede: {text}")
         raise HTTPException(status_code=502, detail="Erro no gateway Rede")
     except Exception as e:
         logger.error(f"❌ Erro de conexão com a Rede: {e}")
@@ -183,11 +235,21 @@ async def create_rede_refund(
     amount: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Solicita estorno (total ou parcial).
-    Endpoint: POST /ecomm/v1/transactions/{transaction_id}/refunds
+    🔧 CORRIGIDO: Solicita estorno usando TID da Rede (não nosso transaction_id).
+    Endpoint: POST /ecomm/v1/transactions/{rede_tid}/refunds
     """
+    # 🔧 NOVO: Buscar TID da Rede no banco
+    payment = await get_payment(transaction_id, empresa_id)
+    if not payment:
+        raise HTTPException(404, "Pagamento não encontrado")
+    
+    rede_tid = payment.get("rede_tid")
+    if not rede_tid:
+        raise HTTPException(400, "TID da Rede não encontrado para este pagamento")
+    
     headers = await get_rede_headers(empresa_id)
-    url = f"{TRANSACTIONS_URL}/{transaction_id}/refunds"
+    # 🔧 CORRIGIDO: Usar rede_tid ao invés de transaction_id
+    url = f"{TRANSACTIONS_URL}/{rede_tid}/refunds"
     payload: Dict[str, Any] = {}
     if amount is not None:
         payload["amount"] = amount
@@ -197,7 +259,16 @@ async def create_rede_refund(
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            
+            # 🔧 NOVO: Verificar código de retorno do estorno
+            return_code = data.get("returnCode", "")
+            if return_code == "00":
+                # Atualizar status no banco
+                await update_payment_status(transaction_id, empresa_id, "canceled")
+                return {"status": "refunded", **data}
+            else:
+                raise HTTPException(400, f"Estorno Rede falhou: {data.get('returnMessage')}")
 
     except httpx.HTTPStatusError as e:
         status, text = e.response.status_code, e.response.text

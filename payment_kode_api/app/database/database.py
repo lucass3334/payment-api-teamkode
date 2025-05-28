@@ -9,8 +9,6 @@ from datetime import datetime, timezone, timedelta
 from .supabase_client import supabase
 
 
-
-
 datetime.now(timezone.utc)
 
 VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
@@ -276,7 +274,12 @@ async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
             "installments": sanitized_data.get("installments", 1),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "data_marketing": data["data_marketing"] if data.get("data_marketing") is not None else {},
+            "data_marketing": data.get("data_marketing", {}),
+            # 🔧 NOVOS CAMPOS PARA REDE
+            "rede_tid": data.get("rede_tid"),
+            "authorization_code": data.get("authorization_code"),
+            "return_code": data.get("return_code"),
+            "return_message": data.get("return_message")
         }
 
         if "txid" in data:
@@ -308,7 +311,15 @@ async def get_payment(transaction_id: str, empresa_id: str, columns: str = "*") 
         logger.error(f"❌ Erro ao recuperar pagamento para empresa {empresa_id}, transaction_id {transaction_id}: {e}")
         raise
 
-async def update_payment_status(transaction_id: str, empresa_id: str, status: str) -> Optional[Dict[str, Any]]:
+async def update_payment_status(
+    transaction_id: str, 
+    empresa_id: str, 
+    status: str,
+    extra_data: Optional[Dict[str, Any]] = None  # 🔧 NOVO parâmetro
+) -> Optional[Dict[str, Any]]:
+    """
+    🔧 ATUALIZADO: Atualiza status do pagamento e permite adicionar dados extras (como dados da Rede).
+    """
     try:
         if status not in VALID_PAYMENT_STATUSES:
             raise ValueError(f"Status inválido: {status}")
@@ -317,6 +328,10 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
             "status": status,
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
+        
+        # 🔧 NOVO: Adicionar dados extras da Rede ou outros gateways
+        if extra_data:
+            update_data.update(extra_data)
 
         response = (
             supabase.table("payments")
@@ -331,6 +346,9 @@ async def update_payment_status(transaction_id: str, empresa_id: str, status: st
             return None
 
         logger.info(f"✅ Status atualizado para empresa {empresa_id}, transaction_id {transaction_id}: {status}")
+        if extra_data:
+            logger.debug(f"📝 Dados extras salvos: {list(extra_data.keys())}")
+        
         return response.data[0]
 
     except Exception as e:
@@ -355,10 +373,14 @@ async def get_payment_by_txid(txid: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ Erro ao recuperar pagamento pelo TXID {txid}: {e}")
         raise
 
-async def update_payment_status_by_txid(txid: str, status: str) -> Optional[Dict[str, Any]]:
+async def update_payment_status_by_txid(
+    txid: str, 
+    empresa_id: str, 
+    status: str,
+    extra_data: Optional[Dict[str, Any]] = None  # 🔧 NOVO parâmetro
+) -> Optional[Dict[str, Any]]:
     """
-    Atualiza status do pagamento usando apenas o txid.
-    Retorna o pagamento atualizado ou None se não encontrado.
+    🔧 ATUALIZADO: Atualiza status do pagamento usando apenas o txid e permite dados extras.
     """
     try:
         payment = await get_payment_by_txid(txid)
@@ -368,7 +390,8 @@ async def update_payment_status_by_txid(txid: str, status: str) -> Optional[Dict
         return await update_payment_status(
             transaction_id=payment["transaction_id"],
             empresa_id=payment["empresa_id"],
-            status=status
+            status=status,
+            extra_data=extra_data  # 🔧 NOVO: Passar dados extras
         )
     except Exception as e:
         logger.error(f"❌ Erro ao atualizar status pelo TXID {txid}: {e}")
@@ -388,15 +411,22 @@ async def get_empresa_by_chave_pix(chave_pix: str) -> dict:
 
 
 # 🔹 Salva as chaves públicas/privadas RSA da empresa
-async def save_empresa_certificados(empresa_id: str, public_key_base64: str, private_key_base64: str) -> Dict[str, Any]:
+async def save_empresa_certificados(
+    empresa_id: str, 
+    sicredi_cert_base64: str, 
+    sicredi_key_base64: str, 
+    sicredi_ca_base64: Optional[str] = None  # 🔧 CORRIGIDO: Parâmetros corretos
+) -> Dict[str, Any]:
     """
-    Insere ou atualiza os certificados RSA (public/private key) da empresa na tabela `empresas_certificados`.
+    🔧 CORRIGIDO: Insere ou atualiza os certificados RSA da empresa na tabela `empresas_certificados`.
+    Corrigido para usar os nomes corretos dos parâmetros.
     """
     try:
         data = {
             "empresa_id": empresa_id,
-            "public_key_base64": public_key_base64,
-            "private_key_base64": private_key_base64,
+            "sicredi_cert_base64": sicredi_cert_base64,    # 🔧 CORRIGIDO
+            "sicredi_key_base64": sicredi_key_base64,      # 🔧 CORRIGIDO
+            "sicredi_ca_base64": sicredi_ca_base64,        # 🔧 NOVO
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
 
@@ -434,12 +464,13 @@ async def save_empresa_certificados(empresa_id: str, public_key_base64: str, pri
 # 🔹 Recupera os certificados RSA da empresa
 async def get_empresa_certificados(empresa_id: str) -> Optional[Dict[str, Any]]:
     """
-    Recupera os certificados públicos/privados da empresa armazenados na tabela `empresas_certificados`.
+    🔧 CORRIGIDO: Recupera os certificados da empresa armazenados na tabela `empresas_certificados`.
+    Corrigido para usar os nomes corretos dos campos.
     """
     try:
         response = (
             supabase.table("empresas_certificados")
-            .select("public_key_base64, private_key_base64")
+            .select("sicredi_cert_base64, sicredi_key_base64, sicredi_ca_base64")  # 🔧 CORRIGIDO
             .eq("empresa_id", empresa_id)
             .limit(1)
             .execute()

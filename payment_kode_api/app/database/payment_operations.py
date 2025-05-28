@@ -1,4 +1,6 @@
 # payment_operations.py
+### Não usado
+
 
 from payment_kode_api.app.utilities.logging_config import logger
 from payment_kode_api.app.database.supabase_client import supabase  # ✅ Corrigido aqui

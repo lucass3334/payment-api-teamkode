@@ -124,6 +124,7 @@ class SicrediWebhookRequest(BaseModel):
     txid: str
     status: str
     # outros campos podem existir, mas só precisamos de txid e status
+    
 @router.post("/webhook/sicredi")
 async def sicredi_webhook(
     payload: SicrediWebhookRequest,
@@ -211,6 +212,7 @@ async def create_credit_card_payment(
     # qual gateway usar?
     config = await get_empresa_config(empresa_id)
     credit_provider = (config or {}).get("credit_provider", "rede").lower()
+    logger.info(f"🔍 Provider de crédito: {credit_provider} para empresa {empresa_id}")
 
     # recupera ou gera token interno
     if payment_data.card_token:
@@ -240,28 +242,56 @@ async def create_credit_card_payment(
     # ——— Rede ———
     if credit_provider == "rede":
         try:
-            logger.info(f"🚀 Pagando via Rede: tx={transaction_id}")
+            logger.info(f"🚀 Processando pagamento via Rede: tx={transaction_id}")
+            
+            # 🔧 CORRIGIDO: Usar **kwargs ao invés de base_data
             resp = await create_rede_payment(
                 empresa_id=empresa_id,
-                base_data=mapper_data,
-                tokenize=True
+                **mapper_data  # 🔧 MUDANÇA: **kwargs para consistência
             )
+            
+            logger.info(f"📥 Resposta Rede: {resp}")
+            
+            # 🔧 CORRIGIDO: Verificar status adequadamente
+            if resp.get("status") == "approved":
+                # Pagamento aprovado - notificar via webhook
+                if payment_data.webhook_url:
+                    background_tasks.add_task(
+                        notify_user_webhook,
+                        payment_data.webhook_url,
+                        {
+                            "transaction_id": transaction_id, 
+                            "status": "approved", 
+                            "provedor": "rede",
+                            "rede_tid": resp.get("rede_tid"),
+                            "authorization_code": resp.get("authorization_code")
+                        }
+                    )
+                return {
+                    "status": "approved", 
+                    "message": "Pagamento aprovado via Rede", 
+                    "transaction_id": transaction_id,
+                    "rede_tid": resp.get("rede_tid"),
+                    "authorization_code": resp.get("authorization_code")
+                }
+            elif resp.get("status") == "failed":
+                # Pagamento recusado
+                return {
+                    "status": "failed",
+                    "message": f"Pagamento recusado pela Rede: {resp.get('return_message')}",
+                    "transaction_id": transaction_id,
+                    "return_code": resp.get("return_code")
+                }
+            else:
+                # Status inesperado
+                logger.warning(f"⚠️ Status inesperado da Rede: {resp}")
+                raise HTTPException(502, "Resposta inesperada do gateway Rede")
+                
         except HTTPException:
             raise  # repassa erros 4xx/5xx gerados pelo client
         except Exception as e:
-            logger.error(f"❌ Erro Rede: {e}")
+            logger.error(f"❌ Erro inesperado com Rede: {e}")
             raise HTTPException(502, "Erro no gateway Rede.")
-
-        if resp.get("returnCode") == "00":
-            if payment_data.webhook_url:
-                background_tasks.add_task(
-                    notify_user_webhook,
-                    payment_data.webhook_url,
-                    {"transaction_id": transaction_id, "status": "approved", "provedor": "rede"}
-                )
-            return {"status": "approved", "message": "Pagamento aprovado via Rede", "transaction_id": transaction_id}
-
-        raise HTTPException(402, f"Pagamento recusado pela Rede: {resp.get('returnMessage')}")
 
     # ——— Asaas ———
     elif credit_provider == "asaas":
@@ -275,7 +305,7 @@ async def create_credit_card_payment(
             "externalReference": transaction_id
         }
         try:
-            logger.info(f"🚀 Pagando via Asaas: tx={transaction_id}")
+            logger.info(f"🚀 Processando pagamento via Asaas: tx={transaction_id}")
             resp = await create_asaas_payment(
                 empresa_id=empresa_id,
                 amount=asaas_info["value"],
@@ -449,6 +479,8 @@ async def create_pix_payment(
         # Provedor desconhecido
         logger.error(f"❌ [create_pix_payment] provedor PIX desconhecido: {pix_provider}")
         raise HTTPException(status_code=400, detail=f"Provedor PIX desconhecido: {pix_provider}")
+
+
 async def _poll_sicredi_status(
     txid: str,
     empresa_id: str,

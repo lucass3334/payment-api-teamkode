@@ -76,7 +76,7 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Mapeia os dados do pagamento para o formato do gateway Rede (Cartão).
+    🔧 CORRIGIDO: Mapeia os dados do pagamento para o formato correto da e.Rede.
     - Usa 'card_token' se presente, senão mapeia os dados de cartão.
     - Inclui 'reference' para rastrear a transação.
     """
@@ -86,25 +86,29 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     )):
         raise ValueError("É necessário fornecer `card_token` ou dados completos do cartão.")
 
+    # 🔧 CORRIGIDO: Conversão de amount para float antes de multiplicar
+    amount_value = float(data["amount"]) if not isinstance(data["amount"], (int, float)) else data["amount"]
+    
     payload: Dict[str, Any] = {
-        "capture":      data.get("capture", True),
-        "kind":         data.get("kind", "credit"),
-        "reference":    data.get("transaction_id", ""),
-        "amount":       int(data["amount"] * 100),       # agora é int, não str
+        "capture": data.get("capture", True),
+        "kind": data.get("kind", "credit"),
+        "reference": data.get("transaction_id", ""),
+        "amount": int(amount_value * 100),  # 🔧 CORRIGIDO: Garantir conversão correta
         "installments": data.get("installments", 1),
-        "softDescriptor": data.get("soft_descriptor", "Minha Empresa")
+        "softDescriptor": data.get("soft_descriptor", "PAYMENT_KODE")  # 🔧 CORRIGIDO: Nome mais apropriado
     }
 
+    # 🔧 CORRIGIDO: Lógica de dados do cartão
     if data.get("card_token"):
         payload["cardToken"] = data["card_token"]
     else:
-        # dados brutos do cartão
+        # 🔧 CORRIGIDO: Campos corretos para a e.Rede
         payload.update({
-            "cardNumber":      data["card_number"],
-            "expirationMonth": int(data["expiration_month"]),  # int
-            "expirationYear":  int(data["expiration_year"]),   # int
-            "securityCode":    data["security_code"],
-            "cardholderName":  data["cardholder_name"],       # campo lowercase “h”
+            "cardNumber": data["card_number"],
+            "expirationMonth": f"{int(data['expiration_month']):02d}",  # 🔧 CORRIGIDO: String formatada
+            "expirationYear": data["expiration_year"],
+            "securityCode": data["security_code"],
+            "cardHolderName": data["cardholder_name"],  # 🔧 CORRIGIDO: CamelCase adequado
         })
 
     return payload
@@ -124,7 +128,7 @@ def map_to_asaas_credit_payload(data: Dict[str, Any], support_tokenization: bool
     payload: Dict[str, Any] = {
         "customer":          data.get("customer_id", ""),
         "billingType":       "CREDIT_CARD",
-        "value":             round(data["amount"], 2),
+        "value":             round(float(data["amount"]), 2),  # 🔧 MELHORADO: Garantir float
         "installmentCount":  data.get("installments", 1),
         "externalReference": data.get("transaction_id", "")
     }
