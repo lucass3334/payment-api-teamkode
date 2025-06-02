@@ -16,31 +16,43 @@ VALID_PAYMENT_STATUSES = {"pending", "approved", "failed", "canceled"}
 
 # 🔹 Cartões tokenizados
 async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Atualizada para incluir referência ao cliente interno.
+    """
     try:
         empresa_id = data.get("empresa_id")
         customer_id = data.get("customer_id")
         card_token = data.get("card_token")
         encrypted_card_data = data.get("encrypted_card_data")
+        cliente_id = data.get("cliente_id")  # 🆕 NOVO: Referência ao cliente interno
 
         if not all([empresa_id, customer_id, card_token, encrypted_card_data]):
             raise ValueError("Campos obrigatórios ausentes para salvar o cartão.")
 
+        card_record = {
+            "empresa_id": empresa_id,
+            "customer_id": customer_id,
+            "card_token": card_token,
+            "encrypted_card_data": encrypted_card_data,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),  # 1 ano
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # 🆕 NOVO: Adicionar referência ao cliente se disponível
+        if cliente_id:
+            card_record["cliente_id"] = cliente_id
+
         response = (
             supabase.table("cartoes_tokenizados")
-            .insert({
-                "empresa_id": empresa_id,
-                "customer_id": customer_id,
-                "card_token": card_token,
-                "encrypted_card_data": encrypted_card_data,
-                "expires_at": datetime.now(timezone.utc).isoformat()
-            })
+            .insert(card_record)
             .execute()
         )
 
         if not response.data:
             raise ValueError("Erro ao salvar cartão tokenizado.")
 
-        logger.info(f"✅ Cartão tokenizado salvo para empresa {empresa_id} e cliente {customer_id}.")
+        logger.info(f"✅ Cartão tokenizado salvo para empresa {empresa_id}, cliente {customer_id}, token {card_token}")
         return response.data[0]
 
     except Exception as e:
@@ -254,6 +266,9 @@ async def get_empresa_gateways(empresa_id: str) -> Optional[Dict[str, str]]:
 
 # 🔹 Pagamentos
 async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Atualizada para incluir referência ao cliente.
+    """
     try:
         empresa_id = data.get("empresa_id")
         transaction_id = data.get("transaction_id")
@@ -275,11 +290,15 @@ async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "data_marketing": data.get("data_marketing", {}),
-            # 🔧 NOVOS CAMPOS PARA REDE
+            
+            # Campos para Rede
             "rede_tid": data.get("rede_tid"),
             "authorization_code": data.get("authorization_code"),
             "return_code": data.get("return_code"),
-            "return_message": data.get("return_message")
+            "return_message": data.get("return_message"),
+            
+            # 🆕 NOVO: Referência ao cliente
+            "cliente_id": data.get("cliente_id")
         }
 
         if "txid" in data:
@@ -310,6 +329,28 @@ async def get_payment(transaction_id: str, empresa_id: str, columns: str = "*") 
     except Exception as e:
         logger.error(f"❌ Erro ao recuperar pagamento para empresa {empresa_id}, transaction_id {transaction_id}: {e}")
         raise
+
+
+async def get_payments_by_cliente(empresa_id: str, cliente_id: str, limit: int = 50) -> list[Dict[str, Any]]:
+    """
+    Busca pagamentos de um cliente específico.
+    """
+    try:
+        response = (
+            supabase.table("payments")
+            .select("*")
+            .eq("empresa_id", empresa_id)
+            .eq("cliente_id", cliente_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        
+        return response.data or []
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar pagamentos do cliente {cliente_id}: {e}")
+        return []
 
 async def update_payment_status(
     transaction_id: str, 
@@ -503,3 +544,83 @@ async def get_empresa_config(empresa_id: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"❌ Erro ao carregar config da empresa {empresa_id}: {e}")
         raise
+
+
+async def get_cards_by_cliente(empresa_id: str, customer_id: str) -> list[Dict[str, Any]]:
+    """
+    Busca cartões tokenizados de um cliente.
+    """
+    try:
+        response = (
+            supabase.table("cartoes_tokenizados")
+            .select("card_token, created_at, expires_at")
+            .eq("empresa_id", empresa_id)
+            .eq("customer_id", customer_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        
+        return response.data or []
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar cartões do cliente {customer_id}: {e}")
+        return []
+    
+async def get_cliente_stats(empresa_id: str, cliente_id: str) -> Dict[str, Any]:
+    """
+    Retorna estatísticas de um cliente (total gasto, número de transações, etc.).
+    """
+    try:
+        # Buscar pagamentos aprovados do cliente
+        response = (
+            supabase.table("payments")
+            .select("amount, payment_type, created_at")
+            .eq("empresa_id", empresa_id)
+            .eq("cliente_id", cliente_id)
+            .eq("status", "approved")
+            .execute()
+        )
+        
+        payments = response.data or []
+        
+        if not payments:
+            return {
+                "total_transactions": 0,
+                "total_spent": 0.0,
+                "avg_transaction": 0.0,
+                "pix_transactions": 0,
+                "card_transactions": 0,
+                "first_transaction": None,
+                "last_transaction": None
+            }
+        
+        total_spent = sum(float(p["amount"]) for p in payments)
+        total_transactions = len(payments)
+        pix_count = len([p for p in payments if p["payment_type"] == "pix"])
+        card_count = len([p for p in payments if p["payment_type"] == "credit_card"])
+        
+        dates = [p["created_at"] for p in payments]
+        dates.sort()
+        
+        return {
+            "total_transactions": total_transactions,
+            "total_spent": round(total_spent, 2),
+            "avg_transaction": round(total_spent / total_transactions, 2),
+            "pix_transactions": pix_count,
+            "card_transactions": card_count,
+            "first_transaction": dates[0] if dates else None,
+            "last_transaction": dates[-1] if dates else None
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao calcular estatísticas do cliente {cliente_id}: {e}")
+        return {
+            "total_transactions": 0,
+            "total_spent": 0.0,
+            "avg_transaction": 0.0,
+            "pix_transactions": 0,
+            "card_transactions": 0,
+            "first_transaction": None,
+            "last_transaction": None
+        }
+    

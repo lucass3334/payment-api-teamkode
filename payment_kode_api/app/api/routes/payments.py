@@ -1,3 +1,5 @@
+# payment_kode_api/app/api/routes/payments.py
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel, Field, field_validator, EmailStr
 from typing import Annotated, Optional, Dict, Any
@@ -46,6 +48,13 @@ from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.utilities.cert_utils import build_ssl_context_from_memory
 from ...services.config_service import load_certificates_from_bucket
 
+# 🆕 NOVO: Imports para gestão de clientes
+from payment_kode_api.app.database.customers_management import (
+    get_or_create_cliente, 
+    extract_customer_data_from_payment,
+    get_cliente_by_external_id,
+    get_cliente_by_id
+)
 
 router = APIRouter()
 
@@ -59,11 +68,11 @@ EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 def generate_txid() -> str:
     """
     Gera um txid válido para o Sicredi:
-   - somente caracteres 0–9 e a–f (hex lowercase)
-   - comprimento fixo de 32 chars (UUID4.hex), ≤ 35
-   """
-    # uuid4().hex já retorna 32 caracteres hexadecimais (0-9, a-f)
+    - somente caracteres 0–9 e a–f (hex lowercase)
+    - comprimento fixo de 32 chars (UUID4.hex), ≤ 35
+    """
     return uuid4().hex
+
 
 class PixPaymentRequest(BaseModel):
     amount: Decimal
@@ -73,13 +82,27 @@ class PixPaymentRequest(BaseModel):
     webhook_url: Optional[str] = None
     due_date: Optional[date] = None
 
-    # NOVOS CAMPOS
+    # Dados do cliente (existentes)
     nome_devedor: Optional[str] = None
     cpf: Optional[str] = None
     cnpj: Optional[str] = None
-    email: Optional[EmailStr] = None  # incluído para cadastro no Asaas
-
-    data_marketing: Optional[Dict[str, Any]] = Field(default=None, description="Dados extras de marketing, serão armazenados e retornados no webhook")
+    email: Optional[EmailStr] = None
+    
+    # 🆕 NOVOS: Dados extras do cliente
+    customer_phone: Optional[str] = None  # Telefone do cliente
+    customer_id: Optional[str] = None     # ID externo customizado do cliente
+    
+    # 🆕 NOVOS: Dados de endereço para o cliente
+    customer_cep: Optional[str] = None
+    customer_logradouro: Optional[str] = None
+    customer_numero: Optional[str] = None
+    customer_complemento: Optional[str] = None
+    customer_bairro: Optional[str] = None
+    customer_cidade: Optional[str] = None
+    customer_estado: Optional[str] = None
+    customer_pais: Optional[str] = "Brasil"
+    
+    data_marketing: Optional[Dict[str, Any]] = Field(default=None, description="Dados extras de marketing")
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -92,8 +115,10 @@ class PixPaymentRequest(BaseModel):
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
+
 class TokenizeCardRequest(BaseModel):
-    customer_id: str
+    """Schema original mantido para compatibilidade."""
+    customer_id: str  # Agora será tratado como ID externo
     card_number: str
     expiration_month: str
     expiration_year: str
@@ -108,6 +133,23 @@ class CreditCardPaymentRequest(BaseModel):
     installments: InstallmentsType
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
+    
+    # 🆕 NOVOS: Dados do cliente para criação automática (quando não usar card_token)
+    customer_name: Optional[str] = None
+    customer_email: Optional[EmailStr] = None
+    customer_cpf_cnpj: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_id: Optional[str] = None  # ID externo customizado
+    
+    # 🆕 NOVOS: Dados de endereço
+    customer_cep: Optional[str] = None
+    customer_logradouro: Optional[str] = None
+    customer_numero: Optional[str] = None
+    customer_complemento: Optional[str] = None
+    customer_bairro: Optional[str] = None
+    customer_cidade: Optional[str] = None
+    customer_estado: Optional[str] = None
+    customer_pais: Optional[str] = "Brasil"
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -120,11 +162,13 @@ class CreditCardPaymentRequest(BaseModel):
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
+
 class SicrediWebhookRequest(BaseModel):
     txid: str
     status: str
     # outros campos podem existir, mas só precisamos de txid e status
     
+
 @router.post("/webhook/sicredi")
 async def sicredi_webhook(
     payload: SicrediWebhookRequest,
@@ -173,23 +217,58 @@ async def sicredi_webhook(
 
     return {"message": "Webhook Sicredi processado com sucesso"}
 
+
 @router.post("/payment/tokenize-card")
 async def tokenize_card(
     card_data: TokenizeCardRequest,
     empresa: dict = Depends(validate_access_token)
 ):
+    """
+    🔧 ATUALIZADO: Tokenização agora cria cliente automaticamente se necessário.
+    """
     empresa_id = empresa["empresa_id"]
-    card_token = str(uuid4())
-    encrypted_card_data = str(card_data.dict())
+    
+    try:
+        # 🆕 NOVO: Tentar buscar/criar cliente baseado no customer_id fornecido
+        cliente_uuid = None
+        if card_data.customer_id:
+            # Buscar cliente existente por ID externo
+            cliente = await get_cliente_by_external_id(empresa_id, card_data.customer_id)
+            if cliente:
+                cliente_uuid = cliente["id"]
+                logger.info(f"✅ Cliente existente encontrado: {card_data.customer_id}")
+            else:
+                # Criar cliente básico apenas com nome do portador do cartão
+                customer_payload = {
+                    "customer_id": card_data.customer_id,
+                    "nome": card_data.cardholder_name
+                }
+                cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
+                logger.info(f"✅ Novo cliente criado para tokenização: {card_data.customer_id}")
+        
+        # Gerar token do cartão
+        card_token = str(uuid4())
+        encrypted_card_data = str(card_data.dict())
 
-    await save_tokenized_card({
-        "empresa_id": empresa_id,
-        "customer_id": card_data.customer_id,
-        "card_token": card_token,
-        "encrypted_card_data": encrypted_card_data
-    })
+        # Preparar dados do cartão tokenizado
+        tokenized_card_data = {
+            "empresa_id": empresa_id,
+            "customer_id": cliente_uuid,  # UUID interno (pode ser None)
+            "card_token": card_token,
+            "encrypted_card_data": encrypted_card_data
+        }
 
-    return {"card_token": card_token}
+        await save_tokenized_card(tokenized_card_data)
+
+        return {
+            "card_token": card_token,
+            "customer_id": cliente_uuid,
+            "customer_external_id": card_data.customer_id
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na tokenização: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno na tokenização: {str(e)}")
 
 
 @router.post("/payment/credit-card")
@@ -215,25 +294,59 @@ async def create_credit_card_payment(
     logger.info(f"🔍 Provider de crédito: {credit_provider} para empresa {empresa_id}")
 
     # recupera ou gera token interno
+    cliente_uuid = None
+    
     if payment_data.card_token:
         card_data = await get_tokenized_card(payment_data.card_token)
         if not card_data:
             raise HTTPException(400, "Cartão não encontrado ou expirado.")
+        
+        # 🆕 NOVO: Obter cliente_uuid do cartão tokenizado
+        cliente_uuid = card_data.get("customer_id")  # UUID interno do cliente
+        
     elif payment_data.card_data:
-        token_resp = await tokenize_card(payment_data.card_data, empresa)
-        card_data  = {**payment_data.card_data.dict(), "card_token": token_resp["card_token"]}
+        # 🆕 NOVO: Tokenizar cartão E criar cliente automaticamente
+        token_request = TokenizeCardRequest(**payment_data.card_data.dict())
+        
+        # Merge dados extras do payment se disponíveis
+        card_dict = payment_data.card_data.dict()
+        
+        # Se customer_id não foi fornecido no card_data, usar do payment
+        if not card_dict.get("customer_id") and payment_data.customer_id:
+            token_request.customer_id = payment_data.customer_id
+        
+        token_resp = await tokenize_card(token_request, empresa)
+        card_data = {**card_dict, "card_token": token_resp["card_token"]}
+        cliente_uuid = token_resp.get("customer_id")  # UUID interno do cliente criado
+        
     else:
         raise HTTPException(400, "É necessário fornecer `card_token` ou `card_data`.")
 
+    # 🆕 NOVO: Se não temos cliente_uuid, tentar criar com dados do pagamento
+    if not cliente_uuid:
+        try:
+            customer_payload = extract_customer_data_from_payment(payment_data.dict())
+            if customer_payload.get("nome") or customer_payload.get("cpf_cnpj") or customer_payload.get("email"):
+                cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
+                logger.info(f"✅ Cliente criado para cartão: {cliente_uuid}")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao criar cliente para cartão (continuando sem cliente): {e}")
+
     # salva como pending
-    await save_payment({
+    payment_record = {
         "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
         "amount":         payment_data.amount,
         "payment_type":   "credit_card",
         "status":         "pending",
         "webhook_url":    payment_data.webhook_url
-    })
+    }
+    
+    # 🆕 NOVO: Adicionar cliente_id se disponível
+    if cliente_uuid:
+        payment_record["cliente_id"] = cliente_uuid
+    
+    await save_payment(payment_record)
 
     # prepara dados para o mapper
     base_data   = {**payment_data.dict(exclude_unset=False), "transaction_id": transaction_id}
@@ -244,15 +357,13 @@ async def create_credit_card_payment(
         try:
             logger.info(f"🚀 Processando pagamento via Rede: tx={transaction_id}")
             
-            # 🔧 CORRIGIDO: Usar **kwargs ao invés de base_data
             resp = await create_rede_payment(
                 empresa_id=empresa_id,
-                **mapper_data  # 🔧 MUDANÇA: **kwargs para consistência
+                **mapper_data
             )
             
             logger.info(f"📥 Resposta Rede: {resp}")
             
-            # 🔧 CORRIGIDO: Verificar status adequadamente
             if resp.get("status") == "approved":
                 # Pagamento aprovado - notificar via webhook
                 if payment_data.webhook_url:
@@ -300,8 +411,8 @@ async def create_credit_card_payment(
             "local_id":          transaction_id,
             "name":              mapper_data["cardholder_name"],
             "email":             mapper_data.get("email") or mapper_data.get("customer_email"),
-            "cpfCnpj":           mapper_data.get("cpf") or mapper_data.get("cnpj"),
-            "phone":             mapper_data.get("phone"),
+            "cpfCnpj":           mapper_data.get("cpf") or mapper_data.get("cnpj") or mapper_data.get("customer_cpf_cnpj"),
+            "phone":             mapper_data.get("phone") or mapper_data.get("customer_phone"),
             "externalReference": transaction_id
         }
         try:
@@ -336,7 +447,6 @@ async def create_credit_card_payment(
         raise HTTPException(400, f"Provedor de crédito desconhecido: {credit_provider}")
 
 
-
 @router.post("/payment/pix")
 async def create_pix_payment(
     payment_data: PixPaymentRequest,
@@ -361,8 +471,18 @@ async def create_pix_payment(
         logger.warning(f"⚠️ [create_pix_payment] já processado: transaction_id={transaction_id}")
         return {"status": "already_processed", "transaction_id": transaction_id}
 
+    # 🆕 NOVO: Criar/buscar cliente automaticamente
+    cliente_uuid = None
+    try:
+        customer_payload = extract_customer_data_from_payment(payment_data.dict())
+        if customer_payload.get("nome") or customer_payload.get("cpf_cnpj") or customer_payload.get("email"):
+            cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
+            logger.info(f"✅ Cliente processado para PIX: {cliente_uuid}")
+    except Exception as e:
+        logger.warning(f"⚠️ Erro ao processar cliente PIX (continuando sem cliente): {e}")
+
     # Salva como pending
-    await save_payment({
+    payment_record = {
         "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
         "amount":         payment_data.amount,
@@ -371,7 +491,13 @@ async def create_pix_payment(
         "webhook_url":    payment_data.webhook_url,
         "txid":           txid,
         "data_marketing": payment_data.data_marketing
-    })
+    }
+    
+    # 🆕 NOVO: Adicionar cliente_id se foi criado
+    if cliente_uuid:
+        payment_record["cliente_id"] = cliente_uuid
+    
+    await save_payment(payment_record)
     logger.debug("💾 [create_pix_payment] payment registrado como pending no DB")
 
     # Determina provider de PIX
@@ -618,3 +744,170 @@ async def _poll_asaas_pix_status(
         await asyncio.sleep(interval)
 
     logger.error(f"❌ [_poll_asaas_pix_status] deadline atingida sem status final txid={transaction_id}")
+
+
+# 🆕 NOVOS ENDPOINTS DE CLIENTE
+
+@router.get("/customer/{customer_external_id}")
+async def get_customer_data(
+    customer_external_id: str,
+    empresa: dict = Depends(validate_access_token)
+):
+    """
+    Busca dados completos de um cliente pelo ID externo.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        
+        # Buscar endereço principal se existir
+        from payment_kode_api.app.database.customers_management import get_endereco_principal_cliente
+        endereco = await get_endereco_principal_cliente(cliente["id"])
+        
+        # Remove campos internos sensíveis
+        safe_cliente = {
+            "customer_external_id": cliente.get("customer_external_id"),
+            "nome": cliente.get("nome"),
+            "email": cliente.get("email"),
+            "cpf_cnpj": cliente.get("cpf_cnpj"),
+            "telefone": cliente.get("telefone"),
+            "created_at": cliente.get("created_at"),
+            "updated_at": cliente.get("updated_at"),
+            "endereco_principal": endereco
+        }
+        
+        return safe_cliente
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar cliente {customer_external_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao buscar cliente")
+
+
+@router.get("/customers")
+async def list_customers(
+    empresa: dict = Depends(validate_access_token),
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    Lista clientes da empresa com paginação.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        from payment_kode_api.app.database.customers_management import list_clientes_empresa
+        
+        clientes = await list_clientes_empresa(empresa_id, limit, offset)
+        
+        # Remove IDs internos dos resultados
+        safe_clientes = []
+        for cliente in clientes:
+            safe_cliente = {
+                "customer_external_id": cliente.get("customer_external_id"),
+                "nome": cliente.get("nome"),
+                "email": cliente.get("email"),
+                "cpf_cnpj": cliente.get("cpf_cnpj"),
+                "telefone": cliente.get("telefone"),
+                "created_at": cliente.get("created_at"),
+                "updated_at": cliente.get("updated_at"),
+                "endereco_principal": cliente.get("endereco_principal")
+            }
+            safe_clientes.append(safe_cliente)
+        
+        return {
+            "customers": safe_clientes,
+            "total": len(safe_clientes),
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao listar clientes da empresa {empresa_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao listar clientes")
+
+
+@router.get("/customer/{customer_external_id}/payments")
+async def get_customer_payments(
+    customer_external_id: str,
+    empresa: dict = Depends(validate_access_token),
+    limit: int = 50
+):
+    """
+    Lista pagamentos de um cliente específico pelo ID externo.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        # Buscar cliente pelo ID externo
+        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        
+        # Buscar pagamentos do cliente
+        from payment_kode_api.app.database.database import get_payments_by_cliente
+        payments = await get_payments_by_cliente(empresa_id, cliente["id"], limit)
+        
+        # Remover dados sensíveis dos pagamentos
+        safe_payments = []
+        for payment in payments:
+            safe_payment = {
+                "transaction_id": payment["transaction_id"],
+                "amount": payment["amount"],
+                "payment_type": payment["payment_type"],
+                "status": payment["status"],
+                "created_at": payment["created_at"],
+                "updated_at": payment["updated_at"],
+                "data_marketing": payment.get("data_marketing")
+            }
+            safe_payments.append(safe_payment)
+        
+        return {
+            "customer_external_id": customer_external_id,
+            "payments": safe_payments,
+            "total": len(safe_payments)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar pagamentos do cliente {customer_external_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao buscar pagamentos")
+
+
+@router.get("/customer/{customer_external_id}/stats")
+async def get_customer_statistics(
+    customer_external_id: str,
+    empresa: dict = Depends(validate_access_token)
+):
+    """
+    Retorna estatísticas de um cliente pelo ID externo.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        # Buscar cliente pelo ID externo
+        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        
+        # Buscar estatísticas
+        from payment_kode_api.app.database.database import get_cliente_stats
+        stats = await get_cliente_stats(empresa_id, cliente["id"])
+        
+        return {
+            "customer_external_id": customer_external_id,
+            "customer_name": cliente.get("nome"),
+            "statistics": stats
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao buscar estatísticas do cliente {customer_external_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao buscar estatísticas")
