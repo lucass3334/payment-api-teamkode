@@ -1,5 +1,5 @@
 from pydantic import BaseModel, StringConstraints, condecimal, field_validator
-from typing import Annotated, Optional, Dict
+from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 import uuid
 from datetime import date, datetime
@@ -89,7 +89,7 @@ class Devedor(BaseModel):
 
 class PaymentSchema(BaseModel):
     """
-    🔧 ATUALIZADO: Schema principal de pagamento com novos campos da Rede.
+    🔧 CORRIGIDO: Schema principal de pagamento com novos campos da Rede.
     """
     empresa_id:       uuid.UUID
     transaction_id:   Annotated[str, StringConstraints(min_length=6, max_length=35)]
@@ -110,14 +110,14 @@ class PaymentSchema(BaseModel):
     devedor:          Optional[Devedor] = None
 
     # 🔧 NOVOS CAMPOS DA REDE
-    rede_tid:         Optional[str] = None  # TID da Rede para estornos
-    authorization_code: Optional[str] = None  # Código de autorização
-    return_code:      Optional[str] = None  # Código de retorno (00=sucesso)
-    return_message:   Optional[str] = None  # Mensagem descritiva
+    rede_tid:         Optional[str] = None
+    authorization_code: Optional[str] = None
+    return_code:      Optional[str] = None
+    return_message:   Optional[str] = None
 
     # CAMPOS EXTRAS
-    data_marketing:   Optional[Dict[str, any]] = None  # Dados de marketing
-    installments:     Optional[int] = 1  # Número de parcelas
+    data_marketing:   Optional[Dict[str, Any]] = None  # 🔧 CORRIGIDO: any → Any
+    installments:     Optional[int] = 1
 
     @field_validator('amount', mode='before')
     @classmethod
@@ -220,14 +220,13 @@ class WebhookPayload(BaseModel):
     amount: Optional[Decimal] = None
     
     # Dados específicos por gateway
-    txid: Optional[str] = None  # Sicredi
-    rede_tid: Optional[str] = None  # Rede
-    authorization_code: Optional[str] = None  # Rede
+    txid: Optional[str] = None
+    rede_tid: Optional[str] = None
+    authorization_code: Optional[str] = None
     
     # Dados extras
-    data_marketing: Optional[Dict[str, any]] = None
-    payload: Optional[Dict[str, any]] = None  # Response raw do gateway
-
+    data_marketing: Optional[Dict[str, Any]] = None  # 🔧 CORRIGIDO: any → Any
+    payload: Optional[Dict[str, Any]] = None         # 🔧 CORRIGIDO: any → Any
 
 class CardTokenRequest(BaseModel):
     """
