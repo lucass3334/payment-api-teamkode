@@ -1,90 +1,237 @@
 # Payment Kode API
 
-Uma API para gestão de pagamentos com fallback entre gateways (Sicredi, Rede e Asaas), com suporte a multiempresas.
+Uma API robusta para gestão de pagamentos com suporte a múltiplos gateways (Sicredi, Rede e Asaas), sistema de fallback automático e arquitetura multiempresa.
 
 ## ✨ Recursos Principais
 
-- Suporte a **multiempresas** com configurações individuais por empresa.
-- Integração com **Sicredi (Pix)**, **Rede (Cartão de Crédito)** e **Asaas (Pix e Cartão de Crédito)**.
-- **Fallback** automático para garantir processamentos confiáveis.
-- Webhooks para notificações de pagamento.
-- Uso de **Redis** para cache e enfileiramento de tarefas assíncronas.
-- Suporte a **certificados mTLS** para autenticação com Sicredi sem armazenamento local.
+- **Multiempresas**: Cada empresa possui suas próprias credenciais e configurações
+- **Múltiplos Gateways**: Sicredi (PIX), Rede (Cartão) e Asaas (PIX/Cartão)
+- **Fallback Automático**: Troca automaticamente entre provedores em caso de falha
+- **Autenticação mTLS**: Certificados digitais para Sicredi via Supabase Storage
+- **Tokenização de Cartões**: Armazenamento seguro de dados de cartão
+- **Estornos**: Sistema completo de refund para PIX e cartão
+- **Webhooks**: Notificações em tempo real sobre status de pagamentos
+- **Sistema de Polling**: Monitoramento automático de status via APIs dos gateways
 
 ---
 
-## 🛠️ Requisitos
+## 🏗️ Arquitetura
 
-- **Docker e Docker Compose**
-- **Python 3.9+**
-- **Poetry** para gerenciamento de dependências
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   FastAPI App   │    │   Supabase DB   │    │ Supabase Storage│
+│   (Port 8080)   │◄──►│   (Postgres)    │    │  (Certificados) │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Gateway APIs   │    │    Payments     │    │   mTLS Certs    │
+│ Sicredi│Rede│   │    │   Empresas      │    │   (em memória)  │
+│       Asaas     │    │   Tokens        │    │                 │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
 
 ---
 
-## 📂 Configuração
+## 🛠️ Tecnologias
 
-### 1. Configurando Variáveis de Ambiente
+- **Backend**: FastAPI + Python 3.9+
+- **Banco de Dados**: Supabase (PostgreSQL)
+- **Storage**: Supabase Storage (certificados mTLS)
+- **Containerização**: Docker + Docker Compose
+- **Gerenciamento de Dependências**: Poetry
+- **Logging**: Loguru
+- **HTTP Client**: httpx (async)
+- **Criptografia**: cryptography (RSA, mTLS)
 
-Crie um arquivo `.env` na raiz do projeto baseado no `.env.example`:
+---
+
+## 📋 Pré-requisitos
+
+- Docker e Docker Compose
+- Python 3.9+ (para desenvolvimento local)
+- Poetry (para gerenciamento de dependências)
+- Conta no Supabase
+- Credenciais dos gateways de pagamento
+
+---
+
+## 🚀 Instalação e Configuração
+
+### 1. Clone o Repositório
+
+```bash
+git clone https://github.com/seu-usuario/payment-kode-api.git
+cd payment-kode-api
+```
+
+### 2. Configure as Variáveis de Ambiente
+
+Copie o arquivo de exemplo e configure:
+
+```bash
+cp .env.example .env
+```
+
+**Edite o `.env`:**
 
 ```env
-# 🛠️ Configuração do Banco de Dados
+# 🔹 Configuração de Banco de Dados
 SUPABASE_URL=https://sua-url.supabase.co
 SUPABASE_KEY=sua-chave-supabase
 
-# 🤖 Configuração do Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=sua-senha-redis
+# 🔹 Configuração do Redis (Opcional - atualmente desabilitado)
+# REDIS_URL=redis://localhost:6379
 
-# 💳 Credenciais dos Gateways de Pagamento
-SICREDI_API_KEY=sua-chave-sicredi
-ASAAS_API_KEY=sua-chave-asaas
-REDE_API_KEY=sua-chave-rede
+# 🔹 Controle de Ambiente
+USE_SANDBOX=true
+SICREDI_ENV=homologation
+API_LOCAL=false
 
-# 🌐 Webhooks
+# 🔹 Configuração de Webhooks
 WEBHOOK_PIX=https://seu-webhook.com/pix
-WEBHOOK_CARTAO=https://seu-webhook.com/credit-card
 
-# 🔒 Ambiente
-USE_SANDBOX=true  # true para ambiente de teste, false para produção
-SICREDI_ENV=homologation  # 'homologation' ou 'production'
+# 🔹 Debug
+DEBUG=true
 ```
 
-### 2. Configuração Multiempresas
-As credenciais dos gateways (Sicredi, Asaas, Rede) são configuradas por empresa na tabela `empresas_config`. Certifique-se de que cada empresa cadastrada tenha suas credenciais associadas corretamente.
+### 3. Execute com Docker
 
----
-
-## 🚲 Executando o Projeto
-
-### 1. Rodando com Docker
-
-```sh
+```bash
+# Modo desenvolvimento
 docker-compose up --build
+
+# Modo produção (background)
+docker-compose up -d --build
 ```
 
-### 2. Rodando Localmente (Sem Docker)
+### 4. Ou Execute Localmente
 
-1. Instale as dependências:
-   ```sh
-   poetry install
-   ```
-2. Execute a aplicação:
-   ```sh
-   poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
+```bash
+# Instale as dependências
+poetry install
+
+# Execute a aplicação
+poetry run uvicorn payment_kode_api.app.main:app --host 0.0.0.0 --port 8080 --reload
+```
 
 ---
 
-## 🌟 Endpoints Principais
+## 📚 Estrutura do Banco de Dados
 
-### Criar Empresa
-```http
-POST /empresa
+### Tabelas Principais
+
+#### `empresas`
+```sql
+- empresa_id (UUID, PK)
+- nome (VARCHAR)
+- cnpj (VARCHAR, UNIQUE)
+- email (VARCHAR)
+- telefone (VARCHAR)
+- access_token (VARCHAR, UNIQUE)
+- created_at, updated_at
 ```
-**Request Body:**
-```json
+
+#### `empresas_config`
+```sql
+- id (UUID, PK)
+- empresa_id (UUID, FK)
+- asaas_api_key (VARCHAR)
+- sicredi_client_id (VARCHAR)
+- sicredi_client_secret (VARCHAR)
+- sicredi_token (VARCHAR) -- Cache do token
+- sicredi_token_expires_at (TIMESTAMP)
+- rede_pv (VARCHAR)
+- rede_api_key (VARCHAR)
+- pix_provider (VARCHAR) -- 'sicredi' ou 'asaas'
+- credit_provider (VARCHAR) -- 'rede' ou 'asaas'
+- webhook_pix (VARCHAR)
+- chave_pix (VARCHAR)
+- use_sandbox (BOOLEAN)
+```
+
+#### `payments`
+```sql
+- id (UUID, PK)
+- empresa_id (UUID, FK)
+- transaction_id (VARCHAR, UNIQUE)
+- txid (VARCHAR) -- Para PIX
+- amount (DECIMAL)
+- payment_type (VARCHAR) -- 'pix' ou 'credit_card'
+- status (VARCHAR) -- 'pending', 'approved', 'failed', 'canceled'
+- webhook_url (VARCHAR)
+- rede_tid (VARCHAR) -- Para estornos Rede
+- authorization_code (VARCHAR)
+- return_code (VARCHAR)
+- data_marketing (JSONB)
+- created_at, updated_at
+```
+
+#### `cartoes_tokenizados`
+```sql
+- id (UUID, PK)
+- empresa_id (UUID, FK)
+- customer_id (VARCHAR)
+- card_token (VARCHAR, UNIQUE)
+- encrypted_card_data (TEXT)
+- expires_at (TIMESTAMP)
+```
+
+#### `empresas_certificados`
+```sql
+- id (UUID, PK)
+- empresa_id (UUID, FK)
+- sicredi_cert_base64 (TEXT)
+- sicredi_key_base64 (TEXT)
+- sicredi_ca_base64 (TEXT)
+```
+
+---
+
+## 🔐 Sistema de Certificados mTLS
+
+O Sicredi exige autenticação mTLS. Os certificados são armazenados no Supabase Storage e carregados em memória:
+
+### Estrutura no Storage
+```
+certificados-sicredi/
+└── {empresa_id}/
+    ├── sicredi-cert.pem  (Certificado da empresa)
+    ├── sicredi-key.key   (Chave privada)
+    └── sicredi-ca.pem    (Cadeia de certificação)
+```
+
+### Upload de Certificados
+```http
+POST /certificados/upload
+Content-Type: multipart/form-data
+
+empresa_id: {uuid}
+arquivo: sicredi-cert.pem
+```
+
+### Validação
+```http
+GET /certificados/validate?empresa_id={uuid}
+```
+
+---
+
+## 📡 Endpoints da API
+
+### Autenticação
+Todas as rotas (exceto criação de empresa) usam Bearer Token:
+```http
+Authorization: Bearer {access_token}
+```
+
+### 🏢 Empresas
+
+#### Criar Empresa
+```http
+POST /empresas/empresa
+Content-Type: application/json
+
 {
   "nome": "Minha Empresa",
   "cnpj": "12345678000199",
@@ -92,64 +239,317 @@ POST /empresa
   "telefone": "11999999999"
 }
 ```
+
 **Response:**
 ```json
 {
-  "empresa_id": "uuid-gerado"
+  "empresa_id": "uuid-gerado",
+  "access_token": "token-de-acesso"
 }
 ```
 
-### Criar Pagamento Pix
+#### Configurar Gateways
 ```http
-POST /payment/pix
-```
-**Request Body:**
-```json
+POST /empresas/empresa/configurar_gateway
+Authorization: Bearer {access_token}
+
 {
-  "empresa_id": "uuid-da-empresa",
+  "pix_provider": "sicredi",      # ou "asaas"
+  "credit_provider": "rede"       # ou "asaas"
+}
+```
+
+### 💳 Pagamentos
+
+#### PIX (Sicredi/Asaas)
+```http
+POST /payments/payment/pix
+Authorization: Bearer {access_token}
+
+{
   "amount": 150.00,
-  "chave_pix": "chave-do-pagamento",
-  "txid": "txid-unico",
-  "webhook_url": "https://seu-webhook.com"
+  "chave_pix": "usuario@email.com",
+  "txid": "txid-opcional",
+  "webhook_url": "https://seu-webhook.com",
+  "due_date": "2024-12-31",      # Opcional (cobrança com vencimento)
+  "nome_devedor": "João Silva",   # Obrigatório se due_date
+  "cpf": "12345678901",          # Obrigatório se due_date
+  "data_marketing": {            # Opcional
+    "origem": "site",
+    "campanha": "black-friday"
+  }
 }
 ```
 
-### Criar Pagamento com Cartão de Crédito
-```http
-POST /payment/credit-card
-```
-**Request Body:**
+**Response:**
 ```json
 {
-  "empresa_id": "uuid-da-empresa",
+  "status": "approved",
+  "transaction_id": "uuid",
+  "pix_link": "00020126...",
+  "qr_code_base64": "data:image/png;base64,...",
+  "expiration": 900,
+  "refund_deadline": "2024-12-07T23:59:59"
+}
+```
+
+#### Cartão de Crédito (Rede/Asaas)
+```http
+POST /payments/payment/credit-card
+Authorization: Bearer {access_token}
+
+{
   "amount": 250.00,
   "installments": 3,
+  "webhook_url": "https://seu-webhook.com",
   "card_data": {
     "cardholder_name": "João Silva",
     "card_number": "4111111111111111",
     "expiration_month": "12",
     "expiration_year": "2025",
     "security_code": "123"
-  },
-  "webhook_url": "https://seu-webhook.com"
+  }
 }
 ```
 
-### Webhook Pix (Opcional)
+### 🔄 Estornos
+
+#### Estorno PIX
 ```http
-POST /webhook/pix
+POST /payments/payment/pix/refund
+Authorization: Bearer {access_token}
+
+{
+  "transaction_id": "uuid-da-transacao",
+  "amount": 50.00  # Opcional (senão, estorno total)
+}
 ```
 
-### Webhook Cartão de Crédito (Opcional)
+#### Estorno Cartão
 ```http
-POST /webhook/credit-card
+POST /payments/payment/credit-card/refund
+Authorization: Bearer {access_token}
+
+{
+  "transaction_id": "uuid-da-transacao",
+  "amount": 100.00  # Opcional (senão, estorno total)
+}
 ```
+
+### 🎯 Tokenização
+
+#### Tokenizar Cartão
+```http
+POST /payments/payment/tokenize-card
+Authorization: Bearer {access_token}
+
+{
+  "customer_id": "cliente-123",
+  "card_number": "4111111111111111",
+  "expiration_month": "12",
+  "expiration_year": "2025",
+  "security_code": "123",
+  "cardholder_name": "João Silva"
+}
+```
+
+### 🔗 Webhooks
+
+A API enviará notificações para sua URL configurada:
+
+```json
+{
+  "transaction_id": "uuid",
+  "status": "approved",
+  "provedor": "sicredi",
+  "txid": "ABC123",
+  "data_marketing": {
+    "origem": "site",
+    "campanha": "black-friday"
+  },
+  "payload": {
+    // Resposta bruta do gateway
+  }
+}
+```
+
 ---
 
-## 🔎 To-Do List
-- [ ] Implementar suporte a **chargebacks**
-- [ ] Melhorar logs de erros
-- [ ] Criar interface de gestão no frontend
+## ⚙️ Configuração dos Gateways
 
-💪 Feito com dedicação por [Lucas Souza](https://github.com/lucass3334)
+### Sicredi (PIX)
+1. Obtenha certificados mTLS do Sicredi
+2. Faça upload via `/certificados/upload`
+3. Configure credenciais na tabela `empresas_config`:
+   - `sicredi_client_id`
+   - `sicredi_client_secret`
+   - `sicredi_env` (production/homologation)
 
+### Rede (Cartão)
+Configure na tabela `empresas_config`:
+- `rede_pv` (Número do estabelecimento)
+- `rede_api_key` (Chave de integração)
+
+### Asaas (PIX/Cartão)
+Configure na tabela `empresas_config`:
+- `asaas_api_key`
+- `use_sandbox` (true/false)
+
+---
+
+## 🔄 Sistema de Fallback
+
+A API implementa fallback automático:
+
+### PIX
+1. **Primário**: Sicredi (mais comum)
+2. **Fallback**: Asaas
+
+### Cartão de Crédito
+1. **Primário**: Rede (taxas menores)
+2. **Fallback**: Asaas
+
+### Estornos
+A API tenta o mesmo provedor do pagamento original e faz fallback se necessário.
+
+---
+
+## 📊 Monitoramento e Logs
+
+### Health Check
+```http
+GET /
+```
+
+### Logs
+- Console: nível INFO
+- Arquivo: `logs/app.log` (rotativo, 10MB, 10 dias)
+
+### Validação de Certificados
+```http
+GET /certificados/validate?empresa_id={uuid}
+```
+
+### Token Sicredi
+```http
+GET /auth_gateway/sicredi_token?empresa_id={uuid}
+```
+
+---
+
+## 🧪 Testes
+
+```bash
+# Execute os testes
+poetry run pytest
+
+# Com coverage
+poetry run pytest --cov=payment_kode_api
+
+# Testes específicos
+poetry run pytest payment_kode_api/tests/test_payments.py
+```
+
+---
+
+## 📄 Estrutura do Projeto
+
+```
+payment_kode_api/
+├── app/
+│   ├── api/routes/           # Endpoints da API
+│   │   ├── payments.py       # Pagamentos PIX/Cartão
+│   │   ├── refunds.py        # Estornos
+│   │   ├── empresas.py       # Gestão de empresas
+│   │   ├── webhooks.py       # Recebimento de webhooks
+│   │   └── upload_certificados.py # Upload de certificados
+│   ├── services/
+│   │   ├── gateways/         # Clientes dos gateways
+│   │   │   ├── sicredi_client.py
+│   │   │   ├── rede_client.py
+│   │   │   └── asaas_client.py
+│   │   ├── config_service.py # Gestão de configurações
+│   │   └── webhook_services.py # Envio de webhooks
+│   ├── database/             # Camada de dados
+│   │   ├── database.py       # Operações principais
+│   │   ├── customers.py      # Gestão de clientes Asaas
+│   │   └── supabase_storage.py # Storage de certificados
+│   ├── security/             # Autenticação e criptografia
+│   ├── utilities/            # Utilitários
+│   └── models/               # Schemas e modelos
+├── tests/                    # Testes automatizados
+├── docker-compose.yml        # Configuração Docker
+├── Dockerfile                # Imagem da aplicação
+└── pyproject.toml           # Dependências Poetry
+```
+
+---
+
+## 🚨 Troubleshooting
+
+### Erro de Certificado Sicredi
+```
+certificate verify failed: unable to get local issuer certificate
+```
+**Solução**: Verifique se `sicredi-ca.pem` contém a cadeia completa (intermediário + raiz).
+
+### Token Sicredi Expirado
+A API gerencia automaticamente a renovação, mas verifique:
+- Credenciais válidas em `empresas_config`
+- Certificados válidos no Storage
+
+### Pagamento Falhou em Todos os Gateways
+Verifique:
+- Credenciais dos gateways
+- Configuração de `pix_provider` e `credit_provider`
+- Logs da aplicação
+
+---
+
+## 🔒 Segurança
+
+- **Certificados mTLS**: Armazenados com segurança no Supabase Storage
+- **Tokens de Cartão**: Criptografados com RSA por empresa
+- **Access Tokens**: Únicos por empresa
+- **HTTPS**: Obrigatório em produção
+- **Logs**: Não expõem dados sensíveis
+
+---
+
+## 📈 Roadmap
+
+- [ ] Interface de gestão (frontend)
+- [ ] Suporte a mais gateways
+- [ ] Sistema de chargebacks
+- [ ] Analytics de pagamentos
+- [ ] Webhooks com retry automático
+- [ ] Rate limiting
+- [ ] Documentação interativa (Swagger)
+
+---
+
+## 🤝 Contribuição
+
+1. Fork o projeto
+2. Crie uma branch (`git checkout -b feature/nova-funcionalidade`)
+3. Commit suas mudanças (`git commit -am 'Adiciona nova funcionalidade'`)
+4. Push para a branch (`git push origin feature/nova-funcionalidade`)
+5. Abra um Pull Request
+
+---
+
+## 📞 Suporte
+
+- **Email**: administrativo@teamkode.com
+- **Issues**: [GitHub Issues](https://github.com/lucass3334/payment-kode-api/issues)
+- **Documentação**: Este README + comentários no código
+
+---
+
+## 📜 Licença
+
+Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+---
+
+**Desenvolvido com ❤️ pela [Team Kode](https://github.com/lucass3334)**
