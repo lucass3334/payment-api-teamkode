@@ -13,7 +13,7 @@ from payment_kode_api.app.security.crypto import encrypt_card_data
 from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.utilities.logging_config import logger
 
-# 🆕 NOVO: Imports para gestão de clientes
+# Imports para gestão de clientes
 from payment_kode_api.app.database.customers_management import (
     get_or_create_cliente, 
     extract_customer_data_from_payment,
@@ -25,25 +25,23 @@ router = APIRouter()
 
 
 class TokenizeCardRequest(BaseModel):
-    """Schema atualizado para tokenização com dados completos do cliente + endereço."""
+    """Schema atualizado para tokenização com customer_id OPCIONAL e criação automática."""
     
-    # Dados do cartão (obrigatórios)
+    # ========== DADOS DO CARTÃO (OBRIGATÓRIOS) ==========
     card_number: str
     expiration_month: str
     expiration_year: str
     security_code: str
     cardholder_name: str
     
-    # 🔧 ATUALIZADO: customer_id agora é opcional (será o ID externo)
-    customer_id: Optional[str] = None
-    
-    # 🆕 NOVOS: Dados do cliente (opcionais)
-    customer_name: Optional[str] = None
+    # ========== DADOS DO CLIENTE (TODOS OPCIONAIS) ==========
+    customer_id: Optional[str] = None  # ID externo customizado (OPCIONAL)
+    customer_name: Optional[str] = None  # Se não fornecido, usa cardholder_name
     customer_email: Optional[EmailStr] = None
     customer_cpf_cnpj: Optional[str] = None
     customer_phone: Optional[str] = None
     
-    # 🆕 NOVOS: Dados de endereço (opcionais)
+    # ========== DADOS DE ENDEREÇO (OPCIONAIS) ==========
     customer_cep: Optional[str] = None
     customer_logradouro: Optional[str] = None
     customer_numero: Optional[str] = None
@@ -83,8 +81,9 @@ class TokenizeCardRequest(BaseModel):
 class TokenizedCardResponse(BaseModel):
     """Resposta da tokenização com dados do cliente."""
     card_token: str
-    customer_id: Optional[str] = None  # UUID interno do cliente (pode ser None)
-    customer_external_id: Optional[str] = None  # ID externo do cliente
+    customer_internal_id: Optional[str] = None  # UUID interno (pode ser None)
+    customer_external_id: Optional[str] = None  # ID externo (pode ser None)
+    customer_created: bool = False  # Indica se cliente foi criado agora
     expires_at: Optional[str] = None
 
 
@@ -94,47 +93,22 @@ async def tokenize_card(
     empresa: dict = Depends(validate_access_token)
 ):
     """
-    🔧 ATUALIZADO: Tokeniza um cartão e cria/atualiza o cliente automaticamente.
+    🔧 CORRIGIDO: Tokeniza cartão com criação automática de cliente OPCIONAL.
+    
+    Comportamento:
+    1. Se dados suficientes do cliente fornecidos → cria/busca cliente
+    2. Se apenas dados do cartão → tokeniza sem vincular cliente
+    3. customer_id é completamente opcional
     """
     empresa_id = empresa["empresa_id"]
     
     try:
         logger.info(f"🔐 Iniciando tokenização para empresa {empresa_id}")
         
-        # 1. Extrair dados do cliente do payload
-        customer_payload = extract_customer_data_from_payment(card_data.dict())
-        
-        # Se não tiver nome do cliente, usar o nome do portador do cartão
-        if not customer_payload.get("nome"):
-            customer_payload["nome"] = card_data.cardholder_name
-        
-        # 2. Criar/buscar cliente (se dados suficientes fornecidos)
-        cliente_uuid = None
-        customer_external_id = None
-        
-        # Se tem dados mínimos do cliente, criar/buscar
-        if (customer_payload.get("nome") or 
-            customer_payload.get("cpf_cnpj") or 
-            customer_payload.get("email") or
-            card_data.customer_id):
-            
-            try:
-                cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
-                
-                # Buscar dados completos do cliente para pegar o external_id
-                cliente = await get_cliente_by_id(cliente_uuid)
-                if cliente:
-                    customer_external_id = cliente.get("customer_external_id")
-                
-                logger.info(f"✅ Cliente processado: UUID {cliente_uuid}, External ID: {customer_external_id}")
-                
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao processar cliente (continuando tokenização): {e}")
-        
-        # 3. Gerar token do cartão
+        # ========== 1. GERAR TOKEN DO CARTÃO ==========
         card_token = str(uuid.uuid4())
         
-        # 4. Criptografar dados do cartão
+        # ========== 2. CRIPTOGRAFAR DADOS DO CARTÃO ==========
         encrypted_card_data = await encrypt_card_data(empresa_id, {
             "card_number": card_data.card_number,
             "expiration_month": card_data.expiration_month,
@@ -143,17 +117,67 @@ async def tokenize_card(
             "cardholder_name": card_data.cardholder_name
         })
         
-        # 5. Detectar bandeira do cartão
+        # ========== 3. DETECTAR BANDEIRA DO CARTÃO ==========
         card_brand = detect_card_brand(card_data.card_number)
         
-        # 6. Salvar cartão tokenizado
+        # ========== 4. PROCESSAR CLIENTE (OPCIONAL) ==========
+        cliente_uuid = None
+        customer_external_id = None
+        customer_created = False
+        
+        # Verificar se temos dados suficientes para criar/buscar cliente
+        has_customer_data = any([
+            card_data.customer_id,
+            card_data.customer_name,
+            card_data.customer_email,
+            card_data.customer_cpf_cnpj,
+            card_data.customer_phone
+        ])
+        
+        if has_customer_data:
+            try:
+                # Extrair dados do cliente
+                customer_payload = extract_customer_data_from_payment(card_data.dict())
+                
+                # Se não tem nome do cliente, usar nome do portador do cartão
+                if not customer_payload.get("nome"):
+                    customer_payload["nome"] = card_data.cardholder_name
+                
+                # Verificar se tem dados mínimos para criar cliente
+                if customer_payload.get("nome"):
+                    # Buscar cliente existente primeiro (se customer_id fornecido)
+                    if card_data.customer_id:
+                        existing_cliente = await get_cliente_by_external_id(empresa_id, card_data.customer_id)
+                        if existing_cliente:
+                            cliente_uuid = existing_cliente["id"]
+                            customer_external_id = existing_cliente.get("customer_external_id")
+                            logger.info(f"✅ Cliente existente encontrado: {card_data.customer_id}")
+                    
+                    # Se não encontrou cliente existente, criar novo
+                    if not cliente_uuid:
+                        cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
+                        customer_created = True
+                        
+                        # Buscar dados completos do cliente criado
+                        cliente = await get_cliente_by_id(cliente_uuid)
+                        if cliente:
+                            customer_external_id = cliente.get("customer_external_id")
+                        
+                        logger.info(f"✅ Novo cliente criado: UUID {cliente_uuid}, External ID: {customer_external_id}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao processar cliente (continuando tokenização sem cliente): {e}")
+                # Continua a tokenização mesmo se falhar na criação do cliente
+        
+        # ========== 5. SALVAR CARTÃO TOKENIZADO ==========
         tokenized_card_data = {
             "empresa_id": empresa_id,
-            "customer_id": cliente_uuid,  # UUID interno (pode ser None)
+            "customer_id": customer_external_id,  # ID externo para compatibilidade
             "card_token": card_token,
             "encrypted_card_data": encrypted_card_data,
             "last_four_digits": card_data.card_number[-4:],
-            "card_brand": card_brand
+            "card_brand": card_brand,
+            "cliente_id": cliente_uuid  # UUID interno para relacionamento
         }
 
         await save_tokenized_card(tokenized_card_data)
@@ -162,8 +186,9 @@ async def tokenize_card(
         
         return TokenizedCardResponse(
             card_token=card_token,
-            customer_id=cliente_uuid,
+            customer_internal_id=cliente_uuid,
             customer_external_id=customer_external_id,
+            customer_created=customer_created,
             expires_at=None  # Implementar expiração se necessário
         )
         
@@ -197,7 +222,7 @@ async def get_tokenized_card_route(
     empresa: dict = Depends(validate_access_token)
 ):
     """
-    🔧 ATUALIZADO: Recupera os dados de um cartão tokenizado com informações do cliente.
+    🔧 CORRIGIDO: Recupera dados de cartão tokenizado com informações do cliente.
     """
     empresa_id = empresa["empresa_id"]
     
@@ -212,8 +237,8 @@ async def get_tokenized_card_route(
         
         # Buscar dados do cliente se existir
         cliente_info = None
-        if card.get("customer_id"):
-            cliente = await get_cliente_by_id(card["customer_id"])
+        if card.get("cliente_id"):  # UUID interno
+            cliente = await get_cliente_by_id(card["cliente_id"])
             if cliente:
                 cliente_info = {
                     "customer_external_id": cliente.get("customer_external_id"),
@@ -224,7 +249,8 @@ async def get_tokenized_card_route(
         # Remove dados sensíveis da resposta
         safe_card = {
             "card_token": card["card_token"],
-            "customer_id": card.get("customer_id"),
+            "customer_internal_id": card.get("cliente_id"),
+            "customer_external_id": card.get("customer_id"),  # Para compatibilidade
             "last_four_digits": card.get("last_four_digits"),
             "card_brand": card.get("card_brand"),
             "created_at": card.get("created_at"),
@@ -279,7 +305,7 @@ async def delete_tokenized_card_route(
         raise HTTPException(status_code=500, detail="Erro interno ao remover cartão.")
 
 
-# 🆕 NOVOS ENDPOINTS
+# ========== ENDPOINTS ESPECÍFICOS POR CLIENTE ==========
 
 @router.get("/customer/{customer_uuid}/cards")
 async def list_customer_cards_by_uuid(
@@ -303,7 +329,7 @@ async def list_customer_cards_by_uuid(
             supabase.table("cartoes_tokenizados")
             .select("card_token, last_four_digits, card_brand, created_at, expires_at")
             .eq("empresa_id", empresa_id)
-            .eq("customer_id", customer_uuid)
+            .eq("cliente_id", customer_uuid)  # Usando cliente_id (UUID)
             .order("created_at", desc=True)
             .execute()
         )
@@ -313,7 +339,7 @@ async def list_customer_cards_by_uuid(
         logger.info(f"📋 Listando {len(cards)} cartões para cliente {customer_uuid}")
         
         return {
-            "customer_id": customer_uuid,
+            "customer_internal_id": customer_uuid,
             "customer_external_id": cliente.get("customer_external_id"),
             "customer_name": cliente.get("nome"),
             "cards": cards,
@@ -435,11 +461,26 @@ async def get_tokenization_stats(
         
         recent_cards = recent_response.count or 0
         
+        # Cartões com cliente vs sem cliente
+        with_customer_response = (
+            supabase.table("cartoes_tokenizados")
+            .select("id", count="exact")
+            .eq("empresa_id", empresa_id)
+            .not_.is_("cliente_id", "null")
+            .execute()
+        )
+        
+        cards_with_customer = with_customer_response.count or 0
+        cards_without_customer = total_cards - cards_with_customer
+        
         return {
             "total_cards": total_cards,
             "recent_cards_30_days": recent_cards,
             "cards_by_brand": brands_count,
-            "most_used_brand": max(brands_count.items(), key=lambda x: x[1])[0] if brands_count else None
+            "most_used_brand": max(brands_count.items(), key=lambda x: x[1])[0] if brands_count else None,
+            "cards_with_customer": cards_with_customer,
+            "cards_without_customer": cards_without_customer,
+            "customer_linkage_rate": round((cards_with_customer / total_cards * 100), 1) if total_cards > 0 else 0
         }
         
     except Exception as e:

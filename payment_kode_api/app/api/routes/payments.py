@@ -61,7 +61,7 @@ router = APIRouter()
 # Tipagens para validação
 PixKeyType = Annotated[str, Field(min_length=5, max_length=150)]
 TransactionIDType = Annotated[UUID, Field()]
-InstallmentsType = Annotated[int, Field(ge=1, le=12)]
+InstallmentsType = Annotated[int, Field(ge=1, le=12, description="Número de parcelas (1-12)")]
 EmpresaIDType = Annotated[str, Field(min_length=36, max_length=36)]
 
 
@@ -130,7 +130,7 @@ class CreditCardPaymentRequest(BaseModel):
     amount: Decimal
     card_token: Optional[str] = None
     card_data: Optional[TokenizeCardRequest] = None
-    installments: InstallmentsType
+    installments: InstallmentsType = Field(default=1, description="Número de parcelas (1-12)")
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
     
@@ -162,12 +162,60 @@ class CreditCardPaymentRequest(BaseModel):
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
 
+    @field_validator("installments", mode="before")
+    @classmethod
+    def validate_installments(cls, v):
+        """Valida número de parcelas."""
+        try:
+            installments = int(v)
+            if installments < 1:
+                raise ValueError("Número de parcelas deve ser pelo menos 1")
+            if installments > 12:
+                raise ValueError("Número máximo de parcelas é 12")
+            return installments
+        except (ValueError, TypeError):
+            raise ValueError("Número de parcelas deve ser um inteiro entre 1 e 12")
+
+    def validate_card_data(self):
+        """Valida se tem card_token OU card_data."""
+        if not self.card_token and not self.card_data:
+            raise ValueError("É necessário fornecer 'card_token' ou 'card_data'")
+        if self.card_token and self.card_data:
+            raise ValueError("Forneça apenas 'card_token' OU 'card_data', não ambos")
 
 class SicrediWebhookRequest(BaseModel):
     txid: str
     status: str
     # outros campos podem existir, mas só precisamos de txid e status
     
+# ========== FUNÇÃO DE VALIDAÇÃO DE PARCELAS PARA DIFERENTES GATEWAYS ==========
+def validate_installments_by_gateway(installments: int, gateway: str, amount: Decimal) -> int:
+    """
+    Valida e ajusta parcelas conforme regras específicas dos gateways.
+    """
+    # Normalizar installments
+    installments = max(1, min(installments, 12))
+    
+    if gateway == "rede":
+        # Rede: máximo 12 parcelas, valor mínimo por parcela R$ 5,00
+        min_amount_per_installment = Decimal("5.00")
+        max_installments_by_amount = int(amount // min_amount_per_installment)
+        
+        if installments > max_installments_by_amount:
+            logger.warning(f"⚠️ Rede: Reduzindo parcelas de {installments} para {max_installments_by_amount} (valor mínimo R$ 5,00 por parcela)")
+            installments = max(1, max_installments_by_amount)
+    
+    elif gateway == "asaas":
+        # Asaas: máximo 12 parcelas, valor mínimo por parcela R$ 3,00
+        min_amount_per_installment = Decimal("3.00")
+        max_installments_by_amount = int(amount // min_amount_per_installment)
+        
+        if installments > max_installments_by_amount:
+            logger.warning(f"⚠️ Asaas: Reduzindo parcelas de {installments} para {max_installments_by_amount} (valor mínimo R$ 3,00 por parcela)")
+            installments = max(1, max_installments_by_amount)
+    
+    return installments
+
 
 @router.post("/webhook/sicredi")
 async def sicredi_webhook(
@@ -280,7 +328,13 @@ async def create_credit_card_payment(
     empresa_id     = empresa["empresa_id"]
     transaction_id = str(payment_data.transaction_id or uuid4())
 
-    # evita duplicação
+    # Validar dados do cartão
+    try:
+        payment_data.validate_card_data()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Evita duplicação
     if await get_payment(transaction_id, empresa_id):
         return {
             "status": "already_processed",
@@ -288,12 +342,24 @@ async def create_credit_card_payment(
             "transaction_id": transaction_id
         }
 
-    # qual gateway usar?
+    # Determinar gateway
     config = await get_empresa_config(empresa_id)
     credit_provider = (config or {}).get("credit_provider", "rede").lower()
-    logger.info(f"🔍 Provider de crédito: {credit_provider} para empresa {empresa_id}")
+    
+    # ========== VALIDAR PARCELAS PELO GATEWAY ==========
+    validated_installments = validate_installments_by_gateway(
+        payment_data.installments, 
+        credit_provider, 
+        payment_data.amount
+    )
+    
+    if validated_installments != payment_data.installments:
+        logger.info(f"🔧 Parcelas ajustadas: {payment_data.installments} → {validated_installments}")
+        payment_data.installments = validated_installments
 
-    # recupera ou gera token interno
+    logger.info(f"🔍 Provider de crédito: {credit_provider} | Parcelas: {payment_data.installments} | Valor: R$ {payment_data.amount}")
+
+    # Recuperar ou gerar token interno + cliente
     cliente_uuid = None
     
     if payment_data.card_token:
@@ -301,28 +367,21 @@ async def create_credit_card_payment(
         if not card_data:
             raise HTTPException(400, "Cartão não encontrado ou expirado.")
         
-        # 🆕 NOVO: Obter cliente_uuid do cartão tokenizado
-        cliente_uuid = card_data.get("customer_id")  # UUID interno do cliente
+        cliente_uuid = card_data.get("cliente_id")  # UUID interno do cliente
         
     elif payment_data.card_data:
-        # 🆕 NOVO: Tokenizar cartão E criar cliente automaticamente
+        # Tokenizar cartão E criar cliente automaticamente
         token_request = TokenizeCardRequest(**payment_data.card_data.dict())
         
         # Merge dados extras do payment se disponíveis
-        card_dict = payment_data.card_data.dict()
-        
-        # Se customer_id não foi fornecido no card_data, usar do payment
-        if not card_dict.get("customer_id") and payment_data.customer_id:
+        if not token_request.customer_id and payment_data.customer_id:
             token_request.customer_id = payment_data.customer_id
         
         token_resp = await tokenize_card(token_request, empresa)
-        card_data = {**card_dict, "card_token": token_resp["card_token"]}
-        cliente_uuid = token_resp.get("customer_id")  # UUID interno do cliente criado
-        
-    else:
-        raise HTTPException(400, "É necessário fornecer `card_token` ou `card_data`.")
+        card_data = {**payment_data.card_data.dict(), "card_token": token_resp.card_token}
+        cliente_uuid = token_resp.customer_internal_id
 
-    # 🆕 NOVO: Se não temos cliente_uuid, tentar criar com dados do pagamento
+    # Criar cliente se não temos ainda
     if not cliente_uuid:
         try:
             customer_payload = extract_customer_data_from_payment(payment_data.dict())
@@ -332,30 +391,28 @@ async def create_credit_card_payment(
         except Exception as e:
             logger.warning(f"⚠️ Erro ao criar cliente para cartão (continuando sem cliente): {e}")
 
-    # salva como pending
+    # Salvar como pending
     payment_record = {
         "empresa_id":     empresa_id,
         "transaction_id": transaction_id,
         "amount":         payment_data.amount,
         "payment_type":   "credit_card",
         "status":         "pending",
-        "webhook_url":    payment_data.webhook_url
+        "webhook_url":    payment_data.webhook_url,
+        "installments":   validated_installments,  # ✅ Usar parcelas validadas
+        "cliente_id":     cliente_uuid
     }
-    
-    # 🆕 NOVO: Adicionar cliente_id se disponível
-    if cliente_uuid:
-        payment_record["cliente_id"] = cliente_uuid
     
     await save_payment(payment_record)
 
-    # prepara dados para o mapper
+    # Preparar dados para gateway
     base_data   = {**payment_data.dict(exclude_unset=False), "transaction_id": transaction_id}
-    mapper_data = {**base_data, **card_data}
+    mapper_data = {**base_data, **card_data, "installments": validated_installments}
 
-    # ——— Rede ———
+    # ========== PROCESSAR PAGAMENTO ==========
     if credit_provider == "rede":
         try:
-            logger.info(f"🚀 Processando pagamento via Rede: tx={transaction_id}")
+            logger.info(f"🚀 Processando pagamento via Rede: tx={transaction_id} | parcelas={validated_installments}")
             
             resp = await create_rede_payment(
                 empresa_id=empresa_id,
@@ -365,7 +422,6 @@ async def create_credit_card_payment(
             logger.info(f"📥 Resposta Rede: {resp}")
             
             if resp.get("status") == "approved":
-                # Pagamento aprovado - notificar via webhook
                 if payment_data.webhook_url:
                     background_tasks.add_task(
                         notify_user_webhook,
@@ -374,6 +430,7 @@ async def create_credit_card_payment(
                             "transaction_id": transaction_id, 
                             "status": "approved", 
                             "provedor": "rede",
+                            "installments": validated_installments,
                             "rede_tid": resp.get("rede_tid"),
                             "authorization_code": resp.get("authorization_code")
                         }
@@ -382,11 +439,11 @@ async def create_credit_card_payment(
                     "status": "approved", 
                     "message": "Pagamento aprovado via Rede", 
                     "transaction_id": transaction_id,
+                    "installments": validated_installments,
                     "rede_tid": resp.get("rede_tid"),
                     "authorization_code": resp.get("authorization_code")
                 }
             elif resp.get("status") == "failed":
-                # Pagamento recusado
                 return {
                     "status": "failed",
                     "message": f"Pagamento recusado pela Rede: {resp.get('return_message')}",
@@ -394,29 +451,27 @@ async def create_credit_card_payment(
                     "return_code": resp.get("return_code")
                 }
             else:
-                # Status inesperado
                 logger.warning(f"⚠️ Status inesperado da Rede: {resp}")
                 raise HTTPException(502, "Resposta inesperada do gateway Rede")
                 
         except HTTPException:
-            raise  # repassa erros 4xx/5xx gerados pelo client
+            raise
         except Exception as e:
             logger.error(f"❌ Erro inesperado com Rede: {e}")
             raise HTTPException(502, "Erro no gateway Rede.")
 
-    # ——— Asaas ———
     elif credit_provider == "asaas":
         asaas_info = map_to_asaas_credit_payload(mapper_data)
         customer_data = {
             "local_id":          transaction_id,
-            "name":              mapper_data["cardholder_name"],
+            "name":              mapper_data.get("cardholder_name") or mapper_data.get("customer_name"),
             "email":             mapper_data.get("email") or mapper_data.get("customer_email"),
             "cpfCnpj":           mapper_data.get("cpf") or mapper_data.get("cnpj") or mapper_data.get("customer_cpf_cnpj"),
             "phone":             mapper_data.get("phone") or mapper_data.get("customer_phone"),
             "externalReference": transaction_id
         }
         try:
-            logger.info(f"🚀 Processando pagamento via Asaas: tx={transaction_id}")
+            logger.info(f"🚀 Processando pagamento via Asaas: tx={transaction_id} | parcelas={validated_installments}")
             resp = await create_asaas_payment(
                 empresa_id=empresa_id,
                 amount=asaas_info["value"],
@@ -425,7 +480,7 @@ async def create_credit_card_payment(
                 customer_data=customer_data,
                 card_token=asaas_info.get("creditCardToken"),
                 card_data=asaas_info.get("creditCard"),
-                installments=asaas_info.get("installmentCount", 1),
+                installments=validated_installments,  # ✅ Usar parcelas validadas
             )
         except Exception as e:
             logger.error(f"❌ Erro Asaas: {e}")
@@ -436,13 +491,22 @@ async def create_credit_card_payment(
                 background_tasks.add_task(
                     notify_user_webhook,
                     payment_data.webhook_url,
-                    {"transaction_id": transaction_id, "status": "approved", "provedor": "asaas"}
+                    {
+                        "transaction_id": transaction_id, 
+                        "status": "approved", 
+                        "provedor": "asaas",
+                        "installments": validated_installments
+                    }
                 )
-            return {"status": "approved", "message": "Pagamento aprovado via Asaas", "transaction_id": transaction_id}
+            return {
+                "status": "approved", 
+                "message": "Pagamento aprovado via Asaas", 
+                "transaction_id": transaction_id,
+                "installments": validated_installments
+            }
 
         raise HTTPException(402, "Pagamento recusado pela Asaas.")
 
-    # ——— Provedor inválido ———
     else:
         raise HTTPException(400, f"Provedor de crédito desconhecido: {credit_provider}")
 
@@ -911,3 +975,6 @@ async def get_customer_statistics(
     except Exception as e:
         logger.error(f"❌ Erro ao buscar estatísticas do cliente {customer_external_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro interno ao buscar estatísticas")
+    
+
+ 
