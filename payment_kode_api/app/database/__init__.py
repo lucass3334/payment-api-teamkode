@@ -1,17 +1,18 @@
 # payment_kode_api/app/database/__init__.py
 
-# 🔧 CORRIGIDO: Definir variável de controle globalmente
+# 🔧 ATUALIZADO: Definir variável de controle globalmente
 _customers_management_available = False
 
 try:
-    # Métodos principais do banco de dados
+    # ========== MÉTODOS PRINCIPAIS DO BANCO DE DADOS ==========
     from .database import (
         # Pagamentos
         save_payment,
         get_payment,
         get_payment_by_txid,
-        update_payment_status,  # 🔧 ADICIONADO: Método principal de atualização
+        update_payment_status,
         update_payment_status_by_txid,
+        get_payments_by_cliente,  # 🔧 ADICIONADO: Usado nos endpoints de cliente
         
         # Empresas
         save_empresa,
@@ -24,6 +25,7 @@ try:
         save_tokenized_card,
         get_tokenized_card,
         delete_tokenized_card,
+        get_cards_by_cliente,  # 🔧 ADICIONADO: Usado nos endpoints de cliente
         
         # Certificados RSA
         get_empresa_certificados,
@@ -35,19 +37,20 @@ try:
         
         # Sicredi
         get_sicredi_token_or_refresh,
+        
+        # Estatísticas (se existir)
+        get_cliente_stats,  # 🔧 ADICIONADO: Para estatísticas de cliente
     )
 
-    # Métodos de mapeamento Asaas Customers
+    # ========== MÉTODOS DE MAPEAMENTO ASAAS CUSTOMERS ==========
     from .customers import (
         get_asaas_customer,
         save_asaas_customer,
         get_or_create_asaas_customer
     )
 
-    # 🔧 ADICIONADO: Importação do Supabase client para uso direto quando necessário
+    # ========== SUPABASE CLIENT E STORAGE ==========
     from .supabase_client import supabase
-
-    # 🔧 ADICIONADO: Importação dos métodos de storage
     from .supabase_storage import (
         upload_cert_file,
         download_cert_file,
@@ -59,7 +62,7 @@ except ImportError as e:
     raise RuntimeError(f"Erro crítico na inicialização do módulo database: {str(e)}") from e
 
 
-# 🔧 CORRIGIDO: Import separado para customers_management
+# ========== CUSTOMERS MANAGEMENT (IMPORT SEPARADO) ==========
 try:
     from .customers_management import (
         get_or_create_cliente,
@@ -132,15 +135,40 @@ except ImportError as e:
         raise NotImplementedError("Módulo customers_management não disponível")
 
 
+# 🆕 NOVO: IMPORT CONDICIONAL DAS IMPLEMENTAÇÕES DE INTERFACE
+try:
+    from .repositories import (
+        PaymentRepository,
+        ConfigRepository,
+        CardRepository,
+        AsaasCustomerRepository,
+    )
+    _repositories_available = True
+except ImportError as e:
+    print(f"⚠️ Módulo repositories não disponível: {e}")
+    _repositories_available = False
+
+try:
+    from .customer_repository import (
+        CustomerRepository,
+        CustomerService,
+    )
+    _customer_repository_available = True
+except ImportError as e:
+    print(f"⚠️ Módulo customer_repository não disponível: {e}")
+    _customer_repository_available = False
+
+
 def init_database():
     """Configura e valida as conexões do módulo de banco de dados."""
     try:
+        # ========== VALIDAÇÃO DE MÉTODOS ESSENCIAIS ==========
         required_methods = [
             # Pagamentos
             save_payment,
             get_payment,
             get_payment_by_txid,
-            update_payment_status,  # 🔧 ADICIONADO
+            update_payment_status,
             update_payment_status_by_txid,
             
             # Empresas
@@ -166,13 +194,13 @@ def init_database():
             # Sicredi
             get_sicredi_token_or_refresh,
             
-            # 🔧 ADICIONADO: Storage methods
+            # Storage methods
             upload_cert_file,
             download_cert_file,
             ensure_folder_exists,
         ]
         
-        # 🔧 ADICIONADO: Verificar disponibilidade de customers_management
+        # Verificar disponibilidade de customers_management
         if _customers_management_available:
             required_methods.extend([
                 get_or_create_cliente,
@@ -191,21 +219,34 @@ def init_database():
                 extract_customer_data_from_payment,
             ])
         
-        # 🔧 MELHORADO: Verificação mais robusta
+        # Verificação mais robusta
         missing_methods = [method.__name__ for method in required_methods if method is None]
         if missing_methods:
             raise ImportError(f"Métodos essenciais não carregados: {missing_methods}")
 
-        # 🔧 ADICIONADO: Verificação da conexão Supabase
+        # Verificação da conexão Supabase
         if supabase is None:
             raise ImportError("Cliente Supabase não foi inicializado corretamente")
 
+        # ========== LOG DE INICIALIZAÇÃO ==========
         print("✅ Módulo database inicializado com sucesso")
         print(f"📦 Bucket configurado: {SUPABASE_BUCKET}")
+        
         if _customers_management_available:
             print("👥 Módulo customers_management disponível")
         else:
             print("⚠️ Módulo customers_management NÃO disponível")
+        
+        # 🆕 NOVO: Log das implementações de interface
+        if _repositories_available:
+            print("🔧 Implementações de repositório disponíveis")
+        else:
+            print("⚠️ Implementações de repositório NÃO disponíveis")
+            
+        if _customer_repository_available:
+            print("👤 Implementações de customer repository disponíveis")
+        else:
+            print("⚠️ Implementações de customer repository NÃO disponíveis")
 
     except Exception as e:
         print(f"❌ Falha na inicialização do database: {str(e)}")
@@ -215,35 +256,38 @@ def init_database():
 def shutdown_database():
     """Encerra conexões do banco de dados de forma segura."""
     try:
-        # Redis desativado — encerramento removido
-        # get_redis_client().close()
-        
         # Supabase não precisa de encerramento explícito
         # mas podemos limpar variáveis globais se necessário
-        
         print("✅ Conexões do database encerradas")
     except Exception as e:
         print(f"⚠️ Erro ao encerrar conexões: {str(e)}")
 
 
-# 🔧 ADICIONADO: Função de utilidade para verificar saúde do banco
 async def health_check_database():
     """Verifica se o banco de dados está acessível."""
     try:
         # Teste básico com Supabase
         response = supabase.table("empresas").select("empresa_id").limit(1).execute()
-        return {"status": "healthy", "message": "Database connection OK"}
+        return {
+            "status": "healthy", 
+            "message": "Database connection OK",
+            "customers_management": _customers_management_available,
+            "repositories": _repositories_available,
+            "customer_repository": _customer_repository_available,
+        }
     except Exception as e:
         return {"status": "unhealthy", "message": f"Database error: {str(e)}"}
 
 
+# ========== EXPORTS PRINCIPAIS ==========
 __all__ = [
     # Pagamentos
     "save_payment",
     "get_payment",
     "get_payment_by_txid",
-    "update_payment_status",  # 🔧 ADICIONADO
+    "update_payment_status",
     "update_payment_status_by_txid",
+    "get_payments_by_cliente",  # 🔧 ADICIONADO
     
     # Empresas
     "save_empresa",
@@ -256,6 +300,7 @@ __all__ = [
     "save_tokenized_card",
     "get_tokenized_card",
     "delete_tokenized_card",
+    "get_cards_by_cliente",  # 🔧 ADICIONADO
     
     # Certificados RSA
     "get_empresa_certificados",
@@ -273,22 +318,24 @@ __all__ = [
     "save_asaas_customer",
     "get_or_create_asaas_customer",
     
-    # 🔧 ADICIONADO: Storage
+    # Storage
     "upload_cert_file",
     "download_cert_file",
     "ensure_folder_exists",
     "SUPABASE_BUCKET",
     
-    # 🔧 ADICIONADO: Cliente Supabase
+    # Cliente Supabase
     "supabase",
     
     # Inicialização/Desligamento
     "init_database",
     "shutdown_database",
-    "health_check_database",  # 🔧 ADICIONADO
+    "health_check_database",
 ]
 
-# 🔧 ADICIONADO: Adicionar exports condicionais de customers_management
+# ========== EXPORTS CONDICIONAIS ==========
+
+# Customers Management
 if _customers_management_available:
     __all__.extend([
         "get_or_create_cliente",
@@ -313,3 +360,38 @@ if _customers_management_available:
         "extract_address_data",
         "generate_external_id",
     ])
+
+# 🆕 NOVO: Implementações de Interface
+if _repositories_available:
+    __all__.extend([
+        "PaymentRepository",
+        "ConfigRepository",
+        "CardRepository", 
+        "AsaasCustomerRepository",
+    ])
+
+if _customer_repository_available:
+    __all__.extend([
+        "CustomerRepository",
+        "CustomerService",
+    ])
+
+# 🆕 NOVO: Adicionar funções para verificar disponibilidade
+def is_customers_management_available() -> bool:
+    """Verifica se o módulo customers_management está disponível"""
+    return _customers_management_available
+
+def is_repositories_available() -> bool:
+    """Verifica se as implementações de repository estão disponíveis"""
+    return _repositories_available
+
+def is_customer_repository_available() -> bool:
+    """Verifica se as implementações de customer repository estão disponíveis"""
+    return _customer_repository_available
+
+# Adicionar verificadores aos exports
+__all__.extend([
+    "is_customers_management_available",
+    "is_repositories_available", 
+    "is_customer_repository_available",
+])
