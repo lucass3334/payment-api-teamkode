@@ -1,57 +1,72 @@
+# payment_kode_api/app/workers/tasks.py
+
 from celery import Celery
 from kombu import Connection
-from payment_kode_api.app.services.gateways.asaas_client import create_asaas_payment
-from payment_kode_api.app.services.gateways.sicredi_client import create_sicredi_pix_payment
-from payment_kode_api.app.services.gateways.rede_client import create_rede_payment
-from payment_kode_api.app.models.database_models import PaymentModel
-from payment_kode_api.app.utilities.logging_config import logger
-from payment_kode_api.app.database.database import get_empresa_config
-from payment_kode_api.app.core.config import settings  # ✅ Configuração segura
 import asyncio
 import time
+
+# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+from ..interfaces import (
+    SicrediGatewayInterface,
+    RedeGatewayInterface,
+    AsaasGatewayInterface,
+    ConfigRepositoryInterface,
+)
+
+# ✅ NOVO: Dependency injection
+from ..dependencies import (
+    get_sicredi_gateway,
+    get_rede_gateway,
+    get_asaas_gateway,
+    get_config_repository,
+)
+
+from ..models.database_models import PaymentModel
+from ..utilities.logging_config import logger
+from ..core.config import settings
 
 # 🔹 Inicializa o Celery sem `broker`
 celery_app = Celery("tasks")
 
 def configure_celery():
     """Configura o Celery somente após validar a conexão com Redis."""
-    redis_url = settings.REDIS_URL
-    logger.info("🔄 Testando conexão com Redis antes de configurar Celery...")
+    # ❌ DESATIVADO: Redis não está sendo usado atualmente
+    # redis_url = settings.REDIS_URL
+    logger.info("🔄 Configurando Celery sem Redis...")
+    
+    # Configuração básica sem Redis por enquanto
+    celery_app.conf.update(
+        task_always_eager=True,  # Executa tasks síncronamente para desenvolvimento
+        task_eager_propagates=True,
+    )
+    logger.info("✅ Celery configurado para desenvolvimento (sem Redis)")
 
-    while True:
-        try:
-            with Connection(redis_url).connect() as conn:
-                if conn.connected:
-                    logger.info("✅ Redis está acessível, configurando Celery...")
-                    celery_app.conf.update(
-                        broker_url=redis_url,
-                        broker_use_ssl={
-                            "ssl_cert_reqs": settings.REDIS_SSL_CERT_REQS
-                        } if settings.REDIS_USE_SSL else None
-                    )
-                    return  # Sai do loop quando o Redis estiver pronto
-        except Exception as e:
-            logger.warning(f"⚠️ Redis ainda não está disponível: {e}")
-            time.sleep(5)  # Aguarda 5 segundos antes de tentar novamente
-
-configure_celery()  # ✅ Só configura Celery quando o Redis estiver pronto
+configure_celery()
 
 @celery_app.task
 def process_payment(payment_data: dict):
     """
-    Processa o pagamento com fallback entre gateways e registra no banco.
+    ✅ MIGRADO: Processa o pagamento com fallback entre gateways usando interfaces.
+    Agora usa dependency injection para desacoplar dependências.
     """
     logger.info(f"🔹 Recebendo solicitação de pagamento: {payment_data}")
 
     try:
-        payment = PaymentModel(**payment_data)  # ✅ Valida os dados corretamente
+        payment = PaymentModel(**payment_data)
     except Exception as e:
         logger.error(f"❌ Erro ao validar PaymentModel: {e}")
         return {"status": "failed", "message": "Dados inválidos para o pagamento."}
 
-    # Obtém as credenciais da empresa de maneira síncrona
-    empresa_id = payment.empresa_id
-    credentials = asyncio.run(get_empresa_config(empresa_id))  # ✅ Corrigindo chamada assíncrona
+    # ✅ USANDO INTERFACES: Dependency injection
+    empresa_id = str(payment.empresa_id)
+    config_repo = get_config_repository()
+    
+    # Obtém as credenciais da empresa usando interface
+    try:
+        credentials = asyncio.run(config_repo.get_empresa_config(empresa_id))
+    except Exception as e:
+        logger.error(f"❌ Erro ao obter config da empresa {empresa_id}: {e}")
+        return {"status": "failed", "message": "Empresa não configurada."}
 
     if not credentials:
         logger.error(f"❌ Configuração da empresa {empresa_id} não encontrada.")
@@ -62,10 +77,13 @@ def process_payment(payment_data: dict):
 
         if payment.payment_type == "pix":
             logger.info(f"💰 Iniciando pagamento Pix via Sicredi para {payment.transaction_id}")
+            
+            # ✅ USANDO INTERFACE: Sicredi Gateway
+            sicredi_gateway = get_sicredi_gateway()
             response = asyncio.run(
-                create_sicredi_pix_payment(
-                    empresa_id=empresa_id, 
-                    amount=payment.amount, 
+                sicredi_gateway.create_pix_payment(
+                    empresa_id=empresa_id,
+                    amount=payment.amount,
                     chave_pix=payment_data.get("chave_pix"),
                     txid=payment.transaction_id
                 )
@@ -73,12 +91,15 @@ def process_payment(payment_data: dict):
 
         elif payment.payment_type == "credit_card":
             logger.info(f"💳 Iniciando pagamento via Rede para {payment.transaction_id}")
+            
+            # ✅ USANDO INTERFACE: Rede Gateway
+            rede_gateway = get_rede_gateway()
             response = asyncio.run(
-                create_rede_payment(
-                    empresa_id, 
-                    payment.transaction_id, 
-                    payment.amount, 
-                    payment_data.get("card_data")
+                rede_gateway.create_payment(
+                    empresa_id=empresa_id,
+                    transaction_id=payment.transaction_id,
+                    amount=payment.amount,
+                    card_data=payment_data.get("card_data")
                 )
             )
 
@@ -90,23 +111,98 @@ def process_payment(payment_data: dict):
 
         try:
             logger.info(f"🔄 Fallback: Tentando pagamento via Asaas para {payment.transaction_id}")
+            
+            # ✅ USANDO INTERFACE: Asaas Gateway
+            asaas_gateway = get_asaas_gateway()
             response = asyncio.run(
-                create_asaas_payment(
+                asaas_gateway.create_payment(
                     empresa_id=empresa_id,
-                    amount=payment.amount,
+                    amount=float(payment.amount),
                     payment_type=payment.payment_type,
                     transaction_id=payment.transaction_id,
-                    customer=payment_data.get("customer"),
+                    customer_data=payment_data.get("customer", {}),
                     card_data=payment_data.get("card_data"),
                     installments=payment_data.get("installments", 1)
                 )
             )
         except Exception as fallback_error:
             logger.error(f"❌ Erro no fallback via Asaas: {fallback_error}, pagamento falhou")
-            payment.status = "failed"
             return {"status": "failed", "message": str(fallback_error)}
 
     # Se chegou até aqui, significa que o pagamento foi processado com sucesso
-    payment.status = "approved"
     logger.info(f"✅ Pagamento processado com sucesso: {response}")
     return {"status": "approved", "response": response}
+
+
+@celery_app.task
+def process_refund(refund_data: dict):
+    """
+    ✅ NOVO: Processa estornos usando interfaces.
+    """
+    logger.info(f"🔄 Recebendo solicitação de estorno: {refund_data}")
+    
+    empresa_id = refund_data.get("empresa_id")
+    transaction_id = refund_data.get("transaction_id")
+    payment_type = refund_data.get("payment_type")
+    amount = refund_data.get("amount")
+    
+    try:
+        if payment_type == "pix":
+            # ✅ USANDO INTERFACE: Sicredi Gateway
+            sicredi_gateway = get_sicredi_gateway()
+            response = asyncio.run(
+                sicredi_gateway.create_pix_refund(
+                    empresa_id=empresa_id,
+                    txid=refund_data.get("txid"),
+                    amount=amount
+                )
+            )
+        elif payment_type == "credit_card":
+            # ✅ USANDO INTERFACE: Rede Gateway
+            rede_gateway = get_rede_gateway()
+            response = asyncio.run(
+                rede_gateway.create_refund(
+                    empresa_id=empresa_id,
+                    transaction_id=transaction_id,
+                    amount=int(amount * 100) if amount else None
+                )
+            )
+        else:
+            raise ValueError(f"Tipo de pagamento inválido para estorno: {payment_type}")
+        
+        logger.info(f"✅ Estorno processado com sucesso: {response}")
+        return {"status": "success", "response": response}
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao processar estorno: {e}")
+        return {"status": "failed", "message": str(e)}
+
+
+# ========== FUNÇÕES AUXILIARES ==========
+
+def get_gateway_by_provider(provider: str, payment_type: str):
+    """
+    ✅ NOVO: Factory function para obter gateway correto usando interfaces.
+    """
+    if payment_type == "pix":
+        if provider.lower() == "sicredi":
+            return get_sicredi_gateway()
+        elif provider.lower() == "asaas":
+            return get_asaas_gateway()
+    elif payment_type == "credit_card":
+        if provider.lower() == "rede":
+            return get_rede_gateway()
+        elif provider.lower() == "asaas":
+            return get_asaas_gateway()
+    
+    raise ValueError(f"Gateway não suportado: {provider} para {payment_type}")
+
+
+# ========== EXPORTS ==========
+
+__all__ = [
+    "celery_app",
+    "process_payment",
+    "process_refund",
+    "get_gateway_by_provider",
+]

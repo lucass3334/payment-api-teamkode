@@ -1,41 +1,48 @@
-#api/routes/empresas.py
+# payment_kode_api/app/api/routes/empresas.py
 # -*- coding: utf-8 -*- 
-from fastapi import APIRouter, HTTPException
+
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from pydantic.types import StringConstraints
 from typing import Annotated
-from payment_kode_api.app.database.database import (
-    save_empresa, 
-    get_empresa, 
-    get_empresa_by_token, 
-    save_empresa_certificados, 
-    get_empresa_certificados
+
+# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+from ...interfaces import (
+    EmpresaRepositoryInterface,
+    CertificateServiceInterface,
 )
-from payment_kode_api.app.utilities.logging_config import logger
+
+# ✅ NOVO: Dependency injection
+from ...dependencies import (
+    get_empresa_repository,
+    get_certificate_service,
+)
+
+from ...utilities.logging_config import logger
 import uuid
 import secrets
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 import base64
 
-#novos imports
-from payment_kode_api.app.models import EmpresaGatewayConfigSchema
-from payment_kode_api.app.database.database import  (atualizar_config_gateway, get_empresa_gateways)
+# Imports para configuração de gateways (mantido igual)
+from ...models import EmpresaGatewayConfigSchema
+from ...database.database import (atualizar_config_gateway, get_empresa_gateways)
 
 router = APIRouter()
 
-# Tipagem de validação
-EmpresaIDType = Annotated[str, StringConstraints(min_length=36, max_length=36)]  # UUID da empresa
+# Tipagem de validação (mantida igual)
+EmpresaIDType = Annotated[str, StringConstraints(min_length=36, max_length=36)]
 
 class EmpresaRequest(BaseModel):
     nome: Annotated[str, StringConstraints(min_length=3, max_length=100)]
-    cnpj: Annotated[str, StringConstraints(min_length=14, max_length=14)]  # CNPJ sem formatação
+    cnpj: Annotated[str, StringConstraints(min_length=14, max_length=14)]
     email: Annotated[str, StringConstraints(min_length=5, max_length=100)]
     telefone: Annotated[str, StringConstraints(min_length=10, max_length=15)]
 
 class EmpresaResponse(BaseModel):
     empresa_id: str
-    access_token: str  # 🔹 Novo campo para autenticação
+    access_token: str
 
 
 def generate_rsa_keys():
@@ -60,44 +67,40 @@ def generate_rsa_keys():
     return base64.b64encode(private_pem).decode(), base64.b64encode(public_pem).decode()
 
 
-async def get_rsa_keys(empresa_id: str):
-    """Recupera as chaves RSA armazenadas no banco de dados para uma empresa específica."""
-    certificados = await get_empresa_certificados(empresa_id)
-    if not certificados:
-        raise HTTPException(status_code=404, detail="Chaves RSA não encontradas para esta empresa.")
-
-    return base64.b64decode(certificados['sicredi_cert_base64']), base64.b64decode(certificados['sicredi_key_base64'])
-
-
 @router.post("/empresa", response_model=EmpresaResponse)
-async def create_empresa(empresa_data: EmpresaRequest):
+async def create_empresa(
+    empresa_data: EmpresaRequest,
+    # ✅ NOVO: Dependency injection das interfaces
+    empresa_repo: EmpresaRepositoryInterface = Depends(get_empresa_repository)
+):
     """Cria uma nova empresa, gera suas chaves RSA e retorna o ID e access_token."""
     try:
-        # 🔹 Log para depuração
+        # ✅ USANDO INTERFACE: Verificar se CNPJ já está cadastrado
         logger.info(f"🔍 Verificando se CNPJ já está cadastrado: {empresa_data.cnpj}")
-
-        # 🔥 Corrigindo para buscar pelo CNPJ corretamente
-        existing_empresa = await get_empresa(empresa_data.cnpj)
+        
+        existing_empresa = await empresa_repo.get_empresa(empresa_data.cnpj)
         logger.info(f"🔍 Resultado da consulta para CNPJ ({empresa_data.cnpj}): {existing_empresa}")
 
         if existing_empresa:
             logger.warning(f"🚨 Tentativa de criar empresa com CNPJ já existente: {empresa_data.cnpj}")
             raise HTTPException(status_code=400, detail="CNPJ já cadastrado para outra empresa.")
 
-        empresa_id = str(uuid.uuid4())  # 🔥 Garante que `empresa_id` seja um UUID válido
-        access_token = secrets.token_urlsafe(32)  # 🔹 Gera um access_token seguro
-        private_key, public_key = generate_rsa_keys()  # 🔹 Gera chaves RSA para a empresa
+        empresa_id = str(uuid.uuid4())
+        access_token = secrets.token_urlsafe(32)
+        private_key, public_key = generate_rsa_keys()
         
-        await save_empresa({
+        # ✅ USANDO INTERFACE: Salvar empresa
+        await empresa_repo.save_empresa({
             "empresa_id": empresa_id,
             "nome": empresa_data.nome,
             "cnpj": empresa_data.cnpj,
             "email": empresa_data.email,
             "telefone": empresa_data.telefone,
-            "access_token": access_token  # 🔹 Armazena o token no banco de dados
+            "access_token": access_token
         })
         
-        await save_empresa_certificados(
+        # ✅ USANDO INTERFACE: Salvar certificados
+        await empresa_repo.save_empresa_certificados(
             empresa_id=empresa_id,
             sicredi_cert_base64=private_key,
             sicredi_key_base64=public_key,
@@ -115,10 +118,15 @@ async def create_empresa(empresa_data: EmpresaRequest):
 
 
 @router.get("/empresa/token/{access_token}")
-async def validate_access_token(access_token: str):
+async def validate_access_token(
+    access_token: str,
+    # ✅ NOVO: Dependency injection da interface
+    empresa_repo: EmpresaRepositoryInterface = Depends(get_empresa_repository)
+):
     """Valida um access_token e retorna os dados da empresa associada."""
     try:
-        empresa = await get_empresa_by_token(access_token)
+        # ✅ USANDO INTERFACE
+        empresa = await empresa_repo.get_empresa_by_token(access_token)
 
         if not empresa:
             logger.warning(f"⚠️ Tentativa de acesso com token inválido: {access_token}")
@@ -136,6 +144,7 @@ async def validate_access_token(access_token: str):
 async def configurar_gateway(schema: EmpresaGatewayConfigSchema):
     """
     Atualiza os gateways padrão (Pix e Crédito) da empresa.
+    📝 NOTA: Mantido sem migração pois usa funções específicas de config
     """
     try:
         atualizado = await atualizar_config_gateway(schema.model_dump())
@@ -157,6 +166,7 @@ async def configurar_gateway(schema: EmpresaGatewayConfigSchema):
 async def obter_gateways_empresa(empresa_id: str):
     """
     Retorna os providers configurados (Pix e Crédito) para a empresa.
+    📝 NOTA: Mantido sem migração pois usa funções específicas de config
     """
     try:
         gateways = await get_empresa_gateways(empresa_id)
