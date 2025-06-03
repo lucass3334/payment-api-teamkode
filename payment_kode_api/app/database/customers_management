@@ -2,7 +2,7 @@
 # Gestão completa de clientes adaptada para estrutura existente (clientes + enderecos)
 
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta  # 🔧 CORRIGIDO: Adicionado timedelta aqui
 from .supabase_client import supabase
 from ..utilities.logging_config import logger
 import uuid
@@ -617,9 +617,6 @@ def generate_external_id(cpf_cnpj: Optional[str], email: Optional[str]) -> str:
     else:
         return f"auto_{uuid.uuid4().hex[:8]}"
 
-
-# ========== IMPORTS NECESSÁRIOS ==========
-from datetime import timedelta
 
 # ========== EXPORTS ==========
 __all__ = [
