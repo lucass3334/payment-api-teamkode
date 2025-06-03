@@ -6,19 +6,22 @@ from typing import Optional
 import uuid
 import re
 
-from payment_kode_api.app.database.database import (
-    save_tokenized_card, get_tokenized_card, delete_tokenized_card
-)
 from payment_kode_api.app.security.crypto import encrypt_card_data
 from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.utilities.logging_config import logger
 
-# Imports para gestão de clientes
-from payment_kode_api.app.database.customers_management import (
-    get_or_create_cliente, 
-    extract_customer_data_from_payment,
-    get_cliente_by_external_id,
-    get_cliente_by_id
+# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+from ...interfaces import (
+    CustomerRepositoryInterface,
+    CustomerServiceInterface,
+    CardRepositoryInterface,
+)
+
+# ✅ NOVO: Dependency injection
+from ...dependencies import (
+    get_customer_repository,
+    get_customer_service,
+    get_card_repository,
 )
 
 router = APIRouter()
@@ -90,10 +93,14 @@ class TokenizedCardResponse(BaseModel):
 @router.post("/tokenize-card", response_model=TokenizedCardResponse)
 async def tokenize_card(
     card_data: TokenizeCardRequest,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    customer_service: CustomerServiceInterface = Depends(get_customer_service),
+    card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
-    🔧 CORRIGIDO: Tokeniza cartão com criação automática de cliente OPCIONAL.
+    🔧 ATUALIZADO: Tokeniza cartão com criação automática de cliente OPCIONAL usando interfaces.
     
     Comportamento:
     1. Se dados suficientes do cliente fornecidos → cria/busca cliente
@@ -120,7 +127,7 @@ async def tokenize_card(
         # ========== 3. DETECTAR BANDEIRA DO CARTÃO ==========
         card_brand = detect_card_brand(card_data.card_number)
         
-        # ========== 4. PROCESSAR CLIENTE (OPCIONAL) ==========
+        # ========== 4. PROCESSAR CLIENTE (OPCIONAL) - ✅ USANDO INTERFACES ==========
         cliente_uuid = None
         customer_external_id = None
         customer_created = False
@@ -136,8 +143,8 @@ async def tokenize_card(
         
         if has_customer_data:
             try:
-                # Extrair dados do cliente
-                customer_payload = extract_customer_data_from_payment(card_data.dict())
+                # Extrair dados do cliente - ✅ USANDO INTERFACE
+                customer_payload = customer_service.extract_customer_data_from_payment(card_data.dict())
                 
                 # Se não tem nome do cliente, usar nome do portador do cartão
                 if not customer_payload.get("nome"):
@@ -147,7 +154,8 @@ async def tokenize_card(
                 if customer_payload.get("nome"):
                     # Buscar cliente existente primeiro (se customer_id fornecido)
                     if card_data.customer_id:
-                        existing_cliente = await get_cliente_by_external_id(empresa_id, card_data.customer_id)
+                        # ✅ USANDO INTERFACE
+                        existing_cliente = await customer_repo.get_cliente_by_external_id(empresa_id, card_data.customer_id)
                         if existing_cliente:
                             cliente_uuid = existing_cliente["id"]
                             customer_external_id = existing_cliente.get("customer_external_id")
@@ -155,11 +163,12 @@ async def tokenize_card(
                     
                     # Se não encontrou cliente existente, criar novo
                     if not cliente_uuid:
-                        cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
+                        # ✅ USANDO INTERFACE
+                        cliente_uuid = await customer_repo.get_or_create_cliente(empresa_id, customer_payload)
                         customer_created = True
                         
-                        # Buscar dados completos do cliente criado
-                        cliente = await get_cliente_by_id(cliente_uuid)
+                        # Buscar dados completos do cliente criado - ✅ USANDO INTERFACE
+                        cliente = await customer_repo.get_cliente_by_id(cliente_uuid)
                         if cliente:
                             customer_external_id = cliente.get("customer_external_id")
                         
@@ -169,7 +178,7 @@ async def tokenize_card(
                 logger.warning(f"⚠️ Erro ao processar cliente (continuando tokenização sem cliente): {e}")
                 # Continua a tokenização mesmo se falhar na criação do cliente
         
-        # ========== 5. SALVAR CARTÃO TOKENIZADO ==========
+        # ========== 5. SALVAR CARTÃO TOKENIZADO - ✅ USANDO INTERFACE ==========
         tokenized_card_data = {
             "empresa_id": empresa_id,
             "customer_id": customer_external_id,  # ID externo para compatibilidade
@@ -180,7 +189,7 @@ async def tokenize_card(
             "cliente_id": cliente_uuid  # UUID interno para relacionamento
         }
 
-        await save_tokenized_card(tokenized_card_data)
+        await card_repo.save_tokenized_card(tokenized_card_data)
         
         logger.info(f"✅ Cartão tokenizado com sucesso: {card_token}")
         
@@ -219,15 +228,19 @@ def detect_card_brand(card_number: str) -> str:
 @router.get("/tokenize-card/{card_token}")
 async def get_tokenized_card_route(
     card_token: str, 
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
-    🔧 CORRIGIDO: Recupera dados de cartão tokenizado com informações do cliente.
+    🔧 ATUALIZADO: Recupera dados de cartão tokenizado com informações do cliente usando interfaces.
     """
     empresa_id = empresa["empresa_id"]
     
     try:
-        card = await get_tokenized_card(card_token)
+        # ✅ USANDO INTERFACE
+        card = await card_repo.get_tokenized_card(card_token)
         
         if not card or card["empresa_id"] != empresa_id:
             raise HTTPException(
@@ -235,10 +248,10 @@ async def get_tokenized_card_route(
                 detail="Token de cartão inválido ou não encontrado."
             )
         
-        # Buscar dados do cliente se existir
+        # Buscar dados do cliente se existir - ✅ USANDO INTERFACE
         cliente_info = None
         if card.get("cliente_id"):  # UUID interno
-            cliente = await get_cliente_by_id(card["cliente_id"])
+            cliente = await customer_repo.get_cliente_by_id(card["cliente_id"])
             if cliente:
                 cliente_info = {
                     "customer_external_id": cliente.get("customer_external_id"),
@@ -270,7 +283,9 @@ async def get_tokenized_card_route(
 @router.delete("/tokenize-card/{card_token}")
 async def delete_tokenized_card_route(
     card_token: str, 
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
     Remove um cartão tokenizado do sistema.
@@ -278,7 +293,8 @@ async def delete_tokenized_card_route(
     empresa_id = empresa["empresa_id"]
     
     try:
-        card = await get_tokenized_card(card_token)
+        # ✅ USANDO INTERFACE
+        card = await card_repo.get_tokenized_card(card_token)
         
         if not card:
             raise HTTPException(
@@ -292,7 +308,8 @@ async def delete_tokenized_card_route(
                 detail="Não autorizado a deletar este cartão"
             )
         
-        await delete_tokenized_card(card_token)
+        # ✅ USANDO INTERFACE
+        await card_repo.delete_tokenized_card(card_token)
         
         logger.info(f"✅ Cartão {card_token} removido com sucesso (empresa: {empresa_id})")
         
@@ -310,7 +327,10 @@ async def delete_tokenized_card_route(
 @router.get("/customer/{customer_uuid}/cards")
 async def list_customer_cards_by_uuid(
     customer_uuid: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
     Lista cartões tokenizados de um cliente específico (usando UUID interno).
@@ -318,12 +338,15 @@ async def list_customer_cards_by_uuid(
     empresa_id = empresa["empresa_id"]
     
     try:
-        from payment_kode_api.app.database.supabase_client import supabase
-        
-        # Verificar se cliente pertence à empresa
-        cliente = await get_cliente_by_id(customer_uuid)
+        # Verificar se cliente pertence à empresa - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_id(customer_uuid)
         if not cliente or cliente["empresa_id"] != empresa_id:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        
+        # Buscar cartões do cliente
+        # Nota: Precisa implementar get_cards_by_cliente na interface CardRepositoryInterface
+        # Por enquanto, usando método direto do supabase
+        from payment_kode_api.app.database.supabase_client import supabase
         
         response = (
             supabase.table("cartoes_tokenizados")
@@ -356,7 +379,9 @@ async def list_customer_cards_by_uuid(
 @router.get("/customer/external/{external_id}/cards")
 async def list_customer_cards_by_external_id(
     external_id: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Lista cartões tokenizados de um cliente usando o ID externo.
@@ -364,8 +389,8 @@ async def list_customer_cards_by_external_id(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente pelo ID externo
-        cliente = await get_cliente_by_external_id(empresa_id, external_id)
+        # Buscar cliente pelo ID externo - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
@@ -383,7 +408,9 @@ async def list_customer_cards_by_external_id(
 async def tokenize_card_for_customer(
     customer_external_id: str,
     card_data: TokenizeCardRequest,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     🆕 NOVO: Tokeniza um cartão diretamente para um cliente específico.
@@ -391,8 +418,8 @@ async def tokenize_card_for_customer(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Verificar se cliente existe
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Verificar se cliente existe - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         

@@ -5,25 +5,24 @@ from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List, Dict, Any
 import re
 
-from payment_kode_api.app.database.customers_management import (
-    get_or_create_cliente,
-    get_cliente_by_external_id,
-    get_cliente_by_id,
-    list_clientes_empresa,
-    search_clientes,
-    get_cliente_stats_summary,
-    update_cliente,
-    delete_cliente,
-    create_or_update_endereco,
-    get_enderecos_cliente
-)
-from payment_kode_api.app.database.database import (
-    get_payments_by_cliente,
-    get_cards_by_cliente,
-    get_cliente_stats
-)
 from payment_kode_api.app.security.auth import validate_access_token
 from payment_kode_api.app.utilities.logging_config import logger
+
+# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+from ...interfaces import (
+    CustomerRepositoryInterface,
+    CustomerServiceInterface,
+    PaymentRepositoryInterface,
+    CardRepositoryInterface,
+)
+
+# ✅ NOVO: Dependency injection
+from ...dependencies import (
+    get_customer_repository,
+    get_customer_service,
+    get_payment_repository,
+    get_card_repository,
+)
 
 router = APIRouter()
 
@@ -113,7 +112,10 @@ class ClienteResponse(BaseModel):
 @router.post("/clientes", response_model=Dict[str, Any])
 async def create_cliente(
     cliente_data: ClienteCreate,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    customer_service: CustomerServiceInterface = Depends(get_customer_service)
 ):
     """
     Cria um novo cliente para a empresa.
@@ -136,10 +138,11 @@ async def create_cliente(
             for key, value in endereco_dict.items():
                 customer_payload[f"customer_{key}"] = value
         
-        cliente_uuid = await get_or_create_cliente(empresa_id, customer_payload)
+        # ✅ USANDO INTERFACE
+        cliente_uuid = await customer_repo.get_or_create_cliente(empresa_id, customer_payload)
         
-        # Buscar dados completos do cliente criado
-        cliente_completo = await get_cliente_by_id(cliente_uuid)
+        # Buscar dados completos do cliente criado - ✅ USANDO INTERFACE
+        cliente_completo = await customer_repo.get_cliente_by_id(cliente_uuid)
         
         if not cliente_completo:
             raise HTTPException(status_code=500, detail="Erro ao recuperar cliente criado")
@@ -165,7 +168,9 @@ async def list_clientes(
     empresa: dict = Depends(validate_access_token),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    search: Optional[str] = Query(None, description="Buscar por nome, email, CPF/CNPJ ou ID externo")
+    search: Optional[str] = Query(None, description="Buscar por nome, email, CPF/CNPJ ou ID externo"),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Lista clientes da empresa com paginação opcional e busca.
@@ -174,12 +179,12 @@ async def list_clientes(
     
     try:
         if search:
-            # Busca com filtro
-            clientes = await search_clientes(empresa_id, search, limit)
+            # Busca com filtro - ✅ USANDO INTERFACE
+            clientes = await customer_repo.search_clientes(empresa_id, search, limit)
             total = len(clientes)
         else:
-            # Lista paginada
-            clientes = await list_clientes_empresa(empresa_id, limit, offset)
+            # Lista paginada - ✅ USANDO INTERFACE
+            clientes = await customer_repo.list_clientes_empresa(empresa_id, limit, offset)
             total = len(clientes)  # Simplificado - idealmente deveria fazer count separado
         
         # Limpar dados sensíveis e formatar resposta
@@ -213,7 +218,9 @@ async def list_clientes(
 @router.get("/clientes/{customer_external_id}", response_model=ClienteResponse)
 async def get_cliente(
     customer_external_id: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Busca cliente específico pelo ID externo.
@@ -221,7 +228,8 @@ async def get_cliente(
     empresa_id = empresa["empresa_id"]
     
     try:
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -248,7 +256,9 @@ async def get_cliente(
 async def update_cliente_route(
     customer_external_id: str,
     cliente_update: ClienteUpdate,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Atualiza dados de um cliente existente.
@@ -256,8 +266,8 @@ async def update_cliente_route(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
@@ -273,14 +283,14 @@ async def update_cliente_route(
         if not update_data:
             raise HTTPException(status_code=400, detail="Nenhum dado válido para atualização")
         
-        # Atualizar
-        success = await update_cliente(cliente["id"], update_data)
+        # Atualizar - ✅ USANDO INTERFACE
+        success = await customer_repo.update_cliente(cliente["id"], update_data)
         
         if not success:
             raise HTTPException(status_code=500, detail="Erro ao atualizar cliente")
         
-        # Retornar dados atualizados
-        cliente_atualizado = await get_cliente_by_id(cliente["id"])
+        # Retornar dados atualizados - ✅ USANDO INTERFACE
+        cliente_atualizado = await customer_repo.get_cliente_by_id(cliente["id"])
         
         return {
             "message": "Cliente atualizado com sucesso",
@@ -298,7 +308,10 @@ async def update_cliente_route(
 @router.delete("/clientes/{customer_external_id}")
 async def delete_cliente_route(
     customer_external_id: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    payment_repo: PaymentRepositoryInterface = Depends(get_payment_repository)
 ):
     """
     Remove um cliente do sistema (cascata remove endereços).
@@ -306,20 +319,20 @@ async def delete_cliente_route(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
-        # Verificar se cliente tem pagamentos (opcional - pode bloquear exclusão)
-        pagamentos = await get_payments_by_cliente(empresa_id, cliente["id"], limit=1)
+        # Verificar se cliente tem pagamentos (opcional - pode bloquear exclusão) - ✅ USANDO INTERFACE
+        pagamentos = await payment_repo.get_payments_by_cliente(empresa_id, cliente["id"], limit=1)
         if pagamentos:
             logger.warning(f"⚠️ Tentativa de deletar cliente {customer_external_id} com pagamentos existentes")
             # Você pode decidir se quer bloquear ou permitir
             # raise HTTPException(status_code=400, detail="Cliente possui pagamentos e não pode ser removido")
         
-        # Deletar
-        success = await delete_cliente(cliente["id"])
+        # Deletar - ✅ USANDO INTERFACE
+        success = await customer_repo.delete_cliente(cliente["id"])
         
         if not success:
             raise HTTPException(status_code=500, detail="Erro ao remover cliente")
@@ -340,7 +353,10 @@ async def delete_cliente_route(
 async def get_cliente_pagamentos(
     customer_external_id: str,
     empresa: dict = Depends(validate_access_token),
-    limit: int = Query(50, ge=1, le=100)
+    limit: int = Query(50, ge=1, le=100),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    payment_repo: PaymentRepositoryInterface = Depends(get_payment_repository)
 ):
     """
     Lista pagamentos de um cliente específico.
@@ -348,13 +364,13 @@ async def get_cliente_pagamentos(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
-        # Buscar pagamentos
-        payments = await get_payments_by_cliente(empresa_id, cliente["id"], limit)
+        # Buscar pagamentos - ✅ USANDO INTERFACE
+        payments = await payment_repo.get_payments_by_cliente(empresa_id, cliente["id"], limit)
         
         # Remover dados sensíveis
         safe_payments = []
@@ -388,7 +404,10 @@ async def get_cliente_pagamentos(
 @router.get("/clientes/{customer_external_id}/cartoes")
 async def get_cliente_cartoes(
     customer_external_id: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection das interfaces
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
+    card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
     Lista cartões tokenizados de um cliente.
@@ -396,12 +415,15 @@ async def get_cliente_cartoes(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
-        # Buscar cartões (assumindo que você tem essa função)
+        # Buscar cartões 
+        # ⚠️ NOTA: get_cards_by_cliente ainda não está na CardRepositoryInterface
+        # Por enquanto, usando import direto - deveria ser adicionado à interface
+        from payment_kode_api.app.database.database import get_cards_by_cliente
         cards = await get_cards_by_cliente(empresa_id, cliente["id"])
         
         # Remover dados sensíveis
@@ -434,7 +456,9 @@ async def get_cliente_cartoes(
 @router.get("/clientes/{customer_external_id}/estatisticas")
 async def get_cliente_estatisticas(
     customer_external_id: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Retorna estatísticas completas de um cliente.
@@ -442,12 +466,15 @@ async def get_cliente_estatisticas(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
         # Buscar estatísticas
+        # ⚠️ NOTA: get_cliente_stats ainda não está nas interfaces
+        # Por enquanto, usando import direto - deveria ser adicionado à interface
+        from payment_kode_api.app.database.database import get_cliente_stats
         stats = await get_cliente_stats(empresa_id, cliente["id"])
         
         return {
@@ -466,7 +493,9 @@ async def get_cliente_estatisticas(
 @router.get("/clientes/{customer_external_id}/enderecos")
 async def get_cliente_enderecos(
     customer_external_id: str,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Lista todos os endereços de um cliente.
@@ -474,13 +503,13 @@ async def get_cliente_enderecos(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
-        # Buscar endereços
-        enderecos = await get_enderecos_cliente(cliente["id"])
+        # Buscar endereços - ✅ USANDO INTERFACE
+        enderecos = await customer_repo.get_enderecos_cliente(cliente["id"])
         
         return {
             "customer_external_id": customer_external_id,
@@ -500,7 +529,9 @@ async def get_cliente_enderecos(
 async def create_cliente_endereco(
     customer_external_id: str,
     endereco_data: EnderecoCreate,
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Adiciona um novo endereço para o cliente.
@@ -508,8 +539,8 @@ async def create_cliente_endereco(
     empresa_id = empresa["empresa_id"]
     
     try:
-        # Buscar cliente
-        cliente = await get_cliente_by_external_id(empresa_id, customer_external_id)
+        # Buscar cliente - ✅ USANDO INTERFACE
+        cliente = await customer_repo.get_cliente_by_external_id(empresa_id, customer_external_id)
         if not cliente:
             raise HTTPException(status_code=404, detail="Cliente não encontrado")
         
@@ -519,8 +550,8 @@ async def create_cliente_endereco(
         for key, value in endereco_dict.items():
             customer_data[f"customer_{key}"] = value
         
-        # Criar endereço
-        endereco_id = await create_or_update_endereco(cliente["id"], customer_data)
+        # Criar endereço - ✅ USANDO INTERFACE
+        endereco_id = await customer_repo.create_or_update_endereco(cliente["id"], customer_data)
         
         if not endereco_id:
             raise HTTPException(status_code=500, detail="Erro ao criar endereço")
@@ -540,7 +571,9 @@ async def create_cliente_endereco(
 
 @router.get("/estatisticas")
 async def get_empresa_estatisticas_clientes(
-    empresa: dict = Depends(validate_access_token)
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection da interface
+    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository)
 ):
     """
     Retorna estatísticas gerais de clientes da empresa.
@@ -548,7 +581,8 @@ async def get_empresa_estatisticas_clientes(
     empresa_id = empresa["empresa_id"]
     
     try:
-        stats = await get_cliente_stats_summary(empresa_id)
+        # ✅ USANDO INTERFACE
+        stats = await customer_repo.get_cliente_stats_summary(empresa_id)
         
         return {
             "empresa_id": empresa_id,
