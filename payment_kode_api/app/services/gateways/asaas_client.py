@@ -1,3 +1,5 @@
+# payment_kode_api/app/services/gateways/asaas_client.py
+
 import httpx
 import asyncio
 from fastapi import HTTPException
@@ -5,37 +7,70 @@ from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 
 from ...utilities.logging_config import logger
-from ..config_service import get_empresa_credentials
-from payment_kode_api.app.database.database import get_empresa_config
-from payment_kode_api.app.core.config import settings
-from payment_kode_api.app.database.customers import get_or_create_asaas_customer
+
+# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+from ...interfaces import (
+    ConfigRepositoryInterface,
+    AsaasCustomerInterface,
+)
+
+# ✅ NOVO: Dependency injection (imports diretos apenas para funções standalone)
+from ...dependencies import (
+    get_config_repository,
+    get_asaas_customer_repository,
+)
 
 # ⏱️ Timeout padrão para conexões Asaas
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 
 
-async def get_asaas_headers(empresa_id: str) -> Dict[str, str]:
+async def get_asaas_headers(
+    empresa_id: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> Dict[str, str]:
     """
-    Retorna os headers necessários para autenticação na API do Asaas da empresa específica.
+    ✅ MIGRADO: Retorna os headers necessários para autenticação na API do Asaas da empresa específica.
+    Agora usa interfaces para evitar imports circulares.
     """
-    creds = await get_empresa_credentials(empresa_id)
-    api_key = creds.get("asaas_api_key") if creds else None
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+
+    # ✅ USANDO INTERFACE
+    config = await config_repo.get_empresa_config(empresa_id)
+    if not config:
+        logger.error(f"❌ Configuração da empresa {empresa_id} não encontrada")
+        raise HTTPException(status_code=400, detail="Configuração da empresa não encontrada.")
+
+    api_key = config.get("asaas_api_key")
     if not api_key:
         logger.error(f"❌ Asaas API key não configurada para empresa {empresa_id}")
         raise HTTPException(status_code=400, detail="Asaas API key não configurada.")
+
     return {
         "access_token": api_key,
         "Content-Type": "application/json"
     }
 
 
-async def tokenize_asaas_card(empresa_id: str, card_data: Dict[str, Any]) -> str:
+async def tokenize_asaas_card(
+    empresa_id: str, 
+    card_data: Dict[str, Any],
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> str:
     """
-    Tokeniza os dados do cartão na API do Asaas.
+    ✅ MIGRADO: Tokeniza os dados do cartão na API do Asaas.
+    Agora usa interfaces para evitar imports circulares.
     """
-    headers = await get_asaas_headers(empresa_id)
-    creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", True)
+    headers = await get_asaas_headers(empresa_id, config_repo)
+    
+    # ✅ USANDO INTERFACE: Buscar configurações
+    if config_repo is None:
+        config_repo = get_config_repository()
+    
+    config = await config_repo.get_empresa_config(empresa_id)
+    use_sandbox = config.get("use_sandbox", True)
+    
     url = (
         "https://sandbox.asaas.com/api/v3/creditCard/tokenize"
         if use_sandbox else
@@ -63,14 +98,24 @@ async def tokenize_asaas_card(empresa_id: str, card_data: Dict[str, Any]) -> str
             raise HTTPException(status_code=500, detail="Erro inesperado na tokenização Asaas")
 
 
-async def list_asaas_pix_keys(empresa_id: str) -> list[Dict[str, Any]]:
+async def list_asaas_pix_keys(
+    empresa_id: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> list[Dict[str, Any]]:
     """
-    Retorna todas as chaves Pix cadastradas para esta empresa no Asaas.
+    ✅ MIGRADO: Retorna todas as chaves Pix cadastradas para esta empresa no Asaas.
     Endpoint: GET /v3/pix/addressKeys
+    Agora usa interfaces para evitar imports circulares.
     """
-    headers = await get_asaas_headers(empresa_id)
-    creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", False)
+    headers = await get_asaas_headers(empresa_id, config_repo)
+    
+    # ✅ USANDO INTERFACE: Buscar configurações
+    if config_repo is None:
+        config_repo = get_config_repository()
+    
+    config = await config_repo.get_empresa_config(empresa_id)
+    use_sandbox = config.get("use_sandbox", False)
+    
     base_url = (
         "https://sandbox.asaas.com/api/v3"
         if use_sandbox else
@@ -93,18 +138,27 @@ async def create_asaas_payment(
     card_data: Optional[Dict[str, Any]] = None,
     card_token: Optional[str] = None,
     installments: int = 1,
-    retries: int = 2
+    retries: int = 2,
+    config_repo: Optional[ConfigRepositoryInterface] = None,
+    asaas_customer_repo: Optional[AsaasCustomerInterface] = None
 ) -> Dict[str, Any]:
     """
-    Cria um pagamento no Asaas para a empresa específica.
+    ✅ MIGRADO: Cria um pagamento no Asaas para a empresa específica.
     Suporta PIX e Cartão de Crédito.
     Garante que o cliente exista via get_or_create_asaas_customer.
+    Agora usa interfaces para evitar imports circulares.
     """
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+    if asaas_customer_repo is None:
+        asaas_customer_repo = get_asaas_customer_repository()
+
     # 1) Ajuste para evitar problemas de serialização
     amount = float(amount)
 
-    # 2) Obtém ou cria cliente na Asaas
-    asaas_customer_id = await get_or_create_asaas_customer(
+    # 2) Obtém ou cria cliente na Asaas - ✅ USANDO INTERFACE
+    asaas_customer_id = await asaas_customer_repo.get_or_create_asaas_customer(
         empresa_id=empresa_id,
         local_customer_id=customer_data.get("local_id", transaction_id),
         customer_data={
@@ -120,15 +174,18 @@ async def create_asaas_payment(
         }
     )
 
-    headers = await get_asaas_headers(empresa_id)
-    creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", False)
+    headers = await get_asaas_headers(empresa_id, config_repo)
+    
+    # ✅ USANDO INTERFACE: Buscar configurações
+    config = await config_repo.get_empresa_config(empresa_id)
+    use_sandbox = config.get("use_sandbox", False)
+    
     base_url = (
         "https://sandbox.asaas.com/api/v3/payments"
         if use_sandbox else
         "https://api.asaas.com/v3/payments"
     )
-    callback = creds.get("webhook_pix")
+    callback = config.get("webhook_pix")
 
     # 3) Monta payload conforme tipo
     if payment_type == "pix":
@@ -204,13 +261,25 @@ async def create_asaas_payment(
 
     raise HTTPException(status_code=500, detail="Falha no pagamento Asaas após múltiplas tentativas")
 
-async def get_asaas_payment_status(empresa_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
+
+async def get_asaas_payment_status(
+    empresa_id: str, 
+    transaction_id: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> Optional[Dict[str, Any]]:
     """
-    Verifica o status de um pagamento no Asaas usando externalReference.
+    ✅ MIGRADO: Verifica o status de um pagamento no Asaas usando externalReference.
+    Agora usa interfaces para evitar imports circulares.
     """
-    headers = await get_asaas_headers(empresa_id)
-    creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", True)
+    headers = await get_asaas_headers(empresa_id, config_repo)
+    
+    # ✅ USANDO INTERFACE: Buscar configurações
+    if config_repo is None:
+        config_repo = get_config_repository()
+    
+    config = await config_repo.get_empresa_config(empresa_id)
+    use_sandbox = config.get("use_sandbox", True)
+    
     base_url = (
         "https://sandbox.asaas.com/api/v3/payments"
         if use_sandbox else
@@ -229,12 +298,26 @@ async def get_asaas_payment_status(empresa_id: str, transaction_id: str) -> Opti
             raise HTTPException(status_code=500, detail="Erro ao buscar status Asaas")
 
 
-async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str, Any]:
+async def create_asaas_refund(
+    empresa_id: str, 
+    transaction_id: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> Dict[str, Any]:
     """
-    Solicita estorno (refund) de um pagamento aprovado na Asaas.
+    ✅ MIGRADO: Solicita estorno (refund) de um pagamento aprovado na Asaas.
     POST /payments/{transaction_id}/refund
+    Agora usa interfaces para evitar imports circulares.
     """
-    config = await get_empresa_config(empresa_id) or {}
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+
+    # ✅ USANDO INTERFACE
+    config = await config_repo.get_empresa_config(empresa_id)
+    if not config:
+        logger.error(f"❌ Configuração da empresa {empresa_id} não encontrada")
+        raise HTTPException(status_code=400, detail="Configuração da empresa não encontrada.")
+
     api_key = config.get("asaas_api_key")
     if not api_key:
         logger.error(f"❌ Asaas API key não encontrada para refund empresa {empresa_id}")
@@ -268,11 +351,17 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
     logger.info(f"✅ [create_asaas_refund] status Asaas para {transaction_id}: {status}")
     return {"status": status, **data}
 
-async def validate_asaas_pix_key(empresa_id: str, chave_pix: str) -> None:
+
+async def validate_asaas_pix_key(
+    empresa_id: str, 
+    chave_pix: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> None:
     """
-    Lança HTTPException(400) se a chave_pix não estiver cadastrada no Asaas.
+    ✅ MIGRADO: Lança HTTPException(400) se a chave_pix não estiver cadastrada no Asaas.
+    Agora usa interfaces para evitar imports circulares.
     """
-    keys = await list_asaas_pix_keys(empresa_id)
+    keys = await list_asaas_pix_keys(empresa_id, config_repo)
     if not any(k.get("key") == chave_pix for k in keys):
         raise HTTPException(
             status_code=400,
@@ -282,15 +371,23 @@ async def validate_asaas_pix_key(empresa_id: str, chave_pix: str) -> None:
 
 async def get_asaas_pix_qr_code(
     empresa_id: str,
-    payment_id: str
+    payment_id: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None
 ) -> Dict[str, Any]:
     """
-    Busca o QR-Code (base64 + copia e cola) de uma cobrança Pix no Asaas.
+    ✅ MIGRADO: Busca o QR-Code (base64 + copia e cola) de uma cobrança Pix no Asaas.
     Endpoint: GET /v3/payments/{paymentId}/pixQrCode
+    Agora usa interfaces para evitar imports circulares.
     """
-    headers = await get_asaas_headers(empresa_id)
-    creds = await get_empresa_credentials(empresa_id)
-    use_sandbox = creds.get("use_sandbox", True)
+    headers = await get_asaas_headers(empresa_id, config_repo)
+    
+    # ✅ USANDO INTERFACE: Buscar configurações
+    if config_repo is None:
+        config_repo = get_config_repository()
+    
+    config = await config_repo.get_empresa_config(empresa_id)
+    use_sandbox = config.get("use_sandbox", True)
+    
     base = "https://sandbox.asaas.com/api/v3" if use_sandbox else "https://api.asaas.com/v3"
     url = f"{base}/payments/{payment_id}/pixQrCode"
 
@@ -330,15 +427,137 @@ async def get_asaas_pix_qr_code(
     }
 
 
+# ========== CLASSE WRAPPER PARA INTERFACE ==========
+
+class AsaasGateway:
+    """
+    ✅ NOVO: Classe wrapper que implementa AsaasGatewayInterface
+    Permite uso direto das funções via dependency injection
+    """
+    
+    def __init__(
+        self,
+        config_repo: Optional[ConfigRepositoryInterface] = None,
+        asaas_customer_repo: Optional[AsaasCustomerInterface] = None
+    ):
+        self.config_repo = config_repo or get_config_repository()
+        self.asaas_customer_repo = asaas_customer_repo or get_asaas_customer_repository()
+    
+    async def create_payment(
+        self, 
+        empresa_id: str, 
+        amount: float, 
+        payment_type: str, 
+        transaction_id: str,
+        customer_data: Dict[str, Any],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Implementa AsaasGatewayInterface.create_payment"""
+        return await create_asaas_payment(
+            empresa_id,
+            amount,
+            payment_type,
+            transaction_id,
+            customer_data,
+            config_repo=self.config_repo,
+            asaas_customer_repo=self.asaas_customer_repo,
+            **kwargs
+        )
+    
+    async def create_refund(self, empresa_id: str, transaction_id: str) -> Dict[str, Any]:
+        """Implementa AsaasGatewayInterface.create_refund"""
+        return await create_asaas_refund(
+            empresa_id,
+            transaction_id,
+            config_repo=self.config_repo
+        )
+    
+    async def tokenize_card(self, empresa_id: str, card_data: Dict[str, Any]) -> str:
+        """Implementa AsaasGatewayInterface.tokenize_card"""
+        return await tokenize_asaas_card(
+            empresa_id,
+            card_data,
+            config_repo=self.config_repo
+        )
+    
+    async def get_payment_status(self, empresa_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
+        """Implementa AsaasGatewayInterface.get_payment_status"""
+        return await get_asaas_payment_status(
+            empresa_id,
+            transaction_id,
+            config_repo=self.config_repo
+        )
+    
+    async def get_pix_qr_code(self, empresa_id: str, payment_id: str) -> Dict[str, Any]:
+        """Implementa AsaasGatewayInterface.get_pix_qr_code"""
+        return await get_asaas_pix_qr_code(
+            empresa_id,
+            payment_id,
+            config_repo=self.config_repo
+        )
+    
+    async def list_pix_keys(self, empresa_id: str) -> list[Dict[str, Any]]:
+        """Implementa AsaasGatewayInterface.list_pix_keys"""
+        return await list_asaas_pix_keys(
+            empresa_id,
+            config_repo=self.config_repo
+        )
+    
+    async def validate_pix_key(self, empresa_id: str, chave_pix: str) -> None:
+        """Implementa AsaasGatewayInterface.validate_pix_key"""
+        return await validate_asaas_pix_key(
+            empresa_id,
+            chave_pix,
+            config_repo=self.config_repo
+        )
+
+
+# ========== FUNÇÃO PARA DEPENDENCY INJECTION ==========
+
+def get_asaas_gateway_instance() -> AsaasGateway:
+    """
+    ✅ NOVO: Função para criar instância do AsaasGateway
+    Pode ser usada nos dependencies.py
+    """
+    return AsaasGateway()
+
+
+# ========== BACKWARD COMPATIBILITY ==========
+# Mantém as funções originais para compatibilidade, mas agora elas usam interfaces
+
+async def create_asaas_payment_legacy(
+    empresa_id: str,
+    amount: float,
+    payment_type: str,
+    transaction_id: str,
+    customer_data: Dict[str, Any],
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    ⚠️ DEPRECATED: Use create_asaas_payment com dependency injection
+    Mantido apenas para compatibilidade
+    """
+    logger.warning("⚠️ Usando função legacy create_asaas_payment_legacy. Migre para a nova versão com interfaces.")
+    return await create_asaas_payment(empresa_id, amount, payment_type, transaction_id, customer_data, **kwargs)
+
+
+# ========== EXPORTS ==========
 
 __all__ = [
+    # Funções principais (migradas)
     "tokenize_asaas_card",
     "list_asaas_pix_keys",
     "create_asaas_payment",
     "get_asaas_payment_status",
     "create_asaas_refund",
-    "get_or_create_asaas_customer",
     "get_asaas_pix_qr_code",
     "validate_asaas_pix_key",
     "get_asaas_headers",
+    
+    # Classe wrapper
+    "AsaasGateway",
+    "get_asaas_gateway_instance",
+    
+    # Legacy (deprecated)
+    "create_asaas_payment_legacy",
 ]
