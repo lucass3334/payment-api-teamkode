@@ -1,5 +1,4 @@
-
-# services/gateways/sicredi_client.py
+# payment_kode_api/app/services/gateways/sicredi_client.py
 
 import httpx
 import base64
@@ -7,27 +6,47 @@ import asyncio
 from fastapi import HTTPException
 from typing import Any, Dict, Optional
 import re
-from payment_kode_api.app.database.database import get_payment
 from datetime import datetime, timezone, timedelta
 
-from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
+# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+from ...interfaces import (
+    ConfigRepositoryInterface,
+    PaymentRepositoryInterface,
+    CertificateServiceInterface,
+)
+
+# ✅ NOVO: Dependency injection (imports diretos apenas para funções standalone)
+from ...dependencies import (
+    get_config_repository,
+    get_payment_repository,
+    get_certificate_service,
+)
 
 from ...utilities.logging_config import logger
-from ..config_service import get_empresa_credentials, load_certificates_from_bucket
 from ...utilities.cert_utils import get_md5, build_ssl_context_from_memory
 
 # 🔧 Timeout padrão para conexões Sicredi
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
 
 
-async def get_access_token(empresa_id: str, retries: int = 2) -> str:
+async def get_access_token(
+    empresa_id: str, 
+    retries: int = 2,
+    config_repo: Optional[ConfigRepositoryInterface] = None,
+    cert_service: Optional[CertificateServiceInterface] = None
+) -> str:
     """
-    Solicita um novo token diretamente na API Sicredi via client_credentials.
+    ✅ MIGRADO: Solicita um novo token diretamente na API Sicredi via client_credentials.
+    Agora usa interfaces para evitar imports circulares.
     """
-    # troca get_empresa_credentials por get_empresa_config
-    from payment_kode_api.app.database.database import get_empresa_config
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+    if cert_service is None:
+        cert_service = get_certificate_service()
 
-    credentials = await get_empresa_config(empresa_id)
+    # ✅ USANDO INTERFACE
+    credentials = await config_repo.get_empresa_config(empresa_id)
     if not credentials:
         raise ValueError("❌ Credenciais do Sicredi não configuradas corretamente.")
 
@@ -46,14 +65,16 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
         "Authorization": f"Basic {auth_header}",
         "Content-Type": "application/json"
     }
-    # corrige a query string, removendo duplicação de grant_type e incluindo apenas scopes válidos
+    
+    # Corrige a query string, removendo duplicação de grant_type e incluindo apenas scopes válidos
     full_url = (
         f"{auth_url}"
         "?grant_type=client_credentials"
         "&scope=cob.read%20cob.write%20cobv.read%20cobv.write"
     )
 
-    certs = await load_certificates_from_bucket(empresa_id)
+    # ✅ USANDO INTERFACE
+    certs = await cert_service.load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
             cert_pem=certs["cert_path"],
@@ -97,23 +118,30 @@ async def get_access_token(empresa_id: str, retries: int = 2) -> str:
     raise RuntimeError(f"❌ Falha ao obter token Sicredi para empresa {empresa_id}")
 
 
-async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[str, Any]:
+async def create_sicredi_pix_payment(
+    empresa_id: str, 
+    config_repo: Optional[ConfigRepositoryInterface] = None,
+    cert_service: Optional[CertificateServiceInterface] = None,
+    **payload: Any
+) -> Dict[str, Any]:
     """
-    Cria ou altera uma cobrança Pix no Sicredi.
+    ✅ MIGRADO: Cria ou altera uma cobrança Pix no Sicredi.
     Se `due_date` for fornecido, cria cobrança com vencimento via PUT /cobv/{txid}.
     Caso contrário, cria cobrança imediata via PUT /cob/{txid}.
     """
-    # quebrou ciclo de import
-    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh, get_empresa_config
-    from payment_kode_api.app.services.gateways.sicredi_client import register_sicredi_webhook
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+    if cert_service is None:
+        cert_service = get_certificate_service()
 
-    # 1) Token Sicredi
-    token = await get_sicredi_token_or_refresh(empresa_id)
+    # 1) Token Sicredi - ✅ USANDO INTERFACE
+    token = await config_repo.get_sicredi_token_or_refresh(empresa_id)
     if not token:
         raise HTTPException(status_code=401, detail="Token Sicredi inválido ou expirado.")
 
-    # 2) URL base (prod ou homolog)
-    credentials = await get_empresa_config(empresa_id)
+    # 2) URL base (prod ou homolog) - ✅ USANDO INTERFACE
+    credentials = await config_repo.get_empresa_config(empresa_id)
     env = credentials.get("sicredi_env", "production").lower()
     base_url = (
         "https://api-h.pix.sicredi.com.br/api/v2" if env == "homologation"
@@ -141,8 +169,8 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
     if "solicitacaoPagador" in payload:
         body["solicitacaoPagador"] = payload["solicitacaoPagador"]
 
-    # 6) SSLContext mTLS
-    certs = await load_certificates_from_bucket(empresa_id)
+    # 6) SSLContext mTLS - ✅ USANDO INTERFACE
+    certs = await cert_service.load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
             cert_pem=certs["cert_path"],
@@ -178,7 +206,12 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
         data = resp.json()
 
     # 9) (Re)registra webhook
-    await register_sicredi_webhook(empresa_id, payload["chave"])
+    await register_sicredi_webhook(
+        empresa_id, 
+        payload["chave"],
+        config_repo=config_repo,
+        cert_service=cert_service
+    )
 
     # 10) Calcula prazo de estorno (7 dias após vencimento se agendada; senão, 7 dias a partir de agora)
     if is_scheduled:
@@ -206,20 +239,32 @@ async def create_sicredi_pix_payment(empresa_id: str, **payload: Any) -> Dict[st
 
     return result
 
-async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
-    """
-    Consulta e, se ausente, registra o webhook no Sicredi via PUT /webhook/{chave}.
-    """
-    from payment_kode_api.app.database.database import get_sicredi_token_or_refresh
 
-    creds = await get_empresa_credentials(empresa_id)
-    webhook_url = creds.get("webhook_pix")
+async def register_sicredi_webhook(
+    empresa_id: str, 
+    chave_pix: str,
+    config_repo: Optional[ConfigRepositoryInterface] = None,
+    cert_service: Optional[CertificateServiceInterface] = None
+) -> Any:
+    """
+    ✅ MIGRADO: Consulta e, se ausente, registra o webhook no Sicredi via PUT /webhook/{chave}.
+    """
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+    if cert_service is None:
+        cert_service = get_certificate_service()
+
+    # ✅ USANDO INTERFACE
+    credentials = await config_repo.get_empresa_config(empresa_id)
+    webhook_url = credentials.get("webhook_pix")
     if not webhook_url:
         logger.warning(f"⚠️ WEBHOOK_PIX não configurado para empresa {empresa_id}")
         return
 
-    token = await get_sicredi_token_or_refresh(empresa_id)
-    env = creds.get("sicredi_env", "production").lower()
+    # ✅ USANDO INTERFACE
+    token = await config_repo.get_sicredi_token_or_refresh(empresa_id)
+    env = credentials.get("sicredi_env", "production").lower()
     base_url = (
         "https://api-h.pix.sicredi.com.br/api/v2"
         if env == "homologation"
@@ -230,7 +275,8 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
         "Content-Type": "application/json"
     }
 
-    certs = await load_certificates_from_bucket(empresa_id)
+    # ✅ USANDO INTERFACE
+    certs = await cert_service.load_certificates_from_bucket(empresa_id)
     try:
         ssl_ctx = build_ssl_context_from_memory(
             cert_pem=certs["cert_path"],
@@ -242,13 +288,13 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
         raise HTTPException(status_code=500, detail="Erro com certificados da empresa.")
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=TIMEOUT) as client:
-        # verifica se já existe
+        # Verifica se já existe
         resp = await client.get(f"{base_url}/webhook/{chave_pix}", headers=headers)
         if resp.status_code == 200:
             logger.info(f"✅ Webhook já existe para {chave_pix}")
             return
 
-        # registra novo webhook
+        # Registra novo webhook
         logger.info(f"📤 Registrando webhook Sicredi para {chave_pix}")
         resp = await client.put(
             f"{base_url}/webhook/{chave_pix}",
@@ -260,50 +306,42 @@ async def register_sicredi_webhook(empresa_id: str, chave_pix: str) -> Any:
         return resp.json()
 
 
-
-# 🔧 (Comentado: método antigo baseado em arquivos)
-# from utilities.cert_utils import write_temp_cert
-# async def get_cert_paths_from_memory(empresa_id: str):
-#     cert_data = await load_certificates_from_bucket(empresa_id)
-#     if not cert_data:
-#         raise ValueError(f"❌ Certificados ausentes ou inválidos para empresa {empresa_id}")
-#     cert_file = write_temp_cert(cert_data["cert_path"], ".pem")
-#     key_file = write_temp_cert(cert_data["key_path"], ".key")
-#     ca_file = write_temp_cert(cert_data["ca_path"], ".pem")
-#     logger.info(f"🔐 Certificados temporários criados:")
-#     logger.debug(f"🔑 cert.pem md5: {get_md5(cert_data['cert_path'])}")
-#     logger.debug(f"🔑 key.key md5: {get_md5(cert_data['key_path'])}")
-#     logger.debug(f"🔑 ca.pem   md5: {get_md5(cert_data['ca_path'])}")
-#     return cert_file, key_file, ca_file
-
-
 async def create_sicredi_pix_refund(
     empresa_id: str,
     txid: str,
-    amount: Optional[float] = None
+    amount: Optional[float] = None,
+    config_repo: Optional[ConfigRepositoryInterface] = None,
+    cert_service: Optional[CertificateServiceInterface] = None
 ) -> Dict[str, Any]:
     """
-    Estorna uma cobrança Pix no Sicredi.
+    ✅ MIGRADO: Estorna uma cobrança Pix no Sicredi.
     - Para cobrança com vencimento (cobv): PATCH /cobv/{txid} {"status":"REMOVIDA_PELO_USUARIO_RECEBEDOR"}
     - Senão (cob imediata): POST /cob/{txid}/devolucao (opcionalmente com {"valor":{"original":"x.xx"}})
     """
-    # 1) busca token e credenciais
-    token = await get_sicredi_token_or_refresh(empresa_id)
+    # ✅ USANDO INTERFACE: Dependency injection
+    if config_repo is None:
+        config_repo = get_config_repository()
+    if cert_service is None:
+        cert_service = get_certificate_service()
+
+    # 1) Busca token e credenciais - ✅ USANDO INTERFACE
+    token = await config_repo.get_sicredi_token_or_refresh(empresa_id)
     if not token:
         raise HTTPException(401, "Token Sicredi inválido ou expirado.")
-    creds = await get_empresa_credentials(empresa_id)
-    env = creds.get("sicredi_env", "production").lower()
+    
+    credentials = await config_repo.get_empresa_config(empresa_id)
+    env = credentials.get("sicredi_env", "production").lower()
     base_url = (
         "https://api-h.pix.sicredi.com.br/api/v2"
         if env == "homologation"
         else "https://api-pix.sicredi.com.br/api/v2"
     )
 
-    # 2) sanitiza txid
+    # 2) Sanitiza txid
     sanitized_txid = re.sub(r'[^A-Za-z0-9]', '', txid).upper()
 
-    # 3) monta SSLContext para mTLS
-    certs = await load_certificates_from_bucket(empresa_id)
+    # 3) Monta SSLContext para mTLS - ✅ USANDO INTERFACE
+    certs = await cert_service.load_certificates_from_bucket(empresa_id)
     ssl_ctx = build_ssl_context_from_memory(
         cert_pem=certs["cert_path"],
         key_pem=certs["key_path"],
@@ -316,7 +354,7 @@ async def create_sicredi_pix_refund(
     }
 
     async with httpx.AsyncClient(verify=ssl_ctx, timeout=10.0) as client:
-        # a) tenta PATCH em cobv
+        # a) Tenta PATCH em cobv
         url_cobv = f"{base_url}/cobv/{sanitized_txid}"
         try:
             logger.info(f"🔄 [create_sicredi_pix_refund] PATCH {url_cobv}")
@@ -329,13 +367,13 @@ async def create_sicredi_pix_refund(
             data = resp.json()
             return {"status": data.get("status", "").upper(), **data}
         except httpx.HTTPStatusError as e:
-            # se não for 404, repassa erro
+            # Se não for 404, repassa erro
             if e.response.status_code != 404:
                 logger.error(f"❌ [create_sicredi_pix_refund] PATCH HTTP {e.response.status_code}: {e.response.text}")
                 raise HTTPException(e.response.status_code, f"Erro no gateway Sicredi: {e.response.text}")
             # 404 → segue para estorno imediato
 
-        # b) tenta POST em cob/devolucao
+        # b) Tenta POST em cob/devolucao
         url_cob = f"{base_url}/cob/{sanitized_txid}/devolucao"
         body = None
         if amount is not None:
@@ -353,5 +391,98 @@ async def create_sicredi_pix_refund(
                 raise HTTPException(404, "Cobrança não encontrada no Sicredi")
             raise HTTPException(e.response.status_code, f"Erro no gateway Sicredi: {e.response.text}")
 
-    # não achou nem cobv nem cob
+    # Não achou nem cobv nem cob
     raise HTTPException(404, "Cobrança não encontrada no Sicredi")
+
+
+# ========== CLASSES WRAPPER PARA INTERFACE ==========
+
+class SicrediGateway:
+    """
+    ✅ NOVO: Classe wrapper que implementa SicrediGatewayInterface
+    Permite uso direto das funções via dependency injection
+    """
+    
+    def __init__(
+        self,
+        config_repo: Optional[ConfigRepositoryInterface] = None,
+        cert_service: Optional[CertificateServiceInterface] = None
+    ):
+        self.config_repo = config_repo or get_config_repository()
+        self.cert_service = cert_service or get_certificate_service()
+    
+    async def create_pix_payment(self, empresa_id: str, **kwargs) -> Dict[str, Any]:
+        """Implementa SicrediGatewayInterface.create_pix_payment"""
+        return await create_sicredi_pix_payment(
+            empresa_id,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service,
+            **kwargs
+        )
+    
+    async def create_pix_refund(self, empresa_id: str, txid: str, amount: Optional[float] = None) -> Dict[str, Any]:
+        """Implementa SicrediGatewayInterface.create_pix_refund"""
+        return await create_sicredi_pix_refund(
+            empresa_id,
+            txid,
+            amount,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service
+        )
+    
+    async def get_access_token(self, empresa_id: str) -> str:
+        """Implementa SicrediGatewayInterface.get_access_token"""
+        return await get_access_token(
+            empresa_id,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service
+        )
+    
+    async def register_webhook(self, empresa_id: str, chave_pix: str) -> Any:
+        """Implementa SicrediGatewayInterface.register_webhook"""
+        return await register_sicredi_webhook(
+            empresa_id,
+            chave_pix,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service
+        )
+
+
+# ========== FUNÇÃO PARA DEPENDENCY INJECTION ==========
+
+def get_sicredi_gateway_instance() -> SicrediGateway:
+    """
+    ✅ NOVO: Função para criar instância do SicrediGateway
+    Pode ser usada nos dependencies.py
+    """
+    return SicrediGateway()
+
+
+# ========== BACKWARD COMPATIBILITY ==========
+# Mantém as funções originais para compatibilidade, mas agora elas usam interfaces
+
+async def get_access_token_legacy(empresa_id: str, retries: int = 2) -> str:
+    """
+    ⚠️ DEPRECATED: Use get_access_token com dependency injection
+    Mantido apenas para compatibilidade
+    """
+    logger.warning("⚠️ Usando função legacy get_access_token_legacy. Migre para a nova versão com interfaces.")
+    return await get_access_token(empresa_id, retries)
+
+
+# ========== EXPORTS ==========
+
+__all__ = [
+    # Funções principais (migradas)
+    "get_access_token",
+    "create_sicredi_pix_payment", 
+    "register_sicredi_webhook",
+    "create_sicredi_pix_refund",
+    
+    # Classe wrapper
+    "SicrediGateway",
+    "get_sicredi_gateway_instance",
+    
+    # Legacy (deprecated)
+    "get_access_token_legacy",
+]

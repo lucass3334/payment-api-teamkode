@@ -11,6 +11,15 @@ from .interfaces import (
     PaymentValidatorInterface,
     CardRepositoryInterface,
     AsaasCustomerInterface,
+    WebhookServiceInterface,
+    CertificateServiceInterface,
+    TokenServiceInterface,
+    SicrediGatewayInterface,
+    RedeGatewayInterface,
+    AsaasGatewayInterface,
+    EmpresaRepositoryInterface,
+    FileStorageInterface,
+    CacheRepositoryInterface,
 )
 
 # ========== IMPORTS DAS IMPLEMENTAÇÕES ==========
@@ -41,6 +50,64 @@ except ImportError as e:
     print(f"⚠️ Erro ao importar validators: {e}")
     _validators_available = False
 
+# ========== NOVOS IMPORTS DOS GATEWAYS ==========
+
+try:
+    from .services.gateways.sicredi_client import (
+        create_sicredi_pix_payment,
+        create_sicredi_pix_refund,
+        get_access_token as get_sicredi_token,
+        register_sicredi_webhook,
+    )
+    _sicredi_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar sicredi_client: {e}")
+    _sicredi_available = False
+
+try:
+    from .services.gateways.rede_client import (
+        create_rede_payment,
+        create_rede_refund,
+        tokenize_rede_card,
+        capture_rede_transaction,
+        get_rede_transaction,
+    )
+    _rede_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar rede_client: {e}")
+    _rede_available = False
+
+try:
+    from .services.gateways.asaas_client import (
+        create_asaas_payment,
+        create_asaas_refund,
+        tokenize_asaas_card,
+        get_asaas_payment_status,
+        get_asaas_pix_qr_code,
+        list_asaas_pix_keys,
+        validate_asaas_pix_key,
+    )
+    _asaas_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar asaas_client: {e}")
+    _asaas_available = False
+
+try:
+    from .services.webhook_services import notify_user_webhook
+    _webhook_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar webhook_services: {e}")
+    _webhook_available = False
+
+try:
+    from .services.config_service import (
+        load_certificates_from_bucket,
+        get_empresa_credentials,
+    )
+    _config_service_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar config_service: {e}")
+    _config_service_available = False
 
 # ========== IMPLEMENTAÇÕES DUMMY (FALLBACK) ==========
 
@@ -100,6 +167,125 @@ class DummyPaymentValidator:
         # Fallback simples - sem validação específica
         return max(1, min(installments, 12))
 
+# ========== NOVOS DUMMIES PARA GATEWAYS ==========
+
+class DummySicrediGateway:
+    """Implementação dummy para Sicredi"""
+    async def create_pix_payment(self, *args, **kwargs):
+        raise NotImplementedError("Sicredi Gateway não disponível")
+    async def create_pix_refund(self, *args, **kwargs):
+        raise NotImplementedError("Sicredi Gateway não disponível")
+    async def get_access_token(self, *args, **kwargs):
+        raise NotImplementedError("Sicredi Gateway não disponível")
+    async def register_webhook(self, *args, **kwargs):
+        raise NotImplementedError("Sicredi Gateway não disponível")
+
+class DummyRedeGateway:
+    """Implementação dummy para Rede"""
+    async def create_payment(self, *args, **kwargs):
+        raise NotImplementedError("Rede Gateway não disponível")
+    async def create_refund(self, *args, **kwargs):
+        raise NotImplementedError("Rede Gateway não disponível")
+    async def tokenize_card(self, *args, **kwargs):
+        raise NotImplementedError("Rede Gateway não disponível")
+
+class DummyAsaasGateway:
+    """Implementação dummy para Asaas"""
+    async def create_payment(self, *args, **kwargs):
+        raise NotImplementedError("Asaas Gateway não disponível")
+    async def create_refund(self, *args, **kwargs):
+        raise NotImplementedError("Asaas Gateway não disponível")
+    async def tokenize_card(self, *args, **kwargs):
+        raise NotImplementedError("Asaas Gateway não disponível")
+
+class DummyWebhookService:
+    """Implementação dummy para webhooks"""
+    async def notify_user_webhook(self, *args, **kwargs):
+        raise NotImplementedError("Webhook Service não disponível")
+
+class DummyCertificateService:
+    """Implementação dummy para certificados"""
+    async def load_certificates_from_bucket(self, *args, **kwargs):
+        raise NotImplementedError("Certificate Service não disponível")
+
+# ========== IMPLEMENTAÇÕES WRAPPER DOS GATEWAYS ==========
+
+class SicrediGatewayWrapper:
+    """Wrapper que implementa a interface SicrediGatewayInterface"""
+    async def create_pix_payment(self, empresa_id: str, **kwargs):
+        return await create_sicredi_pix_payment(empresa_id, **kwargs)
+    
+    async def create_pix_refund(self, empresa_id: str, txid: str, amount=None):
+        return await create_sicredi_pix_refund(empresa_id, txid, amount)
+    
+    async def get_access_token(self, empresa_id: str):
+        return await get_sicredi_token(empresa_id)
+    
+    async def register_webhook(self, empresa_id: str, chave_pix: str):
+        return await register_sicredi_webhook(empresa_id, chave_pix)
+
+class RedeGatewayWrapper:
+    """Wrapper que implementa a interface RedeGatewayInterface"""
+    async def create_payment(self, empresa_id: str, **kwargs):
+        return await create_rede_payment(empresa_id, **kwargs)
+    
+    async def create_refund(self, empresa_id: str, transaction_id: str, amount=None):
+        return await create_rede_refund(empresa_id, transaction_id, amount)
+    
+    async def tokenize_card(self, empresa_id: str, card_data):
+        return await tokenize_rede_card(empresa_id, card_data)
+    
+    async def capture_transaction(self, empresa_id: str, transaction_id: str, amount=None):
+        return await capture_rede_transaction(empresa_id, transaction_id, amount)
+    
+    async def get_transaction(self, empresa_id: str, transaction_id: str):
+        return await get_rede_transaction(empresa_id, transaction_id)
+
+class AsaasGatewayWrapper:
+    """Wrapper que implementa a interface AsaasGatewayInterface"""
+    async def create_payment(self, empresa_id: str, amount: float, payment_type: str, 
+                           transaction_id: str, customer_data, **kwargs):
+        return await create_asaas_payment(empresa_id, amount, payment_type, 
+                                        transaction_id, customer_data, **kwargs)
+    
+    async def create_refund(self, empresa_id: str, transaction_id: str):
+        return await create_asaas_refund(empresa_id, transaction_id)
+    
+    async def tokenize_card(self, empresa_id: str, card_data):
+        return await tokenize_asaas_card(empresa_id, card_data)
+    
+    async def get_payment_status(self, empresa_id: str, transaction_id: str):
+        return await get_asaas_payment_status(empresa_id, transaction_id)
+    
+    async def get_pix_qr_code(self, empresa_id: str, payment_id: str):
+        return await get_asaas_pix_qr_code(empresa_id, payment_id)
+    
+    async def list_pix_keys(self, empresa_id: str):
+        return await list_asaas_pix_keys(empresa_id)
+    
+    async def validate_pix_key(self, empresa_id: str, chave_pix: str):
+        return await validate_asaas_pix_key(empresa_id, chave_pix)
+
+class WebhookServiceWrapper:
+    """Wrapper que implementa a interface WebhookServiceInterface"""
+    async def notify_user_webhook(self, webhook_url: str, data):
+        return await notify_user_webhook(webhook_url, data)
+    
+    async def process_webhook(self, provider: str, payload):
+        # Implementação básica - pode ser expandida
+        return True
+
+class CertificateServiceWrapper:
+    """Wrapper que implementa a interface CertificateServiceInterface"""
+    async def load_certificates_from_bucket(self, empresa_id: str):
+        return await load_certificates_from_bucket(empresa_id)
+    
+    async def validate_certificates(self, empresa_id: str):
+        try:
+            certs = await load_certificates_from_bucket(empresa_id)
+            return bool(certs and "cert_path" in certs and "key_path" in certs)
+        except:
+            return False
 
 # ========== DEPENDENCY INJECTION COM CACHE ==========
 
@@ -166,6 +352,52 @@ def get_payment_validator() -> PaymentValidatorInterface:
         print("⚠️ Usando DummyPaymentValidator")
         return DummyPaymentValidator()
 
+# ========== NOVOS DEPENDENCY PROVIDERS PARA GATEWAYS ==========
+
+@lru_cache(maxsize=1)
+def get_sicredi_gateway() -> SicrediGatewayInterface:
+    """Retorna implementação de Sicredi Gateway com cache"""
+    if _sicredi_available:
+        return SicrediGatewayWrapper()
+    else:
+        print("⚠️ Usando DummySicrediGateway")
+        return DummySicrediGateway()
+
+@lru_cache(maxsize=1)
+def get_rede_gateway() -> RedeGatewayInterface:
+    """Retorna implementação de Rede Gateway com cache"""
+    if _rede_available:
+        return RedeGatewayWrapper()
+    else:
+        print("⚠️ Usando DummyRedeGateway")
+        return DummyRedeGateway()
+
+@lru_cache(maxsize=1)
+def get_asaas_gateway() -> AsaasGatewayInterface:
+    """Retorna implementação de Asaas Gateway com cache"""
+    if _asaas_available:
+        return AsaasGatewayWrapper()
+    else:
+        print("⚠️ Usando DummyAsaasGateway")
+        return DummyAsaasGateway()
+
+@lru_cache(maxsize=1)
+def get_webhook_service() -> WebhookServiceInterface:
+    """Retorna implementação de Webhook Service com cache"""
+    if _webhook_available:
+        return WebhookServiceWrapper()
+    else:
+        print("⚠️ Usando DummyWebhookService")
+        return DummyWebhookService()
+
+@lru_cache(maxsize=1)
+def get_certificate_service() -> CertificateServiceInterface:
+    """Retorna implementação de Certificate Service com cache"""
+    if _config_service_available:
+        return CertificateServiceWrapper()
+    else:
+        print("⚠️ Usando DummyCertificateService")
+        return DummyCertificateService()
 
 # ========== DEPENDENCY INJECTION SEM CACHE (PARA TESTES) ==========
 
@@ -205,7 +437,6 @@ def get_payment_validator_fresh() -> PaymentValidatorInterface:
         return PaymentValidator()
     return DummyPaymentValidator()
 
-
 # ========== UTILITÁRIOS DE DIAGNÓSTICO ==========
 
 def check_dependencies_health() -> dict:
@@ -214,10 +445,20 @@ def check_dependencies_health() -> dict:
         "repositories_available": _repositories_available,
         "customer_repository_available": _customer_repository_available, 
         "validators_available": _validators_available,
-        "all_available": all([
+        "sicredi_available": _sicredi_available,
+        "rede_available": _rede_available,
+        "asaas_available": _asaas_available,
+        "webhook_available": _webhook_available,
+        "config_service_available": _config_service_available,
+        "all_core_available": all([
             _repositories_available,
             _customer_repository_available,
             _validators_available
+        ]),
+        "all_gateways_available": all([
+            _sicredi_available,
+            _rede_available,
+            _asaas_available
         ])
     }
 
@@ -230,8 +471,12 @@ def clear_dependency_cache():
     get_asaas_customer_repository.cache_clear()
     get_customer_service.cache_clear()
     get_payment_validator.cache_clear()
+    get_sicredi_gateway.cache_clear()
+    get_rede_gateway.cache_clear()
+    get_asaas_gateway.cache_clear()
+    get_webhook_service.cache_clear()
+    get_certificate_service.cache_clear()
     print("✅ Cache de dependências limpo")
-
 
 # ========== DEPENDENCY OVERRIDE (PARA TESTES) ==========
 
@@ -249,7 +494,6 @@ def clear_dependency_overrides():
     """Limpa todos os overrides"""
     _dependency_overrides.clear()
     print("✅ Overrides de dependências limpos")
-
 
 # ========== DEPENDENCY PROVIDERS MELHORADOS ==========
 
@@ -274,7 +518,6 @@ def get_config_repository_with_override() -> ConfigRepositoryInterface:
         return override
     return get_config_repository()
 
-
 # ========== EXPORTS ==========
 
 __all__ = [
@@ -286,6 +529,13 @@ __all__ = [
     "get_asaas_customer_repository",
     "get_customer_service",
     "get_payment_validator",
+    
+    # Novos providers para gateways e serviços
+    "get_sicredi_gateway",
+    "get_rede_gateway",
+    "get_asaas_gateway",
+    "get_webhook_service",
+    "get_certificate_service",
     
     # Dependency providers sem cache (para testes)
     "get_payment_repository_fresh",
@@ -306,3 +556,421 @@ __all__ = [
     "override_dependency",
     "clear_dependency_overrides",
 ]
+
+
+# Adicionar estas implementações ao dependencies.py existente:
+
+# ========== NOVOS IMPORTS PARA INTERFACES FALTANTES ==========
+
+try:
+    from .database.database import (
+        save_empresa as db_save_empresa,
+        get_empresa as db_get_empresa,
+        get_empresa_by_token as db_get_empresa_by_token,
+        get_empresa_by_chave_pix as db_get_empresa_by_chave_pix,
+        save_empresa_certificados as db_save_empresa_certificados,
+        get_empresa_certificados as db_get_empresa_certificados,
+    )
+    _empresa_repository_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar empresa functions: {e}")
+    _empresa_repository_available = False
+
+try:
+    from .database.supabase_storage import (
+        upload_cert_file,
+        download_cert_file,
+        ensure_folder_exists,
+    )
+    _file_storage_available = True
+except ImportError as e:
+    print(f"⚠️ Erro ao importar file storage: {e}")
+    _file_storage_available = False
+
+# ========== IMPLEMENTAÇÕES DAS INTERFACES FALTANTES ==========
+
+class EmpresaRepository:
+    """Implementação que usa suas funções existentes de empresa"""
+    
+    async def save_empresa(self, data):
+        return await db_save_empresa(data)
+    
+    async def get_empresa(self, cnpj):
+        return await db_get_empresa(cnpj)
+    
+    async def get_empresa_by_token(self, access_token):
+        return await db_get_empresa_by_token(access_token)
+    
+    async def get_empresa_by_chave_pix(self, chave_pix):
+        return await db_get_empresa_by_chave_pix(chave_pix)
+    
+    async def save_empresa_certificados(self, empresa_id, sicredi_cert_base64, sicredi_key_base64, sicredi_ca_base64=None):
+        return await db_save_empresa_certificados(empresa_id, sicredi_cert_base64, sicredi_key_base64, sicredi_ca_base64)
+    
+    async def get_empresa_certificados(self, empresa_id):
+        return await db_get_empresa_certificados(empresa_id)
+
+
+class FileStorageRepository:
+    """Implementação que usa supabase_storage"""
+    
+    async def upload_file(self, path, content):
+        # Extrair empresa_id e filename do path
+        parts = path.split('/')
+        if len(parts) >= 2:
+            empresa_id, filename = parts[0], parts[1]
+            return await upload_cert_file(empresa_id, filename, content)
+        return False
+    
+    async def download_file(self, path):
+        # Extrair empresa_id e filename do path
+        parts = path.split('/')
+        if len(parts) >= 2:
+            empresa_id, filename = parts[0], parts[1]
+            return await download_cert_file(empresa_id, filename)
+        return None
+    
+    async def delete_file(self, path):
+        # Implementação básica - pode ser expandida
+        return True
+    
+    async def ensure_folder_exists(self, empresa_id, bucket):
+        return await ensure_folder_exists(empresa_id, bucket)
+
+
+class CertificateServiceImplementation:
+    """Implementação completa que usa config_service"""
+    
+    def __init__(self, file_storage=None):
+        self.file_storage = file_storage or FileStorageRepository()
+    
+    async def load_certificates_from_bucket(self, empresa_id):
+        # Usar import local para evitar circular
+        from .services.config_service import load_certificates_from_bucket
+        return await load_certificates_from_bucket(empresa_id)
+    
+    async def validate_certificates(self, empresa_id):
+        try:
+            certs = await self.load_certificates_from_bucket(empresa_id)
+            required_keys = {"cert_path", "key_path"}
+            return bool(certs and required_keys.issubset(certs.keys()))
+        except Exception:
+            return False
+    
+    async def upload_cert_file(self, empresa_id, filename, file_bytes):
+        return await self.file_storage.upload_file(f"{empresa_id}/{filename}", file_bytes)
+    
+    async def download_cert_file(self, empresa_id, filename):
+        return await self.file_storage.download_file(f"{empresa_id}/{filename}")
+
+
+# ========== IMPLEMENTAÇÕES DUMMY FALTANTES ==========
+
+class DummyEmpresaRepository:
+    """Implementação dummy para EmpresaRepository"""
+    async def save_empresa(self, *args, **kwargs):
+        raise NotImplementedError("EmpresaRepository não disponível")
+    async def get_empresa(self, *args, **kwargs):
+        raise NotImplementedError("EmpresaRepository não disponível")
+    async def get_empresa_by_token(self, *args, **kwargs):
+        raise NotImplementedError("EmpresaRepository não disponível")
+    async def get_empresa_by_chave_pix(self, *args, **kwargs):
+        raise NotImplementedError("EmpresaRepository não disponível")
+    async def save_empresa_certificados(self, *args, **kwargs):
+        raise NotImplementedError("EmpresaRepository não disponível")
+    async def get_empresa_certificados(self, *args, **kwargs):
+        raise NotImplementedError("EmpresaRepository não disponível")
+
+class DummyFileStorage:
+    """Implementação dummy para FileStorage"""
+    async def upload_file(self, *args, **kwargs):
+        raise NotImplementedError("FileStorage não disponível")
+    async def download_file(self, *args, **kwargs):
+        raise NotImplementedError("FileStorage não disponível")
+    async def delete_file(self, *args, **kwargs):
+        raise NotImplementedError("FileStorage não disponível")
+    async def ensure_folder_exists(self, *args, **kwargs):
+        raise NotImplementedError("FileStorage não disponível")
+
+class DummyCacheRepository:
+    """Implementação dummy para CacheRepository"""
+    async def get(self, *args, **kwargs):
+        raise NotImplementedError("CacheRepository não disponível")
+    async def set(self, *args, **kwargs):
+        raise NotImplementedError("CacheRepository não disponível")
+    async def delete(self, *args, **kwargs):
+        raise NotImplementedError("CacheRepository não disponível")
+    async def exists(self, *args, **kwargs):
+        raise NotImplementedError("CacheRepository não disponível")
+
+class DummyCertificateService:
+    """Implementação dummy para CertificateService"""
+    async def load_certificates_from_bucket(self, *args, **kwargs):
+        raise NotImplementedError("CertificateService não disponível")
+    async def validate_certificates(self, *args, **kwargs):
+        raise NotImplementedError("CertificateService não disponível")
+
+# ========== NOVOS DEPENDENCY PROVIDERS ==========
+
+@lru_cache(maxsize=1)
+def get_empresa_repository() -> EmpresaRepositoryInterface:
+    """Retorna implementação de EmpresaRepository com cache"""
+    if _empresa_repository_available:
+        return EmpresaRepository()
+    else:
+        print("⚠️ Usando DummyEmpresaRepository")
+        return DummyEmpresaRepository()
+
+@lru_cache(maxsize=1)
+def get_file_storage() -> FileStorageInterface:
+    """Retorna implementação de FileStorage com cache"""
+    if _file_storage_available:
+        return FileStorageRepository()
+    else:
+        print("⚠️ Usando DummyFileStorage")
+        return DummyFileStorage()
+
+@lru_cache(maxsize=1)
+def get_cache_repository() -> CacheRepositoryInterface:
+    """Retorna implementação de CacheRepository com cache"""
+    # Por enquanto, sempre dummy até implementarmos Redis
+    print("⚠️ Usando DummyCacheRepository - Redis não implementado ainda")
+    return DummyCacheRepository()
+
+@lru_cache(maxsize=1)
+def get_certificate_service() -> CertificateServiceInterface:
+    """Retorna implementação de CertificateService com cache"""
+    if _config_service_available and _file_storage_available:
+        return CertificateServiceImplementation()
+    else:
+        print("⚠️ Usando DummyCertificateService")
+        return DummyCertificateService()
+
+# ========== ATUALIZAÇÃO DO SICREDI GATEWAY WRAPPER ==========
+
+class SicrediGatewayWrapper:
+    """Wrapper que implementa a interface SicrediGatewayInterface"""
+    
+    def __init__(self):
+        # Lazy loading das dependências
+        self._config_repo = None
+        self._cert_service = None
+    
+    @property
+    def config_repo(self):
+        if self._config_repo is None:
+            self._config_repo = get_config_repository()
+        return self._config_repo
+    
+    @property 
+    def cert_service(self):
+        if self._cert_service is None:
+            self._cert_service = get_certificate_service()
+        return self._cert_service
+    
+    async def create_pix_payment(self, empresa_id: str, **kwargs):
+        # Import local para evitar circular
+        from ..services.gateways.sicredi_client import create_sicredi_pix_payment
+        return await create_sicredi_pix_payment(
+            empresa_id, 
+            config_repo=self.config_repo,
+            cert_service=self.cert_service,
+            **kwargs
+        )
+    
+    async def create_pix_refund(self, empresa_id: str, txid: str, amount=None):
+        from ..services.gateways.sicredi_client import create_sicredi_pix_refund
+        return await create_sicredi_pix_refund(
+            empresa_id, 
+            txid, 
+            amount,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service
+        )
+    
+    async def get_access_token(self, empresa_id: str):
+        from ..services.gateways.sicredi_client import get_access_token
+        return await get_access_token(
+            empresa_id,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service
+        )
+    
+    async def register_webhook(self, empresa_id: str, chave_pix: str):
+        from ..services.gateways.sicredi_client import register_sicredi_webhook
+        return await register_sicredi_webhook(
+            empresa_id,
+            chave_pix,
+            config_repo=self.config_repo,
+            cert_service=self.cert_service
+        )
+
+# ========== DEPENDENCY PROVIDERS SEM CACHE (PARA TESTES) ==========
+
+def get_empresa_repository_fresh() -> EmpresaRepositoryInterface:
+    """Retorna nova instância de EmpresaRepository (sem cache)"""
+    if _empresa_repository_available:
+        return EmpresaRepository()
+    return DummyEmpresaRepository()
+
+def get_file_storage_fresh() -> FileStorageInterface:
+    """Retorna nova instância de FileStorage (sem cache)"""
+    if _file_storage_available:
+        return FileStorageRepository()
+    return DummyFileStorage()
+
+def get_certificate_service_fresh() -> CertificateServiceInterface:
+    """Retorna nova instância de CertificateService (sem cache)"""
+    if _config_service_available and _file_storage_available:
+        return CertificateServiceImplementation()
+    return DummyCertificateService()
+
+# ========== ATUALIZAÇÃO DO HEALTH CHECK ==========
+
+def check_dependencies_health() -> dict:
+    """Verifica se todas as dependências estão disponíveis"""
+    return {
+        "repositories_available": _repositories_available,
+        "customer_repository_available": _customer_repository_available, 
+        "validators_available": _validators_available,
+        "empresa_repository_available": _empresa_repository_available,
+        "file_storage_available": _file_storage_available,
+        "sicredi_available": _sicredi_available,
+        "rede_available": _rede_available,
+        "asaas_available": _asaas_available,
+        "webhook_available": _webhook_available,
+        "config_service_available": _config_service_available,
+        "all_core_available": all([
+            _repositories_available,
+            _customer_repository_available,
+            _validators_available,
+            _empresa_repository_available
+        ]),
+        "all_gateways_available": all([
+            _sicredi_available,
+            _rede_available,
+            _asaas_available
+        ]),
+        "all_services_available": all([
+            _webhook_available,
+            _config_service_available,
+            _file_storage_available
+        ])
+    }
+
+# ========== ATUALIZAÇÃO DO CACHE CLEAR ==========
+
+def clear_dependency_cache():
+    """Limpa o cache das dependências"""
+    get_payment_repository.cache_clear()
+    get_customer_repository.cache_clear()
+    get_config_repository.cache_clear()
+    get_card_repository.cache_clear()
+    get_asaas_customer_repository.cache_clear()
+    get_customer_service.cache_clear()
+    get_payment_validator.cache_clear()
+    get_sicredi_gateway.cache_clear()
+    get_rede_gateway.cache_clear()
+    get_asaas_gateway.cache_clear()
+    get_webhook_service.cache_clear()
+    # ✅ NOVOS
+    get_empresa_repository.cache_clear()
+    get_file_storage.cache_clear()
+    get_cache_repository.cache_clear()
+    get_certificate_service.cache_clear()
+    print("✅ Cache de dependências limpo")
+
+# ========== DEPENDENCY PROVIDERS COM OVERRIDE (ATUALIZADOS) ==========
+
+def get_empresa_repository_with_override() -> EmpresaRepositoryInterface:
+    """Retorna EmpresaRepository considerando overrides"""
+    override = get_dependency_override(EmpresaRepositoryInterface)
+    if override:
+        return override
+    return get_empresa_repository()
+
+def get_certificate_service_with_override() -> CertificateServiceInterface:
+    """Retorna CertificateService considerando overrides"""
+    override = get_dependency_override(CertificateServiceInterface)
+    if override:
+        return override
+    return get_certificate_service()
+
+# ========== EXPORTS ATUALIZADOS ==========
+
+__all__ = [
+    # Dependency providers principais (com cache)
+    "get_payment_repository",
+    "get_customer_repository", 
+    "get_config_repository",
+    "get_card_repository",
+    "get_asaas_customer_repository",
+    "get_customer_service",
+    "get_payment_validator",
+    
+    # Novos providers para gateways e serviços
+    "get_sicredi_gateway",
+    "get_rede_gateway",
+    "get_asaas_gateway",
+    "get_webhook_service",
+    "get_certificate_service",
+    
+    # ✅ NOVOS PROVIDERS
+    "get_empresa_repository",
+    "get_file_storage", 
+    "get_cache_repository",
+    
+    # Dependency providers sem cache (para testes)
+    "get_payment_repository_fresh",
+    "get_customer_repository_fresh",
+    "get_config_repository_fresh", 
+    "get_card_repository_fresh",
+    "get_customer_service_fresh",
+    "get_payment_validator_fresh",
+    "get_empresa_repository_fresh",
+    "get_file_storage_fresh",
+    "get_certificate_service_fresh",
+    
+    # Dependency providers com override (para testes)
+    "get_payment_repository_with_override",
+    "get_customer_repository_with_override",
+    "get_config_repository_with_override",
+    "get_empresa_repository_with_override",
+    "get_certificate_service_with_override",
+    
+    # Utilitários
+    "check_dependencies_health",
+    "clear_dependency_cache",
+    "override_dependency",
+    "clear_dependency_overrides",
+]
+
+# ========== EXEMPLO DE USO DAS NOVAS INTERFACES ==========
+
+"""
+Exemplo de como usar as novas interfaces:
+
+# Em qualquer função/route:
+async def alguma_funcao(
+    empresa_repo: EmpresaRepositoryInterface = Depends(get_empresa_repository),
+    cert_service: CertificateServiceInterface = Depends(get_certificate_service),
+    file_storage: FileStorageInterface = Depends(get_file_storage)
+):
+    # Buscar empresa
+    empresa = await empresa_repo.get_empresa_by_token(token)
+    
+    # Carregar certificados  
+    certs = await cert_service.load_certificates_from_bucket(empresa_id)
+    
+    # Upload de arquivo
+    success = await file_storage.upload_file("empresa/file.pem", file_bytes)
+    
+    return {"success": success}
+
+# Para usar Sicredi Gateway:
+async def criar_pix(
+    sicredi: SicrediGatewayInterface = Depends(get_sicredi_gateway)
+):
+    result = await sicredi.create_pix_payment(empresa_id, **payload)
+    return result
+"""
