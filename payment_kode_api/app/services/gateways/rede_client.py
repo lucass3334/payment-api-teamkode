@@ -10,17 +10,17 @@ from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.services.gateways.payment_payload_mapper import map_to_rede_payload
 from payment_kode_api.app.utilities.logging_config import logger
 
-# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+# ✅ MANTÉM: Imports das interfaces (SEM imports circulares)
 from ...interfaces import (
     ConfigRepositoryInterface,
     PaymentRepositoryInterface,
 )
 
-# ✅ NOVO: Dependency injection (imports diretos apenas para funções standalone)
-from ...dependencies import (
-    get_config_repository,
-    get_payment_repository,
-)
+# ❌ REMOVIDO: Imports que causavam circular import
+# from ...dependencies import (
+#     get_config_repository,
+#     get_payment_repository,
+# )
 
 TIMEOUT = 15.0
 
@@ -44,8 +44,9 @@ async def get_rede_headers(
     ✅ MIGRADO: Retorna headers com Basic Auth (PV + Integration Key).
     Agora usa interfaces para evitar imports circulares.
     """
-    # ✅ USANDO INTERFACE: Dependency injection
+    # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
 
     # ✅ USANDO INTERFACE
@@ -113,10 +114,12 @@ async def create_rede_payment(
     Endpoint: POST /ecomm/v1/transactions
     Agora usa interfaces para evitar imports circulares.
     """
-    # ✅ USANDO INTERFACE: Dependency injection
+    # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
     if payment_repo is None:
+        from ...dependencies import get_payment_repository
         payment_repo = get_payment_repository()
 
     # 🔧 CORRIGIDO: Usar payment_data diretamente
@@ -285,10 +288,12 @@ async def create_rede_refund(
     Endpoint: POST /ecomm/v1/transactions/{rede_tid}/refunds
     Agora usa interfaces para evitar imports circulares.
     """
-    # ✅ USANDO INTERFACE: Dependency injection
+    # ✅ LAZY LOADING: Dependency injection
     if payment_repo is None:
+        from ...dependencies import get_payment_repository
         payment_repo = get_payment_repository()
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
 
     # 🔧 NOVO: Buscar TID da Rede no banco - ✅ USANDO INTERFACE
@@ -347,8 +352,16 @@ class RedeGateway:
         config_repo: Optional[ConfigRepositoryInterface] = None,
         payment_repo: Optional[PaymentRepositoryInterface] = None
     ):
-        self.config_repo = config_repo or get_config_repository()
-        self.payment_repo = payment_repo or get_payment_repository()
+        # ✅ LAZY LOADING nos constructors também
+        if config_repo is None:
+            from ...dependencies import get_config_repository
+            config_repo = get_config_repository()
+        if payment_repo is None:
+            from ...dependencies import get_payment_repository
+            payment_repo = get_payment_repository()
+            
+        self.config_repo = config_repo
+        self.payment_repo = payment_repo
     
     async def create_payment(self, empresa_id: str, **kwargs) -> Dict[str, Any]:
         """Implementa RedeGatewayInterface.create_payment"""
