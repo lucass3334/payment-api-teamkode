@@ -8,17 +8,17 @@ from datetime import datetime, timezone
 
 from ...utilities.logging_config import logger
 
-# ✅ NOVO: Imports das interfaces (SEM imports circulares)
+# ✅ MANTÉM: Imports das interfaces (SEM imports circulares)
 from ...interfaces import (
     ConfigRepositoryInterface,
     AsaasCustomerInterface,
 )
 
-# ✅ NOVO: Dependency injection (imports diretos apenas para funções standalone)
-from ...dependencies import (
-    get_config_repository,
-    get_asaas_customer_repository,
-)
+# ❌ REMOVIDO: Imports que causavam circular import
+# from ...dependencies import (
+#     get_config_repository,
+#     get_asaas_customer_repository,
+# )
 
 # ⏱️ Timeout padrão para conexões Asaas
 TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
@@ -32,8 +32,9 @@ async def get_asaas_headers(
     ✅ MIGRADO: Retorna os headers necessários para autenticação na API do Asaas da empresa específica.
     Agora usa interfaces para evitar imports circulares.
     """
-    # ✅ USANDO INTERFACE: Dependency injection
+    # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
 
     # ✅ USANDO INTERFACE
@@ -64,8 +65,9 @@ async def tokenize_asaas_card(
     """
     headers = await get_asaas_headers(empresa_id, config_repo)
     
-    # ✅ USANDO INTERFACE: Buscar configurações
+    # ✅ LAZY LOADING: Buscar configurações
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
     
     config = await config_repo.get_empresa_config(empresa_id)
@@ -109,8 +111,9 @@ async def list_asaas_pix_keys(
     """
     headers = await get_asaas_headers(empresa_id, config_repo)
     
-    # ✅ USANDO INTERFACE: Buscar configurações
+    # ✅ LAZY LOADING: Buscar configurações
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
     
     config = await config_repo.get_empresa_config(empresa_id)
@@ -148,10 +151,12 @@ async def create_asaas_payment(
     Garante que o cliente exista via get_or_create_asaas_customer.
     Agora usa interfaces para evitar imports circulares.
     """
-    # ✅ USANDO INTERFACE: Dependency injection
+    # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
     if asaas_customer_repo is None:
+        from ...dependencies import get_asaas_customer_repository
         asaas_customer_repo = get_asaas_customer_repository()
 
     # 1) Ajuste para evitar problemas de serialização
@@ -273,8 +278,9 @@ async def get_asaas_payment_status(
     """
     headers = await get_asaas_headers(empresa_id, config_repo)
     
-    # ✅ USANDO INTERFACE: Buscar configurações
+    # ✅ LAZY LOADING: Buscar configurações
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
     
     config = await config_repo.get_empresa_config(empresa_id)
@@ -308,8 +314,9 @@ async def create_asaas_refund(
     POST /payments/{transaction_id}/refund
     Agora usa interfaces para evitar imports circulares.
     """
-    # ✅ USANDO INTERFACE: Dependency injection
+    # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
 
     # ✅ USANDO INTERFACE
@@ -381,8 +388,9 @@ async def get_asaas_pix_qr_code(
     """
     headers = await get_asaas_headers(empresa_id, config_repo)
     
-    # ✅ USANDO INTERFACE: Buscar configurações
+    # ✅ LAZY LOADING: Buscar configurações
     if config_repo is None:
+        from ...dependencies import get_config_repository
         config_repo = get_config_repository()
     
     config = await config_repo.get_empresa_config(empresa_id)
@@ -440,8 +448,16 @@ class AsaasGateway:
         config_repo: Optional[ConfigRepositoryInterface] = None,
         asaas_customer_repo: Optional[AsaasCustomerInterface] = None
     ):
-        self.config_repo = config_repo or get_config_repository()
-        self.asaas_customer_repo = asaas_customer_repo or get_asaas_customer_repository()
+        # ✅ LAZY LOADING nos constructors também
+        if config_repo is None:
+            from ...dependencies import get_config_repository
+            config_repo = get_config_repository()
+        if asaas_customer_repo is None:
+            from ...dependencies import get_asaas_customer_repository
+            asaas_customer_repo = get_asaas_customer_repository()
+            
+        self.config_repo = config_repo
+        self.asaas_customer_repo = asaas_customer_repo
     
     async def create_payment(
         self, 
