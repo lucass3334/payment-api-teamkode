@@ -16,24 +16,26 @@ from ...interfaces import (
     PaymentRepositoryInterface,
 )
 
-# ❌ REMOVIDO: Imports que causavam circular import
-# from ...dependencies import (
-#     get_config_repository,
-#     get_payment_repository,
-# )
-
 TIMEOUT = 15.0
 
-# ─── URL BASE DINÂMICAS ────────────────────────────────────────────────
-# 🔧 CORRIGIDO: Usar variável de ambiente do settings
+# ─── URL BASE CORRIGIDAS ────────────────────────────────────────────────
+# 🔧 CORRIGIDO: URLs corretas da e.Rede conforme documentação oficial
 rede_env = getattr(settings, 'REDE_AMBIENT', 'production')
 if rede_env.lower() == "sandbox":
-    ECOMM_BASE_URL = "https://sandbox-erede.useredecloud.com.br/ecomm/v1"
+    # ✅ URL CORRETA: Sandbox da e.Rede
+    ECOMM_BASE_URL = "https://api.useredecloud.com.br/erede"
 else:
-    ECOMM_BASE_URL = "https://api.userede.com.br/ecomm/v1"
+    # ✅ URL CORRETA: Produção da e.Rede
+    ECOMM_BASE_URL = "https://api.userede.com.br/erede"
 
 CARD_URL         = f"{ECOMM_BASE_URL}/card"
 TRANSACTIONS_URL = f"{ECOMM_BASE_URL}/transactions"
+
+# 🔧 NOVO: Log das URLs para debugging
+logger.info(f"🔧 Rede configurada - Ambiente: {rede_env}")
+logger.info(f"📍 Base URL: {ECOMM_BASE_URL}")
+logger.info(f"📍 Transações: {TRANSACTIONS_URL}")
+logger.info(f"📍 Cartões: {CARD_URL}")
 
 
 async def get_rede_headers(
@@ -42,7 +44,7 @@ async def get_rede_headers(
 ) -> Dict[str, str]:
     """
     ✅ MIGRADO: Retorna headers com Basic Auth (PV + Integration Key).
-    Agora usa interfaces para evitar imports circulares.
+    🔧 MELHORADO: Headers mais completos e logs de debugging.
     """
     # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
@@ -66,10 +68,17 @@ async def get_rede_headers(
         )
 
     auth = b64encode(f"{pv}:{api_key}".encode()).decode()
-    return {
+    
+    # 🔧 MELHORADO: Headers mais completos conforme documentação da Rede
+    headers = {
         "Authorization": f"Basic {auth}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "PaymentKode-API/1.0"
     }
+    
+    logger.debug(f"🔐 Headers Rede preparados para empresa {empresa_id}")
+    return headers
 
 
 async def tokenize_rede_card(
@@ -79,8 +88,7 @@ async def tokenize_rede_card(
 ) -> str:
     """
     ✅ MIGRADO: Tokeniza o cartão na Rede.
-    Endpoint: POST /ecomm/v1/card
-    Agora usa interfaces para evitar imports circulares.
+    🔧 CORRIGIDO: Usando URL correta e logs melhorados.
     """
     headers = await get_rede_headers(empresa_id, config_repo)
     payload = {
@@ -90,13 +98,39 @@ async def tokenize_rede_card(
         "securityCode":    card_data["security_code"],
         "holderName":      card_data["cardholder_name"],
     }
+    
+    logger.info(f"🔐 Tokenizando cartão na Rede: {CARD_URL}")
+    logger.debug(f"📦 Payload tokenização: {payload}")
+    
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(CARD_URL, json=payload, headers=headers)
+            
+            # 🔧 NOVO: Log da resposta para debugging
+            logger.info(f"📥 Tokenização Rede Status: {resp.status_code}")
+            
             resp.raise_for_status()
-            return resp.json().get("cardToken")
+            result = resp.json()
+            token = result.get("cardToken")
+            
+            if token:
+                logger.info(f"✅ Cartão tokenizado com sucesso na Rede")
+                return token
+            else:
+                logger.error(f"❌ Token não retornado pela Rede: {result}")
+                raise HTTPException(status_code=502, detail="Token não retornado pela Rede")
+                
     except httpx.HTTPStatusError as e:
         logger.error(f"❌ Rede tokenização HTTP {e.response.status_code}: {e.response.text}")
+        
+        # 🔧 NOVO: Tratamento específico para erro 405
+        if e.response.status_code == 405:
+            logger.error(f"❌ ERRO 405 na tokenização: Endpoint incorreto! URL: {CARD_URL}")
+            raise HTTPException(
+                status_code=502, 
+                detail=f"Endpoint da Rede incorreto para tokenização (405). Ambiente: {rede_env}"
+            )
+        
         raise HTTPException(status_code=502, detail="Erro ao tokenizar cartão na Rede")
     except Exception as e:
         logger.error(f"❌ Rede tokenização erro: {e}")
@@ -111,8 +145,7 @@ async def create_rede_payment(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Autoriza (e captura, se capture=True) uma transação.
-    Endpoint: POST /ecomm/v1/transactions
-    Agora usa interfaces para evitar imports circulares.
+    🔧 CORRIGIDO: URLs corretas, logs melhorados e tratamento de erros aprimorado.
     """
     # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
@@ -145,12 +178,29 @@ async def create_rede_payment(
                 }
 
     headers = await get_rede_headers(empresa_id, config_repo)
+    
+    # 🔧 NOVO: Logs detalhados para debugging
     logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
+    logger.info(f"📍 URL: {TRANSACTIONS_URL}")
+    logger.info(f"🔧 Ambiente: {rede_env}")
     logger.debug(f"📦 Payload Rede: {payload}")
+    logger.debug(f"🔐 Headers: {list(headers.keys())}")
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(TRANSACTIONS_URL, json=payload, headers=headers)
+            
+            # 🔧 NOVO: Log detalhado da resposta para debugging
+            logger.info(f"📥 Rede Response Status: {resp.status_code}")
+            logger.debug(f"📥 Rede Response Headers: {dict(resp.headers)}")
+            
+            # Tentar ler o conteúdo da resposta antes de raise_for_status
+            try:
+                response_text = resp.text
+                logger.debug(f"📥 Rede Response Body (primeiros 500 chars): {response_text[:500]}")
+            except:
+                logger.warning("⚠️ Não foi possível ler o corpo da resposta")
+            
             resp.raise_for_status()
             data = resp.json()
             
@@ -177,6 +227,7 @@ async def create_rede_payment(
                         "return_message": return_message
                     }
                 )
+                logger.info(f"✅ Status do pagamento atualizado no banco: {transaction_id}")
             
             # Retorno estruturado
             if return_code == "00":  # Sucesso
@@ -203,6 +254,17 @@ async def create_rede_payment(
     except httpx.HTTPStatusError as e:
         code, text = e.response.status_code, e.response.text
         logger.error(f"❌ Rede retornou HTTP {code}: {text}")
+        
+        # 🔧 NOVO: Tratamento específico para erro 405
+        if code == 405:
+            logger.error(f"❌ ERRO 405: Endpoint incorreto! URL usada: {TRANSACTIONS_URL}")
+            logger.error(f"❌ Ambiente configurado: {rede_env}")
+            logger.error(f"❌ Verifique se as credenciais e ambiente estão corretos")
+            raise HTTPException(
+                status_code=502, 
+                detail=f"Endpoint da Rede incorreto (405). Ambiente: {rede_env} | URL: {TRANSACTIONS_URL}"
+            )
+        
         if code in (400, 402, 403):
             raise HTTPException(status_code=code, detail=f"Pagamento recusado pela Rede: {text}")
         raise HTTPException(status_code=502, detail="Erro no gateway Rede")
@@ -219,14 +281,15 @@ async def capture_rede_transaction(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Confirma (captura) uma autorização prévia.
-    Endpoint: PUT /ecomm/v1/transactions/{transaction_id}
-    Agora usa interfaces para evitar imports circulares.
+    Endpoint: PUT /erede/transactions/{transaction_id}
     """
     headers = await get_rede_headers(empresa_id, config_repo)
     url = f"{TRANSACTIONS_URL}/{transaction_id}"
     payload: Dict[str, Any] = {}
     if amount is not None:
         payload["amount"] = amount
+
+    logger.info(f"🔄 Capturando transação Rede: {url}")
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -255,11 +318,12 @@ async def get_rede_transaction(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Consulta o status de uma transação.
-    Endpoint: GET /ecomm/v1/transactions/{transaction_id}
-    Agora usa interfaces para evitar imports circulares.
+    Endpoint: GET /erede/transactions/{transaction_id}
     """
     headers = await get_rede_headers(empresa_id, config_repo)
     url = f"{TRANSACTIONS_URL}/{transaction_id}"
+
+    logger.info(f"🔍 Consultando transação Rede: {url}")
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -285,8 +349,7 @@ async def create_rede_refund(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Solicita estorno usando TID da Rede (não nosso transaction_id).
-    Endpoint: POST /ecomm/v1/transactions/{rede_tid}/refunds
-    Agora usa interfaces para evitar imports circulares.
+    Endpoint: POST /erede/transactions/{rede_tid}/refunds
     """
     # ✅ LAZY LOADING: Dependency injection
     if payment_repo is None:
@@ -324,8 +387,10 @@ async def create_rede_refund(
             if return_code == "00":
                 # Atualizar status no banco - ✅ USANDO INTERFACE
                 await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                logger.info(f"✅ Estorno Rede processado com sucesso: {transaction_id}")
                 return {"status": "refunded", **data}
             else:
+                logger.warning(f"⚠️ Estorno Rede falhou: {return_code} - {data.get('returnMessage')}")
                 raise HTTPException(400, f"Estorno Rede falhou: {data.get('returnMessage')}")
 
     except httpx.HTTPStatusError as e:
@@ -337,6 +402,67 @@ async def create_rede_refund(
     except Exception as e:
         logger.error(f"❌ Erro de conexão ao estornar na Rede: {e}")
         raise HTTPException(status_code=502, detail="Erro de conexão ao processar estorno na Rede")
+
+
+# 🆕 NOVA: Função para testar conectividade com a Rede
+async def test_rede_connectivity(empresa_id: str) -> Dict[str, Any]:
+    """
+    🧪 NOVO: Testa a conectividade com a API da Rede.
+    Útil para debugging de problemas de endpoint.
+    """
+    try:
+        headers = await get_rede_headers(empresa_id)
+        
+        # Teste simples fazendo uma requisição GET ou POST mínima
+        test_endpoints = [
+            {"url": ECOMM_BASE_URL, "method": "GET", "description": "Base URL"},
+            {"url": TRANSACTIONS_URL, "method": "GET", "description": "Transactions endpoint"},
+        ]
+        
+        results = []
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for endpoint in test_endpoints:
+                try:
+                    if endpoint["method"] == "GET":
+                        resp = await client.get(endpoint["url"], headers=headers)
+                    else:
+                        resp = await client.post(endpoint["url"], headers=headers, json={})
+                    
+                    results.append({
+                        "endpoint": endpoint["description"],
+                        "url": endpoint["url"],
+                        "status_code": resp.status_code,
+                        "status": "success" if resp.status_code < 500 else "warning",
+                        "response_size": len(resp.content) if resp.content else 0
+                    })
+                    
+                except Exception as e:
+                    results.append({
+                        "endpoint": endpoint["description"],
+                        "url": endpoint["url"],
+                        "status": "error",
+                        "error": str(e)
+                    })
+        
+        return {
+            "status": "completed",
+            "environment": rede_env,
+            "base_url": ECOMM_BASE_URL,
+            "empresa_id": empresa_id,
+            "tests": results,
+            "message": f"Teste de conectividade concluído para ambiente {rede_env}"
+        }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "environment": rede_env,
+            "base_url": ECOMM_BASE_URL,
+            "empresa_id": empresa_id,
+            "error": str(e),
+            "message": "Falha crítica no teste de conectividade"
+        }
 
 
 # ========== CLASSE WRAPPER PARA INTERFACE ==========
@@ -406,6 +532,10 @@ class RedeGateway:
             transaction_id,
             config_repo=self.config_repo
         )
+    
+    async def test_connectivity(self, empresa_id: str) -> Dict[str, Any]:
+        """🆕 NOVO: Testa conectividade"""
+        return await test_rede_connectivity(empresa_id)
 
 
 # ========== FUNÇÃO PARA DEPENDENCY INJECTION ==========
@@ -440,6 +570,7 @@ __all__ = [
     "get_rede_transaction", 
     "create_rede_refund",
     "get_rede_headers",
+    "test_rede_connectivity",  # 🆕 NOVA
     
     # Classe wrapper
     "RedeGateway",
