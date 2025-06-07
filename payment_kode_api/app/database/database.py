@@ -66,21 +66,27 @@ def validate_installments(installments: Any) -> int:
 # ========== CARTÕES TOKENIZADOS ==========
 async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    ✅ MELHORADO: Salva cartão tokenizado com validações robustas.
+    ✅ CORRIGIDO: Salva cartão tokenizado com validações robustas.
+    Suporta tanto encrypted_card_data (método antigo) quanto safe_card_data (método novo).
     """
     try:
         # Validações obrigatórias
         empresa_id = data.get("empresa_id")
         card_token = data.get("card_token")
-        encrypted_card_data = data.get("encrypted_card_data")
         
-        if not all([empresa_id, card_token, encrypted_card_data]):
+        if not all([empresa_id, card_token]):
             missing_fields = [f for f, v in [
                 ("empresa_id", empresa_id),
-                ("card_token", card_token), 
-                ("encrypted_card_data", encrypted_card_data)
+                ("card_token", card_token)
             ] if not v]
             raise ValueError(f"Campos obrigatórios ausentes: {', '.join(missing_fields)}")
+
+        # ✅ NOVO: Suportar tanto o método antigo (encrypted_card_data) quanto o novo (safe_card_data)
+        encrypted_card_data = data.get("encrypted_card_data")
+        safe_card_data = data.get("safe_card_data")
+        
+        if not encrypted_card_data and not safe_card_data:
+            raise ValueError("É necessário fornecer 'encrypted_card_data' ou 'safe_card_data'")
 
         # Dados opcionais com validações
         customer_id = data.get("customer_id")  # String (ID externo)
@@ -112,13 +118,18 @@ async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
             "empresa_id": empresa_id,
             "customer_id": customer_id,
             "card_token": card_token,
-            "encrypted_card_data": encrypted_card_data,
             "last_four_digits": last_four_digits,
             "card_brand": card_brand,
             "expires_at": expires_at,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
+        
+        # ✅ NOVO: Adicionar dados criptografados (método antigo) ou seguros (método novo)
+        if encrypted_card_data:
+            card_record["encrypted_card_data"] = encrypted_card_data
+        if safe_card_data:
+            card_record["safe_card_data"] = safe_card_data
         
         # Adicionar cliente UUID se válido
         if cliente_id:

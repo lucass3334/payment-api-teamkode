@@ -24,11 +24,8 @@ from ...dependencies import (
     get_card_repository,
 )
 
-# ✅ NOVO: Importar novo serviço de tokenização
-from ...services.card_tokenization_service import (
-    CardTokenizationService, 
-    CardTokenizationServiceInterface
-)
+# ✅ CORRIGIDO: Import direto do serviço de tokenização
+from ...services.card_tokenization_service import CardTokenizationService
 
 router = APIRouter()
 
@@ -96,30 +93,25 @@ class TokenizedCardResponse(BaseModel):
     expires_at: Optional[str] = None
 
 
-# ✅ NOVO: Dependency para novo serviço
-def get_card_tokenization_service() -> CardTokenizationServiceInterface:
-    return CardTokenizationService()
-
-
 @router.post("/tokenize-card", response_model=TokenizedCardResponse)
 async def tokenize_card(
     card_data: TokenizeCardRequest,
     empresa: dict = Depends(validate_access_token),
     customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
     customer_service: CustomerServiceInterface = Depends(get_customer_service),
-    card_repo: CardRepositoryInterface = Depends(get_card_repository),
-    # ✅ NOVO: Serviço de tokenização
-    tokenization_service: CardTokenizationServiceInterface = Depends(get_card_tokenization_service)
+    card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
-    🔧 ATUALIZADO: Usa novo serviço de tokenização simples.
+    🔧 CORRIGIDO: Usa novo serviço de tokenização sem dependência de RSA.
     """
     empresa_id = empresa["empresa_id"]
     
     try:
         logger.info(f"🔐 Iniciando tokenização para empresa {empresa_id}")
         
-        # ========== 1. CRIAR TOKEN SEGURO (NOVO) ==========
+        # ========== 1. CRIAR TOKEN SEGURO (NOVO) - SEM RSA ==========
+        tokenization_service = CardTokenizationService()
+        
         token_data = tokenization_service.create_card_token(empresa_id, {
             "card_number": card_data.card_number,
             "expiration_month": card_data.expiration_month,
@@ -181,8 +173,8 @@ async def tokenize_card(
                 logger.warning(f"⚠️ Erro ao processar cliente (continuando tokenização sem cliente): {e}")
                 # Continua a tokenização mesmo se falhar na criação do cliente
         
-        # ========== 3. SALVAR NO BANCO (MODIFICADO) ==========
-        # Preparar dados para o banco (SEM encrypted_card_data)
+        # ========== 3. SALVAR NO BANCO (USANDO DADOS SEGUROS) ==========
+        # Preparar dados para o banco (SEM encrypted_card_data RSA)
         tokenized_card_data = {
             "empresa_id": empresa_id,
             "customer_id": customer_external_id,
@@ -315,52 +307,7 @@ async def delete_tokenized_card_route(
         raise HTTPException(status_code=500, detail="Erro interno ao remover cartão.")
 
 
-# ========== MANTIDO: Endpoints específicos (sem mudanças) ==========
-
-@router.get("/customer/{customer_uuid}/cards")
-async def list_customer_cards_by_uuid(
-    customer_uuid: str,
-    empresa: dict = Depends(validate_access_token),
-    customer_repo: CustomerRepositoryInterface = Depends(get_customer_repository),
-    card_repo: CardRepositoryInterface = Depends(get_card_repository)
-):
-    """Lista cartões tokenizados de um cliente específico (usando UUID interno)."""
-    empresa_id = empresa["empresa_id"]
-    
-    try:
-        # Verificar se cliente pertence à empresa - ✅ USANDO INTERFACE
-        cliente = await customer_repo.get_cliente_by_id(customer_uuid)
-        if not cliente or cliente["empresa_id"] != empresa_id:
-            raise HTTPException(status_code=404, detail="Cliente não encontrado")
-        
-        # Buscar cartões do cliente
-        from payment_kode_api.app.database.supabase_client import supabase
-        
-        response = (
-            supabase.table("cartoes_tokenizados")
-            .select("card_token, last_four_digits, card_brand, created_at, expires_at")
-            .eq("empresa_id", empresa_id)
-            .eq("cliente_id", customer_uuid)
-            .order("created_at", desc=True)
-            .execute()
-        )
-        
-        cards = response.data or []
-        
-        return {
-            "customer_internal_id": customer_uuid,
-            "customer_external_id": cliente.get("customer_external_id"),
-            "customer_name": cliente.get("nome"),
-            "cards": cards,
-            "total": len(cards)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Erro ao listar cartões do cliente {customer_uuid}: {e}")
-        raise HTTPException(status_code=500, detail="Erro interno ao listar cartões.")
-
+# ========== ENDPOINTS DE ESTATÍSTICAS ==========
 
 @router.get("/stats")
 async def get_tokenization_stats(
