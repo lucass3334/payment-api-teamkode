@@ -18,22 +18,28 @@ from ...interfaces import (
 
 TIMEOUT = 15.0
 
-# ─── URL BASE CORRIGIDAS ────────────────────────────────────────────────
-# 🔧 CORRIGIDO: URLs corretas da e.Rede conforme documentação oficial
+# ─── URLs CORRIGIDAS CONFORME MANUAL OFICIAL ────────────────────────────────────────────────
+# 🔧 CORRIGIDO: URLs corretas da e.Rede conforme documentação oficial (página 8 do manual)
 rede_env = getattr(settings, 'REDE_AMBIENT', 'production')
 if rede_env.lower() == "sandbox":
-    # ✅ URL CORRETA: Sandbox da e.Rede
-    ECOMM_BASE_URL = "https://api.useredecloud.com.br/erede"
+    # ✅ URL CORRETA: Sandbox conforme manual
+    # Sandbox: https://sandbox-erede.useredecloud.com.br/v1/transactions
+    BASE_URL = "https://sandbox-erede.useredecloud.com.br"
+    API_VERSION = "v1"
 else:
-    # ✅ URL CORRETA: Produção da e.Rede
-    ECOMM_BASE_URL = "https://api.userede.com.br/erede"
+    # ✅ URL CORRETA: Produção conforme manual  
+    # Production: https://api.userede.com.br/erede/v1/transactions
+    BASE_URL = "https://api.userede.com.br"
+    API_VERSION = "erede/v1"
 
-CARD_URL         = f"{ECOMM_BASE_URL}/card"
-TRANSACTIONS_URL = f"{ECOMM_BASE_URL}/transactions"
+# Montar URLs finais
+TRANSACTIONS_URL = f"{BASE_URL}/{API_VERSION}/transactions"
+CARD_URL = f"{BASE_URL}/{API_VERSION}/card"  # Para tokenização
 
 # 🔧 NOVO: Log das URLs para debugging
 logger.info(f"🔧 Rede configurada - Ambiente: {rede_env}")
-logger.info(f"📍 Base URL: {ECOMM_BASE_URL}")
+logger.info(f"📍 Base URL: {BASE_URL}")
+logger.info(f"📍 API Version: {API_VERSION}")
 logger.info(f"📍 Transações: {TRANSACTIONS_URL}")
 logger.info(f"📍 Cartões: {CARD_URL}")
 
@@ -123,12 +129,18 @@ async def tokenize_rede_card(
     except httpx.HTTPStatusError as e:
         logger.error(f"❌ Rede tokenização HTTP {e.response.status_code}: {e.response.text}")
         
-        # 🔧 NOVO: Tratamento específico para erro 405
-        if e.response.status_code == 405:
-            logger.error(f"❌ ERRO 405 na tokenização: Endpoint incorreto! URL: {CARD_URL}")
+        # 🔧 MELHORADO: Tratamento específico para erros comuns
+        if e.response.status_code == 404:
+            logger.error(f"❌ ERRO 404 na tokenização: Endpoint não encontrado! URL: {CARD_URL}")
             raise HTTPException(
                 status_code=502, 
-                detail=f"Endpoint da Rede incorreto para tokenização (405). Ambiente: {rede_env}"
+                detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {CARD_URL}"
+            )
+        elif e.response.status_code == 405:
+            logger.error(f"❌ ERRO 405 na tokenização: Método não permitido! URL: {CARD_URL}")
+            raise HTTPException(
+                status_code=502, 
+                detail=f"Método não permitido pela Rede (405). Ambiente: {rede_env}"
             )
         
         raise HTTPException(status_code=502, detail="Erro ao tokenizar cartão na Rede")
@@ -183,6 +195,8 @@ async def create_rede_payment(
     logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
     logger.info(f"📍 URL: {TRANSACTIONS_URL}")
     logger.info(f"🔧 Ambiente: {rede_env}")
+    logger.info(f"🔧 Base URL: {BASE_URL}")
+    logger.info(f"🔧 API Version: {API_VERSION}")
     logger.debug(f"📦 Payload Rede: {payload}")
     logger.debug(f"🔐 Headers: {list(headers.keys())}")
 
@@ -255,14 +269,23 @@ async def create_rede_payment(
         code, text = e.response.status_code, e.response.text
         logger.error(f"❌ Rede retornou HTTP {code}: {text}")
         
-        # 🔧 NOVO: Tratamento específico para erro 405
-        if code == 405:
-            logger.error(f"❌ ERRO 405: Endpoint incorreto! URL usada: {TRANSACTIONS_URL}")
+        # 🔧 MELHORADO: Tratamento específico para erros comuns
+        if code == 404:
+            logger.error(f"❌ ERRO 404: Endpoint não encontrado!")
+            logger.error(f"❌ URL usada: {TRANSACTIONS_URL}")
             logger.error(f"❌ Ambiente configurado: {rede_env}")
+            logger.error(f"❌ Base URL: {BASE_URL}")
+            logger.error(f"❌ API Version: {API_VERSION}")
             logger.error(f"❌ Verifique se as credenciais e ambiente estão corretos")
             raise HTTPException(
                 status_code=502, 
-                detail=f"Endpoint da Rede incorreto (405). Ambiente: {rede_env} | URL: {TRANSACTIONS_URL}"
+                detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {TRANSACTIONS_URL}"
+            )
+        elif code == 405:
+            logger.error(f"❌ ERRO 405: Método não permitido! URL: {TRANSACTIONS_URL}")
+            raise HTTPException(
+                status_code=502, 
+                detail=f"Método não permitido pela Rede (405). Ambiente: {rede_env}"
             )
         
         if code in (400, 402, 403):
@@ -281,7 +304,7 @@ async def capture_rede_transaction(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Confirma (captura) uma autorização prévia.
-    Endpoint: PUT /erede/transactions/{transaction_id}
+    Endpoint: PUT /v1/transactions/{transaction_id}
     """
     headers = await get_rede_headers(empresa_id, config_repo)
     url = f"{TRANSACTIONS_URL}/{transaction_id}"
@@ -318,7 +341,7 @@ async def get_rede_transaction(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Consulta o status de uma transação.
-    Endpoint: GET /erede/transactions/{transaction_id}
+    Endpoint: GET /v1/transactions/{transaction_id}
     """
     headers = await get_rede_headers(empresa_id, config_repo)
     url = f"{TRANSACTIONS_URL}/{transaction_id}"
@@ -349,7 +372,7 @@ async def create_rede_refund(
 ) -> Dict[str, Any]:
     """
     ✅ MIGRADO: Solicita estorno usando TID da Rede (não nosso transaction_id).
-    Endpoint: POST /erede/transactions/{rede_tid}/refunds
+    Endpoint: POST /v1/transactions/{rede_tid}/refunds
     """
     # ✅ LAZY LOADING: Dependency injection
     if payment_repo is None:
@@ -413,10 +436,18 @@ async def test_rede_connectivity(empresa_id: str) -> Dict[str, Any]:
     try:
         headers = await get_rede_headers(empresa_id)
         
-        # Teste simples fazendo uma requisição GET ou POST mínima
+        # Teste simples fazendo uma requisição GET mínima
         test_endpoints = [
-            {"url": ECOMM_BASE_URL, "method": "GET", "description": "Base URL"},
-            {"url": TRANSACTIONS_URL, "method": "GET", "description": "Transactions endpoint"},
+            {
+                "url": f"{BASE_URL}/{API_VERSION}", 
+                "method": "GET", 
+                "description": "Base API URL"
+            },
+            {
+                "url": TRANSACTIONS_URL, 
+                "method": "GET", 
+                "description": "Transactions endpoint"
+            },
         ]
         
         results = []
@@ -448,7 +479,10 @@ async def test_rede_connectivity(empresa_id: str) -> Dict[str, Any]:
         return {
             "status": "completed",
             "environment": rede_env,
-            "base_url": ECOMM_BASE_URL,
+            "base_url": BASE_URL,
+            "api_version": API_VERSION,
+            "transactions_url": TRANSACTIONS_URL,
+            "card_url": CARD_URL,
             "empresa_id": empresa_id,
             "tests": results,
             "message": f"Teste de conectividade concluído para ambiente {rede_env}"
@@ -458,7 +492,9 @@ async def test_rede_connectivity(empresa_id: str) -> Dict[str, Any]:
         return {
             "status": "error",
             "environment": rede_env,
-            "base_url": ECOMM_BASE_URL,
+            "base_url": BASE_URL,
+            "api_version": API_VERSION,
+            "transactions_url": TRANSACTIONS_URL,
             "empresa_id": empresa_id,
             "error": str(e),
             "message": "Falha crítica no teste de conectividade"
