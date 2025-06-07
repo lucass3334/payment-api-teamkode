@@ -358,14 +358,16 @@ async def create_credit_card_payment(
 
     # Recuperar ou gerar token interno + cliente
     cliente_uuid = None
+    card_data = {}
     
     if payment_data.card_token:
         # ✅ USANDO INTERFACE
-        card_data = await card_repo.get_tokenized_card(payment_data.card_token)
-        if not card_data:
+        card_data_result = await card_repo.get_tokenized_card(payment_data.card_token)
+        if not card_data_result:
             raise HTTPException(400, "Cartão não encontrado ou expirado.")
         
-        cliente_uuid = card_data.get("cliente_id")  # UUID interno do cliente
+        cliente_uuid = card_data_result.get("cliente_id")  # UUID interno do cliente
+        card_data = {"card_token": payment_data.card_token}
         
     elif payment_data.card_data:
         # Tokenizar cartão E criar cliente automaticamente
@@ -414,9 +416,12 @@ async def create_credit_card_payment(
         try:
             logger.info(f"🚀 Processando pagamento via Rede: tx={transaction_id} | parcelas={validated_installments}")
             
+            # ✅ CORRIGIDO: Remover empresa_id do mapper_data para evitar conflito
+            rede_data = {k: v for k, v in mapper_data.items() if k != "empresa_id"}
+            
             resp = await create_rede_payment(
                 empresa_id=empresa_id,
-                **mapper_data
+                **rede_data  # ✅ Agora sem conflito de empresa_id
             )
             
             logger.info(f"📥 Resposta Rede: {resp}")
@@ -461,15 +466,19 @@ async def create_credit_card_payment(
             raise HTTPException(502, "Erro no gateway Rede.")
 
     elif credit_provider == "asaas":
-        asaas_info = map_to_asaas_credit_payload(mapper_data)
+        # ✅ CORRIGIDO: Aplicar mesma lógica para Asaas se necessário
+        asaas_data = {k: v for k, v in mapper_data.items() if k != "empresa_id"}
+        asaas_info = map_to_asaas_credit_payload(asaas_data)
+        
         customer_data = {
             "local_id": transaction_id,
-            "name": mapper_data.get("cardholder_name") or mapper_data.get("customer_name"),
-            "email": mapper_data.get("email") or mapper_data.get("customer_email"),
-            "cpfCnpj": mapper_data.get("cpf") or mapper_data.get("cnpj") or mapper_data.get("customer_cpf_cnpj"),
-            "phone": mapper_data.get("phone") or mapper_data.get("customer_phone"),
+            "name": asaas_data.get("cardholder_name") or asaas_data.get("customer_name"),
+            "email": asaas_data.get("email") or asaas_data.get("customer_email"),
+            "cpfCnpj": asaas_data.get("cpf") or asaas_data.get("cnpj") or asaas_data.get("customer_cpf_cnpj"),
+            "phone": asaas_data.get("phone") or asaas_data.get("customer_phone"),
             "externalReference": transaction_id
         }
+        
         try:
             logger.info(f"🚀 Processando pagamento via Asaas: tx={transaction_id} | parcelas={validated_installments}")
             resp = await create_asaas_payment(
@@ -480,32 +489,35 @@ async def create_credit_card_payment(
                 customer_data=customer_data,
                 card_token=asaas_info.get("creditCardToken"),
                 card_data=asaas_info.get("creditCard"),
-                installments=validated_installments,  # ✅ Usar parcelas validadas
+                installments=validated_installments,
             )
+            
+            if resp.get("status", "").lower() == "approved":
+                if payment_data.webhook_url:
+                    background_tasks.add_task(
+                        notify_user_webhook,
+                        payment_data.webhook_url,
+                        {
+                            "transaction_id": transaction_id, 
+                            "status": "approved", 
+                            "provedor": "asaas",
+                            "installments": validated_installments
+                        }
+                    )
+                return {
+                    "status": "approved", 
+                    "message": "Pagamento aprovado via Asaas", 
+                    "transaction_id": transaction_id,
+                    "installments": validated_installments
+                }
+            else:
+                raise HTTPException(402, "Pagamento recusado pela Asaas.")
+                
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"❌ Erro Asaas: {e}")
             raise HTTPException(502, "Erro no gateway Asaas.")
-
-        if resp.get("status", "").lower() == "approved":
-            if payment_data.webhook_url:
-                background_tasks.add_task(
-                    notify_user_webhook,
-                    payment_data.webhook_url,
-                    {
-                        "transaction_id": transaction_id, 
-                        "status": "approved", 
-                        "provedor": "asaas",
-                        "installments": validated_installments
-                    }
-                )
-            return {
-                "status": "approved", 
-                "message": "Pagamento aprovado via Asaas", 
-                "transaction_id": transaction_id,
-                "installments": validated_installments
-            }
-
-        raise HTTPException(402, "Pagamento recusado pela Asaas.")
 
     else:
         raise HTTPException(400, f"Provedor de crédito desconhecido: {credit_provider}")
