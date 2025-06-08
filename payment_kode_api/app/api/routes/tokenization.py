@@ -24,8 +24,8 @@ from ...dependencies import (
     get_card_repository,
 )
 
-# ✅ CORRIGIDO: Import direto do serviço de tokenização
-from ...services.card_tokenization_service import CardTokenizationService
+# 🆕 NOVO: Import do serviço de criptografia por empresa
+from ...services.company_encryption import CompanyEncryptionService
 
 router = APIRouter()
 
@@ -91,6 +91,9 @@ class TokenizedCardResponse(BaseModel):
     customer_external_id: Optional[str] = None  # ID externo (pode ser None)
     customer_created: bool = False  # Indica se cliente foi criado agora
     expires_at: Optional[str] = None
+    # 🆕 NOVO: Informações sobre criptografia
+    encryption_method: str = "company_key_v1"
+    is_internal_token: bool = True
 
 
 @router.post("/tokenize-card", response_model=TokenizedCardResponse)
@@ -102,27 +105,47 @@ async def tokenize_card(
     card_repo: CardRepositoryInterface = Depends(get_card_repository)
 ):
     """
-    🔧 CORRIGIDO: Usa novo serviço de tokenização sem dependência de RSA.
+    🔧 ATUALIZADO: Tokenização agora usa sistema de criptografia por empresa.
+    
+    Fluxo:
+    1. Gera token interno único (UUID)
+    2. Criptografa dados do cartão com chave específica da empresa
+    3. Cria/busca cliente automaticamente (se dados fornecidos)
+    4. Salva token com dados criptografados
     """
     empresa_id = empresa["empresa_id"]
     
     try:
-        logger.info(f"🔐 Iniciando tokenização para empresa {empresa_id}")
+        logger.info(f"🔐 Iniciando tokenização com criptografia por empresa para {empresa_id}")
         
-        # ========== 1. CRIAR TOKEN SEGURO (NOVO) - SEM RSA ==========
-        tokenization_service = CardTokenizationService()
+        # ========== 1. GERAR TOKEN INTERNO ÚNICO ==========
+        card_token = str(uuid.uuid4())
         
-        token_data = tokenization_service.create_card_token(empresa_id, {
+        # ========== 2. CRIPTOGRAFAR DADOS COM CHAVE DA EMPRESA ==========
+        encryption_service = CompanyEncryptionService()
+        
+        # Preparar dados para criptografia
+        card_data_dict = {
             "card_number": card_data.card_number,
             "expiration_month": card_data.expiration_month,
             "expiration_year": card_data.expiration_year,
             "security_code": card_data.security_code,
-            "cardholder_name": card_data.cardholder_name
-        })
+            "cardholder_name": card_data.cardholder_name,
+            "tokenized_at": str(uuid.uuid4()),  # Para garantir unicidade
+        }
         
-        card_token = token_data["card_token"]
+        # Obter chave da empresa
+        decryption_key = await encryption_service.get_empresa_decryption_key(empresa_id)
         
-        # ========== 2. PROCESSAR CLIENTE (OPCIONAL) - ✅ USANDO INTERFACES ==========
+        # Criptografar dados
+        encrypted_card_data = encryption_service.encrypt_card_data_with_company_key(
+            card_data_dict, 
+            decryption_key
+        )
+        
+        logger.info(f"✅ Dados do cartão criptografados com chave da empresa {empresa_id}")
+        
+        # ========== 3. PROCESSAR CLIENTE (OPCIONAL) ==========
         cliente_uuid = None
         customer_external_id = None
         customer_created = False
@@ -173,38 +196,52 @@ async def tokenize_card(
                 logger.warning(f"⚠️ Erro ao processar cliente (continuando tokenização sem cliente): {e}")
                 # Continua a tokenização mesmo se falhar na criação do cliente
         
-        # ========== 3. SALVAR NO BANCO (USANDO DADOS SEGUROS) ==========
-        # Preparar dados para o banco (SEM encrypted_card_data RSA)
+        # ========== 4. PREPARAR DADOS SEGUROS PARA O BANCO ==========
+        # Detectar bandeira do cartão
+        card_brand = detect_card_brand(card_data.card_number)
+        last_four_digits = card_data.card_number[-4:]
+        
+        # Calcular data de expiração do token (2 anos)
+        from datetime import datetime, timezone, timedelta
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=730)).isoformat()
+        
+        # Dados seguros (sem informações sensíveis)
+        safe_card_data = {
+            "cardholder_name": card_data.cardholder_name,
+            "last_four_digits": last_four_digits,
+            "card_brand": card_brand,
+            "expiration_month": card_data.expiration_month,
+            "expiration_year": card_data.expiration_year,
+            "tokenization_method": "company_encryption_v1",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at
+        }
+        
+        # ========== 5. SALVAR NO BANCO ==========
         tokenized_card_data = {
             "empresa_id": empresa_id,
-            "customer_id": customer_external_id,
+            "customer_id": customer_external_id,  # ID externo (string)
             "card_token": card_token,
-            # ✅ NOVO: Usar dados seguros em vez de encrypted_card_data
-            "safe_card_data": json.dumps({
-                "cardholder_name": token_data["cardholder_name"],
-                "last_four_digits": token_data["last_four_digits"],
-                "card_brand": token_data["card_brand"],
-                "expiration_month": token_data["expiration_month"],
-                "expiration_year": token_data["expiration_year"],
-                "card_hash": token_data["card_hash"],
-                "tokenization_method": "simple_hash_v1"
-            }),
-            "last_four_digits": token_data["last_four_digits"],
-            "card_brand": token_data["card_brand"],
-            "expires_at": token_data["expires_at"],
-            "cliente_id": cliente_uuid
+            "encrypted_card_data": encrypted_card_data,  # 🆕 NOVO: Dados criptografados com chave da empresa
+            "safe_card_data": json.dumps(safe_card_data),  # 🆕 NOVO: Dados seguros em JSON
+            "last_four_digits": last_four_digits,
+            "card_brand": card_brand,
+            "expires_at": expires_at,
+            "cliente_id": cliente_uuid  # UUID interno (se existir)
         }
 
         await card_repo.save_tokenized_card(tokenized_card_data)
         
-        logger.info(f"✅ Cartão tokenizado com sucesso: {card_token}")
+        logger.info(f"✅ Cartão tokenizado com sucesso: {card_token} | Empresa: {empresa_id} | Cliente: {customer_external_id or 'N/A'}")
         
         return TokenizedCardResponse(
             card_token=card_token,
             customer_internal_id=cliente_uuid,
             customer_external_id=customer_external_id,
             customer_created=customer_created,
-            expires_at=token_data["expires_at"]
+            expires_at=expires_at,
+            encryption_method="company_key_v1",
+            is_internal_token=True
         )
         
     except Exception as e:
@@ -221,6 +258,7 @@ async def get_tokenized_card_route(
 ):
     """
     🔧 ATUALIZADO: Recupera dados de cartão tokenizado com informações do cliente usando interfaces.
+    Agora retorna dados seguros sem descriptografar informações sensíveis.
     """
     empresa_id = empresa["empresa_id"]
     
@@ -245,15 +283,30 @@ async def get_tokenized_card_route(
                     "email": cliente.get("email")
                 }
         
-        # Remove dados sensíveis da resposta
+        # 🆕 NOVO: Extrair dados seguros do JSON
+        safe_card_data = card.get("safe_card_data")
+        if isinstance(safe_card_data, str):
+            try:
+                safe_card_data = json.loads(safe_card_data)
+            except json.JSONDecodeError:
+                safe_card_data = {}
+        elif not isinstance(safe_card_data, dict):
+            safe_card_data = {}
+        
+        # Remove dados sensíveis da resposta - apenas dados seguros
         safe_card = {
             "card_token": card["card_token"],
             "customer_internal_id": card.get("cliente_id"),
             "customer_external_id": card.get("customer_id"),  # Para compatibilidade
-            "last_four_digits": card.get("last_four_digits"),
-            "card_brand": card.get("card_brand"),
+            "last_four_digits": card.get("last_four_digits") or safe_card_data.get("last_four_digits"),
+            "card_brand": card.get("card_brand") or safe_card_data.get("card_brand"),
+            "cardholder_name": safe_card_data.get("cardholder_name"),
+            "expiration_month": safe_card_data.get("expiration_month"),
+            "expiration_year": safe_card_data.get("expiration_year"),
             "created_at": card.get("created_at"),
             "expires_at": card.get("expires_at"),
+            "encryption_method": safe_card_data.get("tokenization_method", "company_encryption_v1"),
+            "is_internal_token": True,
             "cliente_info": cliente_info
         }
         
@@ -307,13 +360,69 @@ async def delete_tokenized_card_route(
         raise HTTPException(status_code=500, detail="Erro interno ao remover cartão.")
 
 
+# 🆕 NOVO: Endpoint para testar resolução de token interno
+@router.post("/tokenize-card/{card_token}/resolve")
+async def resolve_internal_token_route(
+    card_token: str,
+    empresa: dict = Depends(validate_access_token)
+):
+    """
+    🆕 NOVO: Testa a resolução de token interno para dados reais.
+    
+    ⚠️ ATENÇÃO: Este endpoint retorna dados sensíveis do cartão!
+    Deve ser usado apenas para testes e debugging.
+    Em produção, a resolução é feita automaticamente pelos gateways.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        # Usar serviço de criptografia para resolver token
+        encryption_service = CompanyEncryptionService()
+        
+        # Verificar se é token interno
+        if not encryption_service.is_internal_token(card_token):
+            raise HTTPException(
+                status_code=400, 
+                detail="Token fornecido não é um token interno válido"
+            )
+        
+        # Resolver token para dados reais
+        card_data = await encryption_service.resolve_internal_token(empresa_id, card_token)
+        
+        # ⚠️ Log de segurança
+        logger.warning(f"🔓 DADOS SENSÍVEIS ACESSADOS: Token {card_token} resolvido para empresa {empresa_id}")
+        
+        # Retornar dados reais (apenas para teste!)
+        return {
+            "card_token": card_token,
+            "resolved_data": {
+                "card_number": card_data.get("card_number", "****"),
+                "expiration_month": card_data.get("expiration_month"),
+                "expiration_year": card_data.get("expiration_year"),
+                "security_code": card_data.get("security_code", "***"),
+                "cardholder_name": card_data.get("cardholder_name")
+            },
+            "warning": "Dados sensíveis retornados! Use apenas para testes.",
+            "encryption_method": "company_key_v1"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao resolver token {card_token}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao resolver token.")
+
+
 # ========== ENDPOINTS DE ESTATÍSTICAS ==========
 
 @router.get("/stats")
 async def get_tokenization_stats(
     empresa: dict = Depends(validate_access_token)
 ):
-    """Retorna estatísticas de tokenização da empresa."""
+    """
+    Retorna estatísticas de tokenização da empresa.
+    🔧 ATUALIZADO: Inclui informações sobre métodos de criptografia.
+    """
     empresa_id = empresa["empresa_id"]
     
     try:
@@ -355,15 +464,104 @@ async def get_tokenization_stats(
         cards_with_customer = with_customer_response.count or 0
         cards_without_customer = total_cards - cards_with_customer
         
+        # 🆕 NOVO: Estatísticas de criptografia
+        encryption_stats = {"rsa_tokens": 0, "company_tokens": 0, "migrated_tokens": 0}
+        
+        encryption_response = (
+            supabase.table("cartoes_tokenizados")
+            .select("safe_card_data, encrypted_card_data")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+        
+        for card in (encryption_response.data or []):
+            safe_data = card.get("safe_card_data")
+            if safe_data:
+                try:
+                    if isinstance(safe_data, str):
+                        safe_data = json.loads(safe_data)
+                    
+                    method = safe_data.get("tokenization_method", "")
+                    if "company_encryption" in method:
+                        encryption_stats["company_tokens"] += 1
+                    elif "migrated" in method:
+                        encryption_stats["migrated_tokens"] += 1
+                except:
+                    pass
+            elif card.get("encrypted_card_data"):
+                encryption_stats["rsa_tokens"] += 1
+        
+        # Status da criptografia da empresa
+        encryption_service = CompanyEncryptionService()
+        encryption_health = await encryption_service.verify_company_encryption_health(empresa_id)
+        
         return {
             "total_cards": total_cards,
             "cards_by_brand": brands_count,
             "most_used_brand": max(brands_count.items(), key=lambda x: x[1])[0] if brands_count else None,
             "cards_with_customer": cards_with_customer,
             "cards_without_customer": cards_without_customer,
-            "customer_linkage_rate": round((cards_with_customer / total_cards * 100), 1) if total_cards > 0 else 0
+            "customer_linkage_rate": round((cards_with_customer / total_cards * 100), 1) if total_cards > 0 else 0,
+            # 🆕 NOVO: Estatísticas de criptografia
+            "encryption_stats": encryption_stats,
+            "encryption_health": {
+                "status": encryption_health.get("status"),
+                "key_configured": encryption_health.get("key_configured"),
+                "key_valid": encryption_health.get("key_valid"),
+                "issues": encryption_health.get("issues", [])
+            }
         }
         
     except Exception as e:
         logger.error(f"❌ Erro ao obter estatísticas de tokenização: {e}")
         raise HTTPException(status_code=500, detail="Erro interno ao obter estatísticas.")
+
+
+# 🆕 NOVO: Endpoint para migrar tokens específicos
+@router.post("/migrate-rsa-tokens")
+async def migrate_rsa_tokens_route(
+    empresa: dict = Depends(validate_access_token)
+):
+    """
+    🆕 NOVO: Migra tokens RSA desta empresa para o novo sistema de criptografia.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        encryption_service = CompanyEncryptionService()
+        migration_stats = await encryption_service.migrate_rsa_tokens_to_company_encryption(empresa_id)
+        
+        return {
+            "empresa_id": empresa_id,
+            "migration_completed": True,
+            "stats": migration_stats,
+            "message": f"Migração concluída para empresa {empresa_id}"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na migração de tokens: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno na migração.")
+
+
+# ========== FUNÇÕES AUXILIARES ==========
+
+def detect_card_brand(card_number: str) -> str:
+    """Detecta bandeira do cartão baseado no número."""
+    # Remove espaços e hífens
+    clean_number = re.sub(r'[\s-]', '', card_number)
+    
+    # Regras de detecção das bandeiras
+    if clean_number.startswith('4'):
+        return 'VISA'
+    elif clean_number.startswith(('5', '2')):
+        return 'MASTERCARD'
+    elif clean_number.startswith(('34', '37')):
+        return 'AMEX'
+    elif clean_number.startswith('6'):
+        return 'DISCOVER'
+    elif clean_number.startswith(('38', '60')):
+        return 'HIPERCARD'
+    elif clean_number.startswith(('4011', '4312', '4389', '4514', '4573')):
+        return 'ELO'
+    else:
+        return 'UNKNOWN'
