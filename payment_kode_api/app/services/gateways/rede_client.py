@@ -3,6 +3,7 @@
 import httpx
 from base64 import b64encode
 from typing import Any, Dict, Optional
+import uuid
 
 from fastapi import HTTPException
 
@@ -15,6 +16,9 @@ from ...interfaces import (
     ConfigRepositoryInterface,
     PaymentRepositoryInterface,
 )
+
+# 🆕 NOVO: Import do serviço de criptografia por empresa
+from ...services.company_encryption import CompanyEncryptionService
 
 TIMEOUT = 15.0
 
@@ -43,6 +47,72 @@ logger.info(f"📍 API Version: {API_VERSION}")
 logger.info(f"📍 Transações: {TRANSACTIONS_URL}")
 logger.info(f"📍 Cartões: {CARD_URL}")
 
+
+# 🆕 NOVAS FUNÇÕES: Resolução de Token Interno
+
+async def resolve_internal_token(empresa_id: str, card_token: str) -> Dict[str, Any]:
+    """
+    🆕 NOVA FUNÇÃO: Resolve token interno para dados reais do cartão.
+    
+    Args:
+        empresa_id: ID da empresa
+        card_token: Token interno do cartão (UUID)
+        
+    Returns:
+        Dados reais do cartão para usar com a Rede
+        
+    Raises:
+        ValueError: Se token não encontrado ou inválido
+        Exception: Se erro na descriptografia
+    """
+    try:
+        # 1. Buscar token no banco
+        from ...database.database import get_tokenized_card
+        card = await get_tokenized_card(card_token)
+        
+        if not card or card["empresa_id"] != empresa_id:
+            raise ValueError("Token não encontrado ou não pertence à empresa")
+        
+        # 2. Buscar chave da empresa e descriptografar
+        encryption_service = CompanyEncryptionService()
+        decryption_key = await encryption_service.get_empresa_decryption_key(empresa_id)
+        
+        # 3. Descriptografar dados
+        encrypted_data = card.get("encrypted_card_data")
+        if not encrypted_data:
+            raise ValueError("Dados criptografados não encontrados para o token")
+        
+        card_data = encryption_service.decrypt_card_data_with_company_key(
+            encrypted_data, 
+            decryption_key
+        )
+        
+        logger.info(f"✅ Token interno resolvido para dados reais: {card_token[:8]}...")
+        return card_data
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao resolver token interno {card_token}: {e}")
+        raise
+
+
+def is_internal_token(token: str) -> bool:
+    """
+    🆕 NOVA FUNÇÃO: Verifica se um token é interno (UUID) ou externo da Rede.
+    
+    Args:
+        token: Token a ser verificado
+        
+    Returns:
+        True se for token interno (UUID format)
+    """
+    try:
+        uuid.UUID(token)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+# ✅ MANTÉM: Funções existentes com pequenas melhorias
 
 async def get_rede_headers(
     empresa_id: str,
@@ -156,8 +226,8 @@ async def create_rede_payment(
     **payment_data: Any
 ) -> Dict[str, Any]:
     """
-    ✅ MIGRADO: Autoriza (e captura, se capture=True) uma transação.
-    🔧 CORRIGIDO: URLs corretas, logs melhorados e tratamento de erros aprimorado.
+    🔧 ATUALIZADO: Autoriza (e captura, se capture=True) uma transação.
+    🆕 NOVO: Agora detecta e resolve tokens internos automaticamente.
     """
     # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
@@ -167,7 +237,30 @@ async def create_rede_payment(
         from ...dependencies import get_payment_repository
         payment_repo = get_payment_repository()
 
-    # 🔧 CORRIGIDO: Usar payment_data diretamente
+    # 🆕 NOVO: Resolução automática de token interno
+    if payment_data.get("card_token"):
+        card_token = payment_data["card_token"]
+        
+        # Verificar se é token interno (UUID)
+        if is_internal_token(card_token):
+            logger.info(f"🔄 Detectado token interno, resolvendo: {card_token[:8]}...")
+            
+            try:
+                # Resolver para dados reais
+                real_card_data = await resolve_internal_token(empresa_id, card_token)
+                
+                # Substituir token por dados reais no payload
+                payment_data.pop("card_token")
+                payment_data.update(real_card_data)
+                
+                logger.info("✅ Token interno resolvido - usando dados reais para Rede")
+            except Exception as e:
+                logger.error(f"❌ Erro ao resolver token interno: {e}")
+                raise HTTPException(status_code=400, detail=f"Erro ao resolver token: {str(e)}")
+        else:
+            logger.info(f"🏷️ Token externo da Rede detectado: {card_token[:8]}...")
+
+    # 🔧 CONTINUA: Fluxo original
     payload = map_to_rede_payload(payment_data)
     tokenize = payment_data.get("tokenize", False)
 
@@ -195,10 +288,7 @@ async def create_rede_payment(
     logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
     logger.info(f"📍 URL: {TRANSACTIONS_URL}")
     logger.info(f"🔧 Ambiente: {rede_env}")
-    logger.info(f"🔧 Base URL: {BASE_URL}")
-    logger.info(f"🔧 API Version: {API_VERSION}")
     logger.debug(f"📦 Payload Rede: {payload}")
-    logger.debug(f"🔐 Headers: {list(headers.keys())}")
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -206,7 +296,6 @@ async def create_rede_payment(
             
             # 🔧 NOVO: Log detalhado da resposta para debugging
             logger.info(f"📥 Rede Response Status: {resp.status_code}")
-            logger.debug(f"📥 Rede Response Headers: {dict(resp.headers)}")
             
             # Tentar ler o conteúdo da resposta antes de raise_for_status
             try:
@@ -273,10 +362,6 @@ async def create_rede_payment(
         if code == 404:
             logger.error(f"❌ ERRO 404: Endpoint não encontrado!")
             logger.error(f"❌ URL usada: {TRANSACTIONS_URL}")
-            logger.error(f"❌ Ambiente configurado: {rede_env}")
-            logger.error(f"❌ Base URL: {BASE_URL}")
-            logger.error(f"❌ API Version: {API_VERSION}")
-            logger.error(f"❌ Verifique se as credenciais e ambiente estão corretos")
             raise HTTPException(
                 status_code=502, 
                 detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {TRANSACTIONS_URL}"
@@ -295,6 +380,8 @@ async def create_rede_payment(
         logger.error(f"❌ Erro de conexão com a Rede: {e}")
         raise HTTPException(status_code=502, detail="Erro de conexão ao processar pagamento na Rede")
 
+
+# ✅ MANTÉM: Todas as outras funções inalteradas
 
 async def capture_rede_transaction(
     empresa_id: str,
@@ -505,8 +592,8 @@ async def test_rede_connectivity(empresa_id: str) -> Dict[str, Any]:
 
 class RedeGateway:
     """
-    ✅ NOVO: Classe wrapper que implementa RedeGatewayInterface
-    Permite uso direto das funções via dependency injection
+    ✅ MANTÉM: Classe wrapper que implementa RedeGatewayInterface
+    🆕 NOVO: Agora com suporte a resolução de tokens internos
     """
     
     def __init__(
@@ -578,7 +665,7 @@ class RedeGateway:
 
 def get_rede_gateway_instance() -> RedeGateway:
     """
-    ✅ NOVO: Função para criar instância do RedeGateway
+    ✅ MANTÉM: Função para criar instância do RedeGateway
     Pode ser usada nos dependencies.py
     """
     return RedeGateway()
@@ -599,19 +686,16 @@ async def create_rede_payment_legacy(empresa_id: str, **payment_data: Any) -> Di
 # ========== EXPORTS ==========
 
 __all__ = [
-    # Funções principais (migradas)
-    "create_rede_payment",
-    "tokenize_rede_card",
-    "capture_rede_transaction",
-    "get_rede_transaction", 
-    "create_rede_refund",
+    "resolve_internal_token",
+    "is_internal_token",
     "get_rede_headers",
-    "test_rede_connectivity",  # 🆕 NOVA
-    
-    # Classe wrapper
+    "tokenize_rede_card",
+    "create_rede_payment",
+    "capture_rede_transaction",
+    "get_rede_transaction",
+    "create_rede_refund",
+    "test_rede_connectivity",
     "RedeGateway",
     "get_rede_gateway_instance",
-    
-    # Legacy (deprecated)
     "create_rede_payment_legacy",
 ]
