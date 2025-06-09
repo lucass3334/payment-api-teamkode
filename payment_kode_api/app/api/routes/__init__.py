@@ -8,6 +8,7 @@ from .upload_certificados import router as upload_certificados_router
 from .auth_gateway import router as auth_gateway_router
 from .refunds import router as refunds_router       # ✅ Novo roteador de estornos
 from .clientes import router as clientes_router  # ✅ Novo roteador de clientes
+from .encryption_admin import router as encryption_admin_router
 
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "upload_certificados_router",
     "auth_gateway_router",
     "refunds_router",
-    "clientes_router"                                # ✅ Exportado também
+    "clientes_router",
+    "encryption_admin_router",                               
 ]
 

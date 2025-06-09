@@ -12,7 +12,8 @@ from payment_kode_api.app.api.routes import (
     upload_certificados_router,
     auth_gateway_router,
     refunds_router,
-    clientes_router  # ✅ Agora disponível
+    clientes_router,
+    encryption_admin_router
 )
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.core.error_handlers import add_error_handlers
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(upload_certificados_router, tags=["Certificados"])
     app.include_router(auth_gateway_router, tags=["Autenticação"])
     app.include_router(refunds_router, prefix="/payments", tags=["Estornos"])
+    app.include_router(encryption_admin_router, prefix="/encryption", tags=["Administração de Criptografia"])
     
     # ✅ NOVA: Rota de clientes com gestão completa
     app.include_router(clientes_router, prefix="/api/v1", tags=["Clientes"])
