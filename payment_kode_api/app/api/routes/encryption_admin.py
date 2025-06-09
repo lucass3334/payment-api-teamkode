@@ -14,7 +14,7 @@ from ...services.company_encryption import (
 from ...security.auth import validate_access_token
 from ...utilities.logging_config import logger
 
-router = APIRouter(prefix="/encryption/admin", tags=["Administração de Criptografia"], dependencies=[Depends(validate_access_token)])
+router = APIRouter(tags=["Administração de Criptografia"], dependencies=[Depends(validate_access_token)])
 
 
 # ========== SCHEMAS ==========
