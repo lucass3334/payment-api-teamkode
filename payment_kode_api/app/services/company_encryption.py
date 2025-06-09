@@ -181,28 +181,29 @@ class CompanyEncryptionService:
             logger.warning(f"⚠️ Erro ao fazer backup da chave: {e}")
     
     async def get_empresa_decryption_key(self, empresa_id: str) -> str:
-        """
-        🔧 MELHORADO: Recupera chave de descriptografia da empresa.
         
-        Args:
-            empresa_id: ID da empresa
-            
-        Returns:
-            Chave de descriptografia válida
-        """
         try:
             # Buscar no banco
             response = (
                 supabase.table("empresas_keys")
-                .select("decryption_key_hash")
+                .select("decryption_key")
                 .eq("empresa_id", empresa_id)
                 .limit(1)
                 .execute()
             )
             
             if response.data:
-                stored_hash = response.data[0]["decryption_key_hash"]
+                stored_key = response.data[0]["decryption_key"]
                 logger.info(f"✅ Chave encontrada no banco para empresa {empresa_id}")
+
+
+                if self.validate_fernet_key(stored_key):
+                    logger.info(f"chave válida  recuperada para empresa {empresa_id}")
+                    return stored_key
+                else:
+                    logger.warning(f"⚠️ Chave inválida encontrada para empresa {empresa_id}")
+
+                    await self._remove_invalid_key(empresa_id)
                 
                 # ⚠️ IMPORTANTE: Não podemos regenerar uma chave Fernet aleatória
                 # Se a chave foi perdida, precisamos criar uma nova e invalidar tokens antigos
@@ -392,6 +393,26 @@ class CompanyEncryptionService:
         except (ValueError, TypeError):
             return False
     
+
+    async def _remove_invalid_key(self, empresa_id: str) -> None:
+        """
+        🆕 NOVA: Remove chave inválida do banco de dados.
+        """
+        try:
+            response = (
+                supabase.table("empresas_keys")
+                .delete()
+                .eq("empresa_id", empresa_id)
+                .execute()
+            )
+            if response.data:
+                logger.info(f"✅ Chave inválida removida para empresa {empresa_id}")
+            else:
+                logger.warning(f"⚠️ Nenhuma chave encontrada para remover da empresa {empresa_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao remover chave inválida da empresa {empresa_id}: {e}")
+    
     async def verify_company_encryption_health(self, empresa_id: str) -> Dict[str, Any]:
         """
         🔧 MELHORADO: Verifica saúde da criptografia da empresa.
@@ -413,7 +434,7 @@ class CompanyEncryptionService:
             try:
                 response = (
                     supabase.table("empresas_keys")
-                    .select("decryption_key_hash")
+                    .select("decryption_key")
                     .eq("empresa_id", empresa_id)
                     .limit(1)
                     .execute()
@@ -421,11 +442,17 @@ class CompanyEncryptionService:
                 
                 if response.data:
                     health["key_configured"] = True
-                    
-                    # ⚠️ IMPORTANTE: Não podemos testar chaves Fernet sem ter a chave real
-                    # Assumimos que se existe hash, a chave é válida
-                    health["key_valid"] = True
-                    health["issues"].append("Não é possível testar chave sem acessá-la diretamente")
+                    stored_key = response.data[0]["decryption_key"]
+                    health["key_valid"] = self.validate_fernet_key(stored_key)
+                    if self.validate_fernet_key(stored_key):
+
+                        logger.info(f"✅ Chave Fernet válida encontrada para empresa {empresa_id}")
+                        health["key_valid"] = True
+                    else:
+                        logger.warning(f"⚠️ Chave Fernet inválida encontrada para empresa {empresa_id}")
+                        health["key_valid"] = False
+                        health["issues"].append("Chave de criptografia inválida")
+                
                 else:
                     health["issues"].append("Chave de criptografia não configurada")
                     
