@@ -120,6 +120,7 @@ class CompanyEncryptionService:
             key_data = {
                 "empresa_id": empresa_id,
                 "decryption_key_hash": key_hash,
+                "decryption_key": decryption_key,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
@@ -139,6 +140,7 @@ class CompanyEncryptionService:
                     supabase.table("empresas_keys")
                     .update({
                         "decryption_key_hash": key_hash,
+                        "decryption_key": decryption_key,
                         "updated_at": datetime.now(timezone.utc).isoformat()
                     })
                     .eq("empresa_id", empresa_id)
