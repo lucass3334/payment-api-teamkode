@@ -59,16 +59,17 @@ class HealthCheckResponse(BaseModel):
     issues: List[str]
     last_check: str
 
-
+class GenerateKeyResponse(BaseModel):
+    fernet_key: str
+    key_preview: str
+    key_length: int
+    message: str
+    warning: str
 # ========== ENDPOINTS DE ADMINISTRAÇÃO ==========
 
-@router.post("/encryption/generate-key", response_model=Dict[str, str])
+@router.post("/encryption/generate-key", response_model=GenerateKeyResponse, summary="Gera nova chave Fernet")
 async def generate_new_fernet_key():
-    """
-    🔑 Gera uma nova chave Fernet válida.
-    
-    Use este endpoint para gerar chaves antes de inserir manualmente.
-    """
+   
     try:
         new_key = generate_fernet_key()
         
