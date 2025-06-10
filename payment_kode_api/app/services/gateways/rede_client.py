@@ -672,7 +672,7 @@ async def create_rede_refund(
     payment_repo: Optional[PaymentRepositoryInterface] = None
 ) -> Dict[str, Any]:
     """
-    ✅ MIGRADO: Solicita estorno usando TID da Rede (não nosso transaction_id).
+    ✅ CORRIGIDO: Solicita estorno usando TID da Rede (não nosso transaction_id).
     Endpoint: POST /v1/transactions/{rede_tid}/refunds
     """
     # ✅ LAZY LOADING: Dependency injection
@@ -703,26 +703,80 @@ async def create_rede_refund(
         logger.info(f"🔄 Solicitando estorno Rede: POST {url} – payload={payload}")
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
             
-            # 🔧 NOVO: Verificar código de retorno do estorno
-            return_code = data.get("returnCode", "")
-            if return_code == "00":
-                # Atualizar status no banco - ✅ USANDO INTERFACE
-                await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
-                logger.info(f"✅ Estorno Rede processado com sucesso: {transaction_id}")
-                return {"status": "refunded", **data}
+            # 🔧 CORRIGIDO: Verificar status codes específicos da Rede para estornos
+            # A Rede pode retornar 200 ou 400 com mensagem de sucesso
+            if resp.status_code == 200:
+                data = resp.json()
+                return_code = data.get("returnCode", "")
+                return_message = data.get("returnMessage", "")
+                
+                if return_code == "00":
+                    # Atualizar status no banco - ✅ USANDO INTERFACE
+                    await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                    logger.info(f"✅ Estorno Rede processado com sucesso: {transaction_id}")
+                    return {"status": "refunded", **data}
+                else:
+                    logger.warning(f"⚠️ Estorno Rede falhou: {return_code} - {return_message}")
+                    raise HTTPException(400, f"Estorno Rede falhou: {return_message}")
+            
+            elif resp.status_code == 400:
+                # 🔧 CORREÇÃO ESPECÍFICA: A e.Rede retorna HTTP 400 com códigos de sucesso para estornos
+                try:
+                    data = resp.json()
+                    return_code = data.get("returnCode", "")
+                    return_message = data.get("returnMessage", "") or data.get("message", "")
+                    
+                    # 🔧 VERIFICAÇÃO ESPECÍFICA: Códigos 359 e 360 são sucessos mesmo com HTTP 400
+                    if return_code in ["359", "360"] or "successful" in return_message.lower():
+                        logger.info(f"✅ Estorno Rede processado (HTTP 400 + código {return_code}): {return_message}")
+                        await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                        return {
+                            "status": "refunded", 
+                            "return_code": return_code,
+                            "message": return_message,
+                            "transaction_id": transaction_id,
+                            "rede_tid": rede_tid,
+                            "raw_response": data
+                        }
+                    else:
+                        # É um erro real
+                        logger.error(f"❌ Estorno Rede falhou (400): Código {return_code} - {return_message}")
+                        raise HTTPException(400, f"Estorno Rede falhou: {return_message}")
+                        
+                except ValueError:
+                    # Resposta não é JSON válido - verificar texto bruto
+                    error_text = resp.text
+                    if "successful" in error_text.lower() or "359" in error_text or "360" in error_text:
+                        logger.info(f"✅ Estorno Rede processado (400 text com sucesso): {error_text}")
+                        await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                        return {
+                            "status": "refunded", 
+                            "message": error_text,
+                            "transaction_id": transaction_id,
+                            "rede_tid": rede_tid
+                        }
+                    else:
+                        logger.error(f"❌ Estorno Rede falhou (400 text): {error_text}")
+                        raise HTTPException(400, f"Estorno Rede falhou: {error_text}")
+            
             else:
-                logger.warning(f"⚠️ Estorno Rede falhou: {return_code} - {data.get('returnMessage')}")
-                raise HTTPException(400, f"Estorno Rede falhou: {data.get('returnMessage')}")
+                # Outros códigos de erro
+                resp.raise_for_status()
 
     except httpx.HTTPStatusError as e:
+        # 🔧 REMOVIDO: Lógica duplicada que causava o problema
+        # Esta era a causa do erro - estava tratando 400 como erro sempre
         status, text = e.response.status_code, e.response.text
         logger.error(f"❌ Rede estorno HTTP {status}: {text}")
-        if status in (400, 402, 403, 404):
-            raise HTTPException(status_code=status, detail=f"Erro no estorno Rede: {text}")
-        raise HTTPException(status_code=502, detail="Erro no gateway Rede ao processar estorno")
+        
+        if status in (401, 403):
+            raise HTTPException(status_code=401, detail="Falha de autenticação com a Rede")
+        elif status == 404:
+            raise HTTPException(status_code=404, detail="Transação não encontrada na Rede")
+        else:
+            raise HTTPException(status_code=502, detail=f"Erro no gateway Rede: HTTP {status}")
+            
     except Exception as e:
         logger.error(f"❌ Erro de conexão ao estornar na Rede: {e}")
         raise HTTPException(status_code=502, detail="Erro de conexão ao processar estorno na Rede")
