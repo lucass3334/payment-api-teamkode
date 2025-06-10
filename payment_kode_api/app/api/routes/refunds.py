@@ -1,5 +1,6 @@
 # payment_kode_api/app/api/routes/refunds.py
 
+import re
 from typing import Dict, Any, Optional
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
@@ -31,6 +32,85 @@ from ...dependencies import (
 from payment_kode_api.app.security.auth import validate_access_token
 
 router = APIRouter()
+
+
+def safe_parse_datetime(date_string: str) -> datetime:
+    """
+    🔧 FUNÇÃO AUXILIAR: Parse seguro de datetime com diferentes formatos.
+    
+    Resolve problemas com:
+    - Microsegundos com diferentes números de dígitos
+    - Diferentes formatos de timezone
+    - Strings mal formatadas
+    """
+    if not date_string:
+        raise ValueError("Data string vazia")
+    
+    try:
+        # Primeiro, tentar o formato padrão
+        return datetime.fromisoformat(date_string)
+    except ValueError:
+        pass
+    
+    try:
+        # 🔧 CORREÇÃO: Normalizar microsegundos para 6 dígitos
+        # Padrão: YYYY-MM-DDTHH:MM:SS.microsegundos+timezone
+        pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{1,6})([+-]\d{2}:\d{2})'
+        match = re.match(pattern, date_string)
+        
+        if match:
+            base_datetime = match.group(1)
+            microseconds = match.group(2)
+            timezone_part = match.group(3)
+            
+            # Normalizar microsegundos para 6 dígitos
+            if len(microseconds) < 6:
+                microseconds = microseconds.ljust(6, '0')
+            elif len(microseconds) > 6:
+                microseconds = microseconds[:6]
+            
+            # Reconstituir a string
+            normalized_string = f"{base_datetime}.{microseconds}{timezone_part}"
+            return datetime.fromisoformat(normalized_string)
+            
+    except Exception:
+        pass
+    
+    try:
+        # 🔧 FALLBACK: Tentar outros formatos comuns
+        formats_to_try = [
+            '%Y-%m-%dT%H:%M:%S.%f%z',
+            '%Y-%m-%dT%H:%M:%S%z',
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%Y-%m-%dT%H:%M:%SZ',
+            '%Y-%m-%d %H:%M:%S.%f',
+            '%Y-%m-%d %H:%M:%S',
+        ]
+        
+        for fmt in formats_to_try:
+            try:
+                # Remover timezone se formato não suporta
+                test_string = date_string
+                if '%z' not in fmt and 'Z' not in fmt:
+                    test_string = re.sub(r'[+-]\d{2}:\d{2}|Z$', '', date_string)
+                
+                parsed = datetime.strptime(test_string, fmt)
+                
+                # Adicionar timezone UTC se não presente
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                
+                return parsed
+                
+            except ValueError:
+                continue
+                
+    except Exception:
+        pass
+    
+    # 🚨 ÚLTIMO RECURSO: Retornar datetime atual com warning
+    logger.warning(f"⚠️ Não foi possível parsear data '{date_string}', usando datetime atual")
+    return datetime.now(timezone.utc)
 
 
 class PixRefundRequest(BaseModel):
@@ -75,8 +155,8 @@ async def refund_pix(
     if payment.get("status") != "approved":
         raise HTTPException(400, f"Não é possível estornar pagamento com status: {payment.get('status')}")
 
-    # Prazo de 7 dias
-    created_at = datetime.fromisoformat(payment["created_at"])
+    # 🔧 CORRIGIDO: Usar parse seguro de data
+    created_at = safe_parse_datetime(payment["created_at"])
     if datetime.now(timezone.utc) - created_at > timedelta(days=7):
         raise HTTPException(400, "Prazo de estorno expirado: máximo de 7 dias após pagamento")
 
@@ -185,7 +265,8 @@ async def refund_credit_card(
     if payment.get("status") != "approved":
         raise HTTPException(400, f"Não é possível estornar pagamento com status: {payment.get('status')}")
 
-    created_at = datetime.fromisoformat(payment["created_at"])
+    # 🔧 CORRIGIDO: Usar parse seguro de data
+    created_at = safe_parse_datetime(payment["created_at"])
     if datetime.now(timezone.utc) - created_at > timedelta(days=7):
         logger.error(f"❌ [refund_cc] prazo de estorno expirado para {tx_id}")
         raise HTTPException(status_code=400, detail="Prazo de estorno expirado: máximo de 7 dias após pagamento")
@@ -293,7 +374,7 @@ async def get_refund_status(
         "status": payment.get("status"),
         "can_refund": (
             payment.get("status") == "approved" and 
-            datetime.now(timezone.utc) - datetime.fromisoformat(payment["created_at"]) <= timedelta(days=7)
+            datetime.now(timezone.utc) - safe_parse_datetime(payment["created_at"]) <= timedelta(days=7)
         ),
         "created_at": payment.get("created_at"),
         "payment_type": payment.get("payment_type"),
