@@ -157,68 +157,6 @@ async def get_rede_headers(
     return headers
 
 
-async def tokenize_rede_card(
-    empresa_id: str, 
-    card_data: Dict[str, Any],
-    config_repo: Optional[ConfigRepositoryInterface] = None
-) -> str:
-    """
-    ✅ MIGRADO: Tokeniza o cartão na Rede.
-    🔧 CORRIGIDO: Usando URL correta e logs melhorados.
-    """
-    headers = await get_rede_headers(empresa_id, config_repo)
-    payload = {
-        "number":          card_data["card_number"],
-        "expirationMonth": card_data["expiration_month"],
-        "expirationYear":  card_data["expiration_year"],
-        "securityCode":    card_data["security_code"],
-        "holderName":      card_data["cardholder_name"],
-    }
-    
-    logger.info(f"🔐 Tokenizando cartão na Rede: {CARD_URL}")
-    logger.debug(f"📦 Payload tokenização: {payload}")
-    
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-            resp = await client.post(CARD_URL, json=payload, headers=headers)
-            
-            # 🔧 NOVO: Log da resposta para debugging
-            logger.info(f"📥 Tokenização Rede Status: {resp.status_code}")
-            
-            resp.raise_for_status()
-            result = resp.json()
-            token = result.get("cardToken")
-            
-            if token:
-                logger.info(f"✅ Cartão tokenizado com sucesso na Rede")
-                return token
-            else:
-                logger.error(f"❌ Token não retornado pela Rede: {result}")
-                raise HTTPException(status_code=502, detail="Token não retornado pela Rede")
-                
-    except httpx.HTTPStatusError as e:
-        logger.error(f"❌ Rede tokenização HTTP {e.response.status_code}: {e.response.text}")
-        
-        # 🔧 MELHORADO: Tratamento específico para erros comuns
-        if e.response.status_code == 404:
-            logger.error(f"❌ ERRO 404 na tokenização: Endpoint não encontrado! URL: {CARD_URL}")
-            raise HTTPException(
-                status_code=502, 
-                detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {CARD_URL}"
-            )
-        elif e.response.status_code == 405:
-            logger.error(f"❌ ERRO 405 na tokenização: Método não permitido! URL: {CARD_URL}")
-            raise HTTPException(
-                status_code=502, 
-                detail=f"Método não permitido pela Rede (405). Ambiente: {rede_env}"
-            )
-        
-        raise HTTPException(status_code=502, detail="Erro ao tokenizar cartão na Rede")
-    except Exception as e:
-        logger.error(f"❌ Rede tokenização erro: {e}")
-        raise HTTPException(status_code=502, detail="Erro de conexão ao tokenizar cartão na Rede")
-
-
 async def create_rede_payment(
     empresa_id: str,
     config_repo: Optional[ConfigRepositoryInterface] = None,
@@ -228,6 +166,7 @@ async def create_rede_payment(
     """
     🔧 ATUALIZADO: Autoriza (e captura, se capture=True) uma transação.
     🆕 NOVO: Agora detecta e resolve tokens internos automaticamente.
+    🔧 CORRIGIDO: Estrutura correta do payload para evitar erro ExpirationMonth.
     """
     # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
@@ -238,6 +177,7 @@ async def create_rede_payment(
         payment_repo = get_payment_repository()
 
     # 🆕 NOVO: Resolução automática de token interno
+    resolved_card_data = None
     if payment_data.get("card_token"):
         card_token = payment_data["card_token"]
         
@@ -248,39 +188,60 @@ async def create_rede_payment(
             try:
                 # Resolver para dados reais
                 real_card_data = await resolve_internal_token(empresa_id, card_token)
-                
-                # Substituir token por dados reais no payload
-                payment_data.pop("card_token")
-                payment_data.update(real_card_data)
-                
+                resolved_card_data = real_card_data
                 logger.info("✅ Token interno resolvido - usando dados reais para Rede")
             except Exception as e:
                 logger.error(f"❌ Erro ao resolver token interno: {e}")
                 raise HTTPException(status_code=400, detail=f"Erro ao resolver token: {str(e)}")
         else:
             logger.info(f"🏷️ Token externo da Rede detectado: {card_token[:8]}...")
-
-    # 🔧 CONTINUA: Fluxo original
-    payload = map_to_rede_payload(payment_data)
-    tokenize = payment_data.get("tokenize", False)
-
-    # ── Se for tokenização on-the-fly
-    if "cardToken" not in payload:
-        if tokenize:
-            token = await tokenize_rede_card(empresa_id, payload, config_repo)
-            for field in ("cardNumber","expirationMonth","expirationYear","securityCode","cardHolderName"):
-                payload.pop(field, None)
-            payload["cardToken"] = token
+    
+    # 🔧 CORRIGIDO: Preparar payload com estrutura correta
+    try:
+        # Garantir que amount seja numérico
+        amount_value = float(payment_data["amount"]) if not isinstance(payment_data["amount"], (int, float)) else payment_data["amount"]
+        
+        # Estrutura base do payload
+        payload: Dict[str, Any] = {
+            "capture": payment_data.get("capture", True),
+            "kind": payment_data.get("kind", "credit"),
+            "reference": payment_data.get("transaction_id", ""),
+            "amount": int(amount_value * 100),  # Converter para centavos
+            "installments": payment_data.get("installments", 1),
+            "softDescriptor": payment_data.get("soft_descriptor", "PAYMENT_KODE")
+        }
+        
+        # 🔧 CORRIGIDO: Estrutura do cartão conforme documentação da Rede
+        if resolved_card_data:
+            # Usar dados resolvidos do token interno
+            payload["card"] = {
+                "number": resolved_card_data["card_number"],
+                "expirationMonth": f"{int(resolved_card_data['expiration_month']):02d}",
+                "expirationYear": str(resolved_card_data["expiration_year"]),
+                "securityCode": resolved_card_data["security_code"],
+                "holderName": resolved_card_data["cardholder_name"]
+            }
+        elif payment_data.get("card_token") and not is_internal_token(payment_data["card_token"]):
+            # Token externo da Rede
+            payload["cardToken"] = payment_data["card_token"]
+        elif payment_data.get("card_data"):
+            # Dados diretos do cartão
+            card_data = payment_data["card_data"]
+            payload["card"] = {
+                "number": card_data["card_number"],
+                "expirationMonth": f"{int(card_data['expiration_month']):02d}",
+                "expirationYear": str(card_data["expiration_year"]),
+                "securityCode": card_data["security_code"],
+                "holderName": card_data["cardholder_name"]
+            }
         else:
-            # 🔧 CORRIGIDO: Verificar se campos existem antes de fazer pop
-            if "cardNumber" in payload:
-                payload["card"] = {
-                    "number":          payload.pop("cardNumber"),
-                    "expirationMonth": payload.pop("expirationMonth"),
-                    "expirationYear":  payload.pop("expirationYear"),
-                    "securityCode":    payload.pop("securityCode"),
-                    "holderName":      payload.pop("cardHolderName"),
-                }
+            raise ValueError("É necessário fornecer card_token ou card_data")
+        
+        logger.debug(f"✅ Payload preparado corretamente: {payload}")
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao preparar payload: {e}")
+        raise HTTPException(status_code=400, detail=f"Erro ao preparar dados do pagamento: {str(e)}")
 
     headers = await get_rede_headers(empresa_id, config_repo)
     
@@ -288,7 +249,6 @@ async def create_rede_payment(
     logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
     logger.info(f"📍 URL: {TRANSACTIONS_URL}")
     logger.info(f"🔧 Ambiente: {rede_env}")
-    logger.debug(f"📦 Payload Rede: {payload}")
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -296,13 +256,6 @@ async def create_rede_payment(
             
             # 🔧 NOVO: Log detalhado da resposta para debugging
             logger.info(f"📥 Rede Response Status: {resp.status_code}")
-            
-            # Tentar ler o conteúdo da resposta antes de raise_for_status
-            try:
-                response_text = resp.text
-                logger.debug(f"📥 Rede Response Body (primeiros 500 chars): {response_text[:500]}")
-            except:
-                logger.warning("⚠️ Não foi possível ler o corpo da resposta")
             
             resp.raise_for_status()
             data = resp.json()
@@ -381,7 +334,67 @@ async def create_rede_payment(
         raise HTTPException(status_code=502, detail="Erro de conexão ao processar pagamento na Rede")
 
 
-# ✅ MANTÉM: Todas as outras funções inalteradas
+async def tokenize_rede_card(
+    empresa_id: str, 
+    card_data: Dict[str, Any],
+    config_repo: Optional[ConfigRepositoryInterface] = None
+) -> str:
+    """
+    ✅ MIGRADO: Tokeniza o cartão na Rede.
+    🔧 CORRIGIDO: Usando URL correta e logs melhorados.
+    """
+    headers = await get_rede_headers(empresa_id, config_repo)
+    payload = {
+        "number":          card_data["card_number"],
+        "expirationMonth": f"{int(card_data['expiration_month']):02d}",  # Garantir formato 01, 02, etc.
+        "expirationYear":  str(card_data["expiration_year"]),
+        "securityCode":    card_data["security_code"],
+        "holderName":      card_data["cardholder_name"],
+    }
+    
+    logger.info(f"🔐 Tokenizando cartão na Rede: {CARD_URL}")
+    logger.debug(f"📦 Payload tokenização: {payload}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(CARD_URL, json=payload, headers=headers)
+            
+            # 🔧 NOVO: Log da resposta para debugging
+            logger.info(f"📥 Tokenização Rede Status: {resp.status_code}")
+            
+            resp.raise_for_status()
+            result = resp.json()
+            token = result.get("cardToken")
+            
+            if token:
+                logger.info(f"✅ Cartão tokenizado com sucesso na Rede")
+                return token
+            else:
+                logger.error(f"❌ Token não retornado pela Rede: {result}")
+                raise HTTPException(status_code=502, detail="Token não retornado pela Rede")
+                
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ Rede tokenização HTTP {e.response.status_code}: {e.response.text}")
+        
+        # 🔧 MELHORADO: Tratamento específico para erros comuns
+        if e.response.status_code == 404:
+            logger.error(f"❌ ERRO 404 na tokenização: Endpoint não encontrado! URL: {CARD_URL}")
+            raise HTTPException(
+                status_code=502, 
+                detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {CARD_URL}"
+            )
+        elif e.response.status_code == 405:
+            logger.error(f"❌ ERRO 405 na tokenização: Método não permitido! URL: {CARD_URL}")
+            raise HTTPException(
+                status_code=502, 
+                detail=f"Método não permitido pela Rede (405). Ambiente: {rede_env}"
+            )
+        
+        raise HTTPException(status_code=502, detail="Erro ao tokenizar cartão na Rede")
+    except Exception as e:
+        logger.error(f"❌ Rede tokenização erro: {e}")
+        raise HTTPException(status_code=502, detail="Erro de conexão ao tokenizar cartão na Rede")
+
 
 async def capture_rede_transaction(
     empresa_id: str,
