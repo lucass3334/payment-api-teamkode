@@ -77,9 +77,6 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     ✅ CORRIGIDO: Mapeia os dados do pagamento para o formato correto da e.Rede.
-    - Usa 'cardToken' se presente, senão mapeia os dados de cartão dentro do objeto 'card'.
-    - Inclui 'reference' para rastrear a transação.
-    - Campos expirationMonth e expirationYear como números inteiros conforme documentação oficial.
     """
     # validação mínima
     if not data.get("card_token") and not all(k in data for k in (
@@ -99,20 +96,17 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "softDescriptor": data.get("soft_descriptor", "PAYMENT_KODE")
     }
 
-    # Estrutura correta para dados do cartão
+    # ✅ CORRIGIDO: Campos do cartão no nível raiz, não dentro de "card"
     if data.get("card_token"):
         # Se tem token, usar cardToken
         payload["cardToken"] = data["card_token"]
     else:
-        # ✅ CORRIGIDO: Estrutura 'card' conforme documentação oficial da e.Rede
-        # Campos expirationMonth e expirationYear devem ser NÚMEROS INTEIROS
-        payload["card"] = {
-            "number": data["card_number"],
-            "expirationMonth": int(data["expiration_month"]),  # ✅ NÚMERO INTEIRO (1-12)
-            "expirationYear": int(data["expiration_year"]),    # ✅ NÚMERO INTEIRO (2027 ou 27)
-            "securityCode": data["security_code"],
-            "holderName": data["cardholder_name"]
-        }
+        # Dados do cartão DIRETAMENTE no payload
+        payload["cardholderName"] = data["cardholder_name"]
+        payload["cardNumber"] = data["card_number"]
+        payload["expirationMonth"] = int(data["expiration_month"])
+        payload["expirationYear"] = int(data["expiration_year"])
+        payload["securityCode"] = data["security_code"]
 
     return payload
 

@@ -190,9 +190,9 @@ async def create_rede_payment(
     **payment_data: Any
 ) -> Dict[str, Any]:
     """
-    🔧 ATUALIZADO: Autoriza (e captura, se capture=True) uma transação.
-    🆕 NOVO: Agora detecta e resolve tokens internos automaticamente.
-    🔧 CORRIGIDO: Estrutura correta do payload para evitar erro ExpirationMonth.
+    Autoriza (e captura, se capture=True) uma transação na e.Rede.
+    Detecta e resolve tokens internos automaticamente.
+    Estrutura correta do payload conforme documentação oficial da e.Rede.
     """
     # ✅ LAZY LOADING: Dependency injection
     if config_repo is None:
@@ -202,7 +202,7 @@ async def create_rede_payment(
         from ...dependencies import get_payment_repository
         payment_repo = get_payment_repository()
 
-    # 🆕 NOVO: Resolução automática de token interno
+    # 🔄 Resolução automática de token interno
     resolved_card_data = None
     if payment_data.get("card_token"):
         card_token = payment_data["card_token"]
@@ -217,21 +217,18 @@ async def create_rede_payment(
                 resolved_card_data = real_card_data
                 logger.info("✅ Token interno resolvido - usando dados reais para Rede")
                 
-                # 🧪 DEBUG: Analisar estrutura dos dados (remover em produção)
-                await debug_card_data_structure(empresa_id, card_token)
-                
             except Exception as e:
                 logger.error(f"❌ Erro ao resolver token interno: {e}")
                 raise HTTPException(status_code=400, detail=f"Erro ao resolver token: {str(e)}")
         else:
             logger.info(f"🏷️ Token externo da Rede detectado: {card_token[:8]}...")
     
-    # 🔧 CORRIGIDO: Preparar payload com estrutura correta
+    # 📦 Preparar payload com estrutura correta
     try:
         # Garantir que amount seja numérico
         amount_value = float(payment_data["amount"]) if not isinstance(payment_data["amount"], (int, float)) else payment_data["amount"]
         
-        # Estrutura base do payload
+        # Estrutura base do payload - campos comuns
         payload: Dict[str, Any] = {
             "capture": payment_data.get("capture", True),
             "kind": payment_data.get("kind", "credit"),
@@ -241,12 +238,13 @@ async def create_rede_payment(
             "softDescriptor": payment_data.get("soft_descriptor", "PAYMENT_KODE")
         }
         
-        # ========== 🔧 CORRIGIDO: Preparação robusta dos dados do cartão ==========
+        # ========== PREPARAÇÃO DOS DADOS DO CARTÃO ==========
+        
+        # CASO 1: Token interno resolvido
         if resolved_card_data:
-            # ✅ DEBUGGING: Log dos dados resolvidos para identificar problema
-            logger.debug(f"🔍 Dados resolvidos do token: {list(resolved_card_data.keys())}")
+            logger.debug(f"🔍 Processando dados resolvidos do token interno")
             
-            # ✅ NORMALIZAÇÃO: Mapear todos os possíveis nomes de campos
+            # Normalização: Mapear possíveis nomes de campos
             card_number = (
                 resolved_card_data.get("card_number") or 
                 resolved_card_data.get("number") or 
@@ -278,7 +276,7 @@ async def create_rede_payment(
                 resolved_card_data.get("name")
             )
             
-            # ✅ VALIDAÇÃO: Verificar se todos os campos necessários estão presentes
+            # Validação dos campos obrigatórios
             missing_fields = []
             if not card_number:
                 missing_fields.append("card_number")
@@ -292,140 +290,105 @@ async def create_rede_payment(
                 missing_fields.append("cardholder_name")
             
             if missing_fields:
-                logger.error(f"❌ Campos obrigatórios ausentes nos dados do token: {missing_fields}")
-                logger.error(f"❌ Dados disponíveis: {list(resolved_card_data.keys())}")
+                logger.error(f"❌ Campos obrigatórios ausentes: {missing_fields}")
                 raise ValueError(f"Dados do cartão incompletos: {missing_fields}")
             
-            # ✅ CORRIGIDO: Estrutura final com validação de formato
-            try:
-                month_int = int(expiration_month)
-                if month_int < 1 or month_int > 12:
-                    raise ValueError(f"Mês inválido: {month_int}")
-                
-                year_str = str(expiration_year)
-                if len(year_str) == 2:
-                    # Converter YY para YYYY
-                    year_int = int(year_str)
-                    # 🔧 CORRIGIDO: Lógica atualizada para 2025+
-                    # Cartões tipicamente expiram 3-5 anos no futuro
-                    # Anos 00-49 = 20XX, anos 50-99 = 19XX (para compatibilidade com cartões muito antigos)
-                    if year_int <= 49:  # 00-49 = 20XX
-                        year_str = f"20{year_str}"
-                    else:  # 50-99 = 19XX (casos muito raros)
-                        year_str = f"19{year_str}"
-                
-                # 🔧 NOVO: Validação adicional para anos no passado
-                from datetime import datetime
-                current_year = datetime.now().year
-                year_final = int(year_str)
-                
-                if year_final < current_year:
-                    logger.warning(f"⚠️ Ano do cartão parece estar no passado: {year_final}. Ano atual: {current_year}")
-                    # Não bloquear, apenas alertar, pois pode ser intencional para testes
-                elif year_final > current_year + 10:
-                    logger.warning(f"⚠️ Ano do cartão parece muito distante: {year_final}. Ano atual: {current_year}")
-                
-                # 🔧 NOVO: Validação de mês/ano combinados para cartões expirados
-                if year_final == current_year:
-                    from datetime import datetime
-                    current_month = datetime.now().month
-                    if month_int < current_month:
-                        logger.warning(f"⚠️ Cartão pode estar expirado: {month_int:02d}/{year_final}")
-                        # Não bloquear em sandbox, apenas alertar
-                
-                # 🔧 CORREÇÃO FINAL: API da Rede espera NÚMEROS INTEIROS, não strings!
-                # Baseado na documentação oficial da e.Rede (páginas 9-11)
-                try:
-                    month_int = int(month_int)  # Garantir que é inteiro
-                    year_int = int(year_str)    # Garantir que é inteiro
-                    
-                    # ✅ ESTRUTURA CORRETA conforme documentação oficial da e.Rede
-                    payload["card"] = {
-                        "number": str(card_number),
-                        "expirationMonth": month_int,    # NÚMERO INTEIRO conforme doc
-                        "expirationYear": year_int,      # NÚMERO INTEIRO conforme doc  
-                        "securityCode": str(security_code),
-                        "holderName": str(cardholder_name)
-                    }
-                    
-                    logger.info(f"✅ Payload do cartão preparado (formato correto): number=***{str(card_number)[-4:]}, expirationMonth={month_int}, expirationYear={year_int}")
-                    
-                except (ValueError, TypeError) as e:
-                    logger.error(f"❌ Erro ao converter dados para números inteiros: {e}")
-                    raise ValueError(f"Dados do cartão com formato inválido: {str(e)}")
-                
-                logger.debug(f"🔍 Estrutura completa do payload card: {payload['card']}")
-                
-            except (ValueError, TypeError) as e:
-                logger.error(f"❌ Erro ao formatar dados do cartão: {e}")
-                raise ValueError(f"Dados do cartão inválidos: {str(e)}")
-                
+            # Processar e validar dados
+            month_int = int(expiration_month)
+            if month_int < 1 or month_int > 12:
+                raise ValueError(f"Mês inválido: {month_int}")
+            
+            # Processar ano (converter YY para YYYY se necessário)
+            year_str = str(expiration_year)
+            if len(year_str) == 2:
+                year_int = int(year_str)
+                if year_int <= 49:  # 00-49 = 20XX
+                    year_str = f"20{year_str}"
+                else:  # 50-99 = 19XX
+                    year_str = f"19{year_str}"
+            
+            year_int = int(year_str)
+            
+            # ✅ CORRETO: Adicionar campos do cartão DIRETAMENTE no payload principal
+            payload["cardholderName"] = str(cardholder_name)
+            payload["cardNumber"] = str(card_number)
+            payload["expirationMonth"] = month_int
+            payload["expirationYear"] = year_int
+            payload["securityCode"] = str(security_code)
+            
+            logger.info(f"✅ Dados do cartão adicionados ao payload: ***{str(card_number)[-4:]}, {month_int:02d}/{year_int}")
+            
+        # CASO 2: Token externo da Rede
         elif payment_data.get("card_token") and not is_internal_token(payment_data["card_token"]):
-            # Token externo da Rede
+            # Token da Rede usa cardToken
             payload["cardToken"] = payment_data["card_token"]
             logger.info(f"✅ Usando token externo da Rede: {payment_data['card_token'][:8]}...")
             
+        # CASO 3: Dados diretos do cartão
         elif payment_data.get("card_data"):
-            # Dados diretos do cartão
             card_data = payment_data["card_data"]
             
-            try:
-                month_int = int(card_data["expiration_month"])
-                year_int = int(card_data["expiration_year"])
+            # Validar e processar dados
+            month_int = int(card_data.get("expiration_month", 0))
+            if month_int < 1 or month_int > 12:
+                raise ValueError(f"Mês inválido: {month_int}")
                 
-                # 🔧 CORREÇÃO FINAL: Dados diretos também devem ser números inteiros
-                payload["card"] = {
-                    "number": str(card_data["card_number"]),
-                    "expirationMonth": month_int,     # NÚMERO INTEIRO
-                    "expirationYear": year_int,       # NÚMERO INTEIRO
-                    "securityCode": str(card_data["security_code"]),
-                    "holderName": str(card_data["cardholder_name"])
-                }
-                
-                logger.info(f"✅ Usando dados diretos do cartão (formato correto): ***{str(card_data['card_number'])[-4:]}, expirationMonth={month_int}, expirationYear={year_int}")
-                
-            except (ValueError, TypeError, KeyError) as e:
-                logger.error(f"❌ Erro nos dados diretos do cartão: {e}")
-                raise ValueError(f"Dados do cartão inválidos: {str(e)}")
-                
+            year_str = str(card_data.get("expiration_year", ""))
+            if len(year_str) == 2:
+                year_int = int(year_str)
+                if year_int <= 49:
+                    year_str = f"20{year_str}"
+                else:
+                    year_str = f"19{year_str}"
+            
+            year_int = int(year_str)
+            
+            # ✅ CORRETO: Adicionar campos DIRETAMENTE no payload principal
+            payload["cardholderName"] = str(card_data["cardholder_name"])
+            payload["cardNumber"] = str(card_data["card_number"])
+            payload["expirationMonth"] = month_int
+            payload["expirationYear"] = year_int
+            payload["securityCode"] = str(card_data["security_code"])
+            
+            logger.info(f"✅ Dados diretos do cartão processados: ***{str(card_data['card_number'])[-4:]}")
+            
         else:
             raise ValueError("É necessário fornecer card_token ou card_data")
         
-        logger.debug(f"✅ Payload preparado corretamente: {payload}")
-        
-        # 🔧 NOVO: Log especial para debugging ExpirationMonth
-        if "card" in payload:
-            card_payload = payload["card"]
-            logger.info(f"🔍 DEBUGGING EXPIRATION: expirationMonth='{card_payload.get('expirationMonth')}', expirationYear='{card_payload.get('expirationYear')}'")
+        # Log do payload final para debug
+        payload_log = payload.copy()
+        if "cardNumber" in payload_log:
+            payload_log["cardNumber"] = f"***{payload_log['cardNumber'][-4:]}"
+        if "securityCode" in payload_log:
+            payload_log["securityCode"] = "***"
             
-            # Verificar se algum campo está None ou vazio
-            for field_name, field_value in card_payload.items():
-                if field_value is None or field_value == "":
-                    logger.error(f"❌ Campo do cartão está vazio: {field_name} = '{field_value}'")
+        logger.debug(f"📦 Payload final preparado: {payload_log}")
         
     except Exception as e:
         logger.error(f"❌ Erro ao preparar payload: {e}")
         raise HTTPException(status_code=400, detail=f"Erro ao preparar dados do pagamento: {str(e)}")
 
+    # Obter headers de autenticação
     headers = await get_rede_headers(empresa_id, config_repo)
     
-    # 🔧 NOVO: Validação final antes do envio
-    if "card" in payload:
-        required_card_fields = ["number", "expirationMonth", "expirationYear", "securityCode", "holderName"]
-        card_data = payload["card"]
-        
-        for field in required_card_fields:
-            if field not in card_data or not card_data[field] or card_data[field] == "":
-                logger.error(f"❌ VALIDATION FAILED: Campo obrigatório ausente ou vazio: {field}")
-                logger.error(f"❌ Card payload atual: {card_data}")
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Campo obrigatório do cartão está ausente ou vazio: {field}"
-                )
-        
-        logger.info(f"✅ Validação de campos obrigatórios passou")
+    # Validação final antes do envio
+    required_fields = ["capture", "kind", "reference", "amount", "installments"]
     
-    # 🔧 NOVO: Logs detalhados para debugging
+    # Campos obrigatórios condicionais
+    if "cardToken" not in payload:
+        required_fields.extend(["cardholderName", "cardNumber", "expirationMonth", "expirationYear", "securityCode"])
+    
+    for field in required_fields:
+        if field not in payload or payload[field] in [None, ""]:
+            logger.error(f"❌ Campo obrigatório ausente ou vazio: {field}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Campo obrigatório ausente ou vazio: {field}"
+            )
+    
+    logger.info(f"✅ Validação de campos obrigatórios passou")
+    
+    # Enviar requisição para a Rede
     logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
     logger.info(f"📍 URL: {TRANSACTIONS_URL}")
     logger.info(f"🔧 Ambiente: {rede_env}")
@@ -434,13 +397,16 @@ async def create_rede_payment(
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(TRANSACTIONS_URL, json=payload, headers=headers)
             
-            # 🔧 NOVO: Log detalhado da resposta para debugging
             logger.info(f"📥 Rede Response Status: {resp.status_code}")
+            
+            # Log da resposta em caso de erro
+            if resp.status_code != 200:
+                logger.error(f"❌ Resposta da Rede: {resp.text}")
             
             resp.raise_for_status()
             data = resp.json()
             
-            # 🔧 NOVO: RESPONSE HANDLING MELHORADO
+            # Processar resposta
             return_code = data.get("returnCode", "")
             return_message = data.get("returnMessage", "")
             tid = data.get("tid")
@@ -448,10 +414,9 @@ async def create_rede_payment(
             
             logger.info(f"📥 Rede response: code={return_code}, message={return_message}, tid={tid}")
             
-            # 🔧 NOVO: Atualizar pagamento no banco com dados da Rede - ✅ USANDO INTERFACE
+            # Atualizar status no banco se aprovado
             transaction_id = payment_data.get("transaction_id")
             if transaction_id and return_code == "00":
-                # Salvar dados da Rede no banco
                 await payment_repo.update_payment_status(
                     transaction_id=transaction_id,
                     empresa_id=empresa_id,
@@ -491,24 +456,45 @@ async def create_rede_payment(
         code, text = e.response.status_code, e.response.text
         logger.error(f"❌ Rede retornou HTTP {code}: {text}")
         
-        # 🔧 MELHORADO: Tratamento específico para erros comuns
-        if code == 404:
-            logger.error(f"❌ ERRO 404: Endpoint não encontrado!")
-            logger.error(f"❌ URL usada: {TRANSACTIONS_URL}")
+        # Tratamento específico para erros comuns
+        if code == 400:
+            # Tentar extrair mensagem de erro do corpo da resposta
+            try:
+                error_data = e.response.json()
+                error_msg = error_data.get("message", text)
+            except:
+                error_msg = text
+            
+            logger.error(f"❌ Erro 400 - Requisição inválida: {error_msg}")
+            raise HTTPException(status_code=400, detail=f"Requisição inválida: {error_msg}")
+            
+        elif code == 404:
+            logger.error(f"❌ ERRO 404: Endpoint não encontrado! URL: {TRANSACTIONS_URL}")
             raise HTTPException(
                 status_code=502, 
-                detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {TRANSACTIONS_URL}"
+                detail=f"Endpoint da Rede não encontrado (404). Verifique configuração do ambiente."
             )
+            
         elif code == 405:
-            logger.error(f"❌ ERRO 405: Método não permitido! URL: {TRANSACTIONS_URL}")
+            logger.error(f"❌ ERRO 405: Método não permitido!")
             raise HTTPException(
                 status_code=502, 
-                detail=f"Método não permitido pela Rede (405). Ambiente: {rede_env}"
+                detail=f"Método HTTP não permitido pela Rede (405)"
             )
-        
-        if code in (400, 402, 403):
-            raise HTTPException(status_code=code, detail=f"Pagamento recusado pela Rede: {text}")
-        raise HTTPException(status_code=502, detail="Erro no gateway Rede")
+            
+        elif code in (401, 403):
+            logger.error(f"❌ ERRO {code}: Falha de autenticação/autorização")
+            raise HTTPException(
+                status_code=401, 
+                detail=f"Falha de autenticação com a Rede. Verifique as credenciais."
+            )
+            
+        elif code == 402:
+            raise HTTPException(status_code=402, detail=f"Pagamento recusado: {text}")
+            
+        else:
+            raise HTTPException(status_code=502, detail=f"Erro no gateway Rede: HTTP {code}")
+            
     except Exception as e:
         logger.error(f"❌ Erro de conexão com a Rede: {e}")
         raise HTTPException(status_code=502, detail="Erro de conexão ao processar pagamento na Rede")
@@ -520,34 +506,50 @@ async def tokenize_rede_card(
     config_repo: Optional[ConfigRepositoryInterface] = None
 ) -> str:
     """
-    ✅ MIGRADO: Tokeniza o cartão na Rede.
-    🔧 CORRIGIDO: Usando URL correta e logs melhorados.
+    Tokeniza o cartão na Rede.
+    Retorna o token que pode ser usado em transações futuras.
     """
     headers = await get_rede_headers(empresa_id, config_repo)
+    
+    # ✅ CORRIGIDO: Campos no nível raiz, não dentro de objeto "card"
     payload = {
-        "number":          card_data["card_number"],
-        "expirationMonth": int(card_data["expiration_month"]),  # Garantir formato 01, 02, etc.
+        "cardNumber":      str(card_data["card_number"]),
+        "cardholderName":  str(card_data["cardholder_name"]),
+        "expirationMonth": int(card_data["expiration_month"]),
         "expirationYear":  int(card_data["expiration_year"]),
-        "securityCode":    card_data["security_code"],
-        "holderName":      card_data["cardholder_name"],
+        "securityCode":    str(card_data["security_code"])
     }
     
+    # Validação do ano (converter YY para YYYY se necessário)
+    year_str = str(payload["expirationYear"])
+    if len(year_str) == 2:
+        year_int = int(year_str)
+        if year_int <= 49:  # 00-49 = 20XX
+            payload["expirationYear"] = int(f"20{year_str}")
+        else:  # 50-99 = 19XX
+            payload["expirationYear"] = int(f"19{year_str}")
+    
+    # Log sem dados sensíveis
     logger.info(f"🔐 Tokenizando cartão na Rede: {CARD_URL}")
-    logger.debug(f"📦 Payload tokenização: {payload}")
+    logger.debug(f"📦 Payload tokenização: cardNumber=***{payload['cardNumber'][-4:]}, expirationMonth={payload['expirationMonth']}, expirationYear={payload['expirationYear']}")
     
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(CARD_URL, json=payload, headers=headers)
             
-            # 🔧 NOVO: Log da resposta para debugging
             logger.info(f"📥 Tokenização Rede Status: {resp.status_code}")
+            
+            if resp.status_code != 200:
+                logger.error(f"❌ Resposta da tokenização: {resp.text}")
             
             resp.raise_for_status()
             result = resp.json()
-            token = result.get("cardToken")
+            
+            # O token pode vir em diferentes campos dependendo da versão da API
+            token = result.get("token") or result.get("cardToken")
             
             if token:
-                logger.info(f"✅ Cartão tokenizado com sucesso na Rede")
+                logger.info(f"✅ Cartão tokenizado com sucesso na Rede: {token[:8]}...")
                 return token
             else:
                 logger.error(f"❌ Token não retornado pela Rede: {result}")
@@ -556,25 +558,44 @@ async def tokenize_rede_card(
     except httpx.HTTPStatusError as e:
         logger.error(f"❌ Rede tokenização HTTP {e.response.status_code}: {e.response.text}")
         
-        # 🔧 MELHORADO: Tratamento específico para erros comuns
-        if e.response.status_code == 404:
+        # Tratamento específico para erros comuns
+        if e.response.status_code == 400:
+            # Tentar extrair mensagem de erro
+            try:
+                error_data = e.response.json()
+                error_msg = error_data.get("message", e.response.text)
+            except:
+                error_msg = e.response.text
+            
+            logger.error(f"❌ Erro 400 - Dados inválidos: {error_msg}")
+            raise HTTPException(status_code=400, detail=f"Dados do cartão inválidos: {error_msg}")
+            
+        elif e.response.status_code == 404:
             logger.error(f"❌ ERRO 404 na tokenização: Endpoint não encontrado! URL: {CARD_URL}")
             raise HTTPException(
                 status_code=502, 
-                detail=f"Endpoint da Rede não encontrado (404). Ambiente: {rede_env} | URL: {CARD_URL}"
+                detail=f"Endpoint de tokenização não encontrado. Verifique a configuração."
             )
+            
         elif e.response.status_code == 405:
-            logger.error(f"❌ ERRO 405 na tokenização: Método não permitido! URL: {CARD_URL}")
+            logger.error(f"❌ ERRO 405 na tokenização: Método não permitido!")
             raise HTTPException(
                 status_code=502, 
-                detail=f"Método não permitido pela Rede (405). Ambiente: {rede_env}"
+                detail=f"Método HTTP não permitido para tokenização"
+            )
+            
+        elif e.response.status_code in (401, 403):
+            logger.error(f"❌ ERRO {e.response.status_code}: Falha de autenticação")
+            raise HTTPException(
+                status_code=401, 
+                detail="Falha de autenticação com a Rede"
             )
         
         raise HTTPException(status_code=502, detail="Erro ao tokenizar cartão na Rede")
+        
     except Exception as e:
-        logger.error(f"❌ Rede tokenização erro: {e}")
+        logger.error(f"❌ Erro de conexão na tokenização: {e}")
         raise HTTPException(status_code=502, detail="Erro de conexão ao tokenizar cartão na Rede")
-
 
 async def capture_rede_transaction(
     empresa_id: str,
