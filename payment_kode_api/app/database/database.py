@@ -152,6 +152,50 @@ async def save_tokenized_card(data: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"❌ Erro ao salvar cartão tokenizado: {e}")
         raise
 
+def normalize_expires_at_datetime(expires_at_str: str) -> datetime:
+    """
+    Normaliza string de data para formato ISO válido.
+    Resolve problemas com microsegundos e timezone.
+    """
+    if not expires_at_str:
+        return None
+    
+    try:
+        # Primeiro, tentar o formato direto
+        return datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+    except ValueError:
+        pass
+    
+    try:
+        # Remover Z e adicionar timezone explicitamente
+        clean_date = expires_at_str.replace('Z', '')
+        
+        # Se tem microsegundos com mais de 6 dígitos, truncar
+        if '.' in clean_date:
+            date_part, micro_part = clean_date.split('.')
+            # Pegar apenas os primeiros 6 dígitos dos microsegundos
+            micro_part = micro_part[:6].ljust(6, '0')  # Preenche com zeros se necessário
+            clean_date = f"{date_part}.{micro_part}"
+        
+        # Adicionar timezone UTC
+        clean_date += '+00:00'
+        
+        return datetime.fromisoformat(clean_date)
+    except ValueError:
+        pass
+    
+    try:
+        # Fallback: tentar parsing mais flexível
+        # Remove tudo após o T e reconstrói
+        date_part = expires_at_str.split('T')[0]
+        return datetime.strptime(date_part, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.error(f"❌ Não foi possível fazer parse da data: {expires_at_str}")
+        return None
+
+
+
+
 
 async def get_tokenized_card(card_token: str) -> Optional[Dict[str, Any]]:
     """Busca cartão tokenizado por token."""
@@ -169,22 +213,25 @@ async def get_tokenized_card(card_token: str) -> Optional[Dict[str, Any]]:
         if response.data:
             card = response.data[0]
             
-            # Verificar se cartão expirou
+            # 🔧 CORRIGIDO: Verificar se cartão expirou com parsing melhorado
             expires_at = card.get("expires_at")
             if expires_at:
                 try:
-                    exp_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                    if exp_dt.tzinfo is None:
-                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
-                    
-                    if exp_dt < datetime.now(timezone.utc):
-                        logger.warning(f"⚠️ Cartão tokenizado expirado: {card_token}")
-                        card["is_expired"] = True
+                    exp_dt = normalize_expires_at_datetime(expires_at)
+                    if exp_dt:
+                        if exp_dt < datetime.now(timezone.utc):
+                            logger.warning(f"⚠️ Cartão tokenizado expirado: {card_token}")
+                            card["is_expired"] = True
+                        else:
+                            card["is_expired"] = False
                     else:
-                        card["is_expired"] = False
+                        logger.warning(f"⚠️ Data de expiração inválida para cartão {card_token}")
+                        card["is_expired"] = True
                 except Exception as e:
                     logger.warning(f"⚠️ Erro ao verificar expiração do cartão {card_token}: {e}")
-                    card["is_expired"] = False
+                    card["is_expired"] = True  # Por segurança, considera expirado
+            else:
+                card["is_expired"] = True  # Sem data de expiração = expirado
             
             return card
         
@@ -194,7 +241,7 @@ async def get_tokenized_card(card_token: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ Erro ao buscar cartão tokenizado {card_token}: {e}")
         raise
 
-
+    
 async def delete_tokenized_card(card_token: str) -> bool:
     """Remove cartão tokenizado."""
     try:

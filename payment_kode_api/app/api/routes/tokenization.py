@@ -96,6 +96,18 @@ class TokenizedCardResponse(BaseModel):
     is_internal_token: bool = True
 
 
+# 🔧 NOVO: Função para gerar data de expiração no formato correto
+def generate_proper_expires_at() -> str:
+    """
+    Gera data de expiração em formato ISO 8601 válido.
+    Corrige o problema de microsegundos e timezone.
+    """
+    from datetime import datetime, timezone, timedelta
+    expires_at = datetime.now(timezone.utc) + timedelta(days=730)  # 2 anos
+    # Garantir formato correto: YYYY-MM-DDTHH:MM:SS.ffffffZ
+    return expires_at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+
 @router.post("/tokenize-card", response_model=TokenizedCardResponse)
 async def tokenize_card(
     card_data: TokenizeCardRequest,
@@ -201,9 +213,8 @@ async def tokenize_card(
         card_brand = detect_card_brand(card_data.card_number)
         last_four_digits = card_data.card_number[-4:]
         
-        # Calcular data de expiração do token (2 anos)
-        from datetime import datetime, timezone, timedelta
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=730)).isoformat()
+        # 🔧 CORRIGIDO: Usar função que gera data no formato correto
+        expires_at = generate_proper_expires_at()
         
         # Dados seguros (sem informações sensíveis)
         safe_card_data = {
@@ -213,7 +224,7 @@ async def tokenize_card(
             "expiration_month": card_data.expiration_month,
             "expiration_year": card_data.expiration_year,
             "tokenization_method": "company_encryption_v1",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": generate_proper_expires_at(),  # 🔧 CORRIGIDO: Usar função correta
             "expires_at": expires_at
         }
         
@@ -541,6 +552,55 @@ async def migrate_rsa_tokens_route(
     except Exception as e:
         logger.error(f"❌ Erro na migração de tokens: {e}")
         raise HTTPException(status_code=500, detail="Erro interno na migração.")
+
+
+# ========== ENDPOINT DE TESTE/DEBUG ==========
+
+@router.get("/test-date-format")
+async def test_date_format():
+    """
+    🧪 NOVO: Endpoint para testar o formato correto de datas.
+    Útil para debugging do problema de formato de data.
+    """
+    from datetime import datetime, timezone, timedelta
+    
+    # Data problemática (como estava sendo gerada)
+    problematic_date = datetime.now(timezone.utc).isoformat()
+    
+    # Data corrigida (como deve ser gerada)
+    correct_date = generate_proper_expires_at()
+    
+    # Teste de parsing
+    try:
+        parsed_problematic = datetime.fromisoformat(problematic_date.replace('Z', '+00:00'))
+        problematic_ok = True
+    except Exception as e:
+        problematic_ok = False
+        problematic_error = str(e)
+    
+    try:
+        parsed_correct = datetime.fromisoformat(correct_date.replace('Z', '+00:00'))
+        correct_ok = True
+    except Exception as e:
+        correct_ok = False
+        correct_error = str(e)
+    
+    return {
+        "test_results": {
+            "problematic_date": {
+                "value": problematic_date,
+                "parseable": problematic_ok,
+                "error": problematic_error if not problematic_ok else None
+            },
+            "correct_date": {
+                "value": correct_date,
+                "parseable": correct_ok,
+                "error": correct_error if not correct_ok else None
+            }
+        },
+        "recommendation": "Use generate_proper_expires_at() para gerar datas",
+        "format_expected": "YYYY-MM-DDTHH:MM:SS.ffffffZ (6 dígitos de microsegundos + Z)"
+    }
 
 
 # ========== FUNÇÕES AUXILIARES ==========

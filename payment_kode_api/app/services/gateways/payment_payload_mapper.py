@@ -77,7 +77,7 @@ def map_to_asaas_pix_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     🔧 CORRIGIDO: Mapeia os dados do pagamento para o formato correto da e.Rede.
-    - Usa 'card_token' se presente, senão mapeia os dados de cartão.
+    - Usa 'cardToken' se presente, senão mapeia os dados de cartão dentro do objeto 'card'.
     - Inclui 'reference' para rastrear a transação.
     """
     # validação mínima
@@ -98,18 +98,19 @@ def map_to_rede_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "softDescriptor": data.get("soft_descriptor", "PAYMENT_KODE")  # 🔧 CORRIGIDO: Nome mais apropriado
     }
 
-    # 🔧 CORRIGIDO: Lógica de dados do cartão
+    # 🔧 CORRIGIDO: Estrutura correta para dados do cartão
     if data.get("card_token"):
+        # Se tem token, usar cardToken
         payload["cardToken"] = data["card_token"]
     else:
-        # 🔧 CORRIGIDO: Campos corretos para a e.Rede
-        payload.update({
-            "cardNumber": data["card_number"],
-            "expirationMonth": f"{int(data['expiration_month']):02d}",  # 🔧 CORRIGIDO: String formatada
-            "expirationYear": data["expiration_year"],
+        # 🔧 CORRIGIDO: Estrutura 'card' conforme documentação da Rede
+        payload["card"] = {
+            "number": data["card_number"],
+            "expirationMonth": f"{int(data['expiration_month']):02d}",  # Garantir formato 01, 02, etc.
+            "expirationYear": str(data["expiration_year"]),  # Pode ser 2027 ou 27
             "securityCode": data["security_code"],
-            "cardHolderName": data["cardholder_name"],  # 🔧 CORRIGIDO: CamelCase adequado
-        })
+            "holderName": data["cardholder_name"]
+        }
 
     return payload
 
