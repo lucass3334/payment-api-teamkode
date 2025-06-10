@@ -526,8 +526,8 @@ async def tokenize_rede_card(
     headers = await get_rede_headers(empresa_id, config_repo)
     payload = {
         "number":          card_data["card_number"],
-        "expirationMonth": f"{int(card_data['expiration_month']):02d}",  # Garantir formato 01, 02, etc.
-        "expirationYear":  str(card_data["expiration_year"]),
+        "expirationMonth": int(card_data["expiration_month"]),  # Garantir formato 01, 02, etc.
+        "expirationYear":  int(card_data["expiration_year"]),
         "securityCode":    card_data["security_code"],
         "holderName":      card_data["cardholder_name"],
     }
