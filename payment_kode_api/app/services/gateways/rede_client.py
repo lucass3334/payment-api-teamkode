@@ -333,15 +333,27 @@ async def create_rede_payment(
                         logger.warning(f"⚠️ Cartão pode estar expirado: {month_int:02d}/{year_final}")
                         # Não bloquear em sandbox, apenas alertar
                 
-                payload["card"] = {
-                    "number": str(card_number),
-                    "expirationMonth": f"{month_int:02d}",
-                    "expirationYear": year_str,
-                    "securityCode": str(security_code),
-                    "holderName": str(cardholder_name)
-                }
+                # 🔧 CORREÇÃO FINAL: API da Rede espera NÚMEROS INTEIROS, não strings!
+                # Baseado na documentação oficial da e.Rede (páginas 9-11)
+                try:
+                    month_int = int(month_int)  # Garantir que é inteiro
+                    year_int = int(year_str)    # Garantir que é inteiro
+                    
+                    # ✅ ESTRUTURA CORRETA conforme documentação oficial da e.Rede
+                    payload["card"] = {
+                        "number": str(card_number),
+                        "expirationMonth": month_int,    # NÚMERO INTEIRO conforme doc
+                        "expirationYear": year_int,      # NÚMERO INTEIRO conforme doc  
+                        "securityCode": str(security_code),
+                        "holderName": str(cardholder_name)
+                    }
+                    
+                    logger.info(f"✅ Payload do cartão preparado (formato correto): number=***{str(card_number)[-4:]}, expirationMonth={month_int}, expirationYear={year_int}")
+                    
+                except (ValueError, TypeError) as e:
+                    logger.error(f"❌ Erro ao converter dados para números inteiros: {e}")
+                    raise ValueError(f"Dados do cartão com formato inválido: {str(e)}")
                 
-                logger.info(f"✅ Payload do cartão preparado: number=***{str(card_number)[-4:]}, month={month_int:02d}, year={year_str}")
                 logger.debug(f"🔍 Estrutura completa do payload card: {payload['card']}")
                 
             except (ValueError, TypeError) as e:
@@ -359,17 +371,18 @@ async def create_rede_payment(
             
             try:
                 month_int = int(card_data["expiration_month"])
-                year_str = str(card_data["expiration_year"])
+                year_int = int(card_data["expiration_year"])
                 
+                # 🔧 CORREÇÃO FINAL: Dados diretos também devem ser números inteiros
                 payload["card"] = {
                     "number": str(card_data["card_number"]),
-                    "expirationMonth": f"{month_int:02d}",
-                    "expirationYear": year_str,
+                    "expirationMonth": month_int,     # NÚMERO INTEIRO
+                    "expirationYear": year_int,       # NÚMERO INTEIRO
                     "securityCode": str(card_data["security_code"]),
                     "holderName": str(card_data["cardholder_name"])
                 }
                 
-                logger.info(f"✅ Usando dados diretos do cartão: ***{str(card_data['card_number'])[-4:]}")
+                logger.info(f"✅ Usando dados diretos do cartão (formato correto): ***{str(card_data['card_number'])[-4:]}, expirationMonth={month_int}, expirationYear={year_int}")
                 
             except (ValueError, TypeError, KeyError) as e:
                 logger.error(f"❌ Erro nos dados diretos do cartão: {e}")
