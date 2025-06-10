@@ -306,10 +306,32 @@ async def create_rede_payment(
                 if len(year_str) == 2:
                     # Converter YY para YYYY
                     year_int = int(year_str)
-                    if year_int < 30:  # Assumir 20XX
+                    # 🔧 CORRIGIDO: Lógica atualizada para 2025+
+                    # Cartões tipicamente expiram 3-5 anos no futuro
+                    # Anos 00-49 = 20XX, anos 50-99 = 19XX (para compatibilidade com cartões muito antigos)
+                    if year_int <= 49:  # 00-49 = 20XX
                         year_str = f"20{year_str}"
-                    else:  # Assumir 19XX
+                    else:  # 50-99 = 19XX (casos muito raros)
                         year_str = f"19{year_str}"
+                
+                # 🔧 NOVO: Validação adicional para anos no passado
+                from datetime import datetime
+                current_year = datetime.now().year
+                year_final = int(year_str)
+                
+                if year_final < current_year:
+                    logger.warning(f"⚠️ Ano do cartão parece estar no passado: {year_final}. Ano atual: {current_year}")
+                    # Não bloquear, apenas alertar, pois pode ser intencional para testes
+                elif year_final > current_year + 10:
+                    logger.warning(f"⚠️ Ano do cartão parece muito distante: {year_final}. Ano atual: {current_year}")
+                
+                # 🔧 NOVO: Validação de mês/ano combinados para cartões expirados
+                if year_final == current_year:
+                    from datetime import datetime
+                    current_month = datetime.now().month
+                    if month_int < current_month:
+                        logger.warning(f"⚠️ Cartão pode estar expirado: {month_int:02d}/{year_final}")
+                        # Não bloquear em sandbox, apenas alertar
                 
                 payload["card"] = {
                     "number": str(card_number),
@@ -320,6 +342,7 @@ async def create_rede_payment(
                 }
                 
                 logger.info(f"✅ Payload do cartão preparado: number=***{str(card_number)[-4:]}, month={month_int:02d}, year={year_str}")
+                logger.debug(f"🔍 Estrutura completa do payload card: {payload['card']}")
                 
             except (ValueError, TypeError) as e:
                 logger.error(f"❌ Erro ao formatar dados do cartão: {e}")
@@ -357,11 +380,37 @@ async def create_rede_payment(
         
         logger.debug(f"✅ Payload preparado corretamente: {payload}")
         
+        # 🔧 NOVO: Log especial para debugging ExpirationMonth
+        if "card" in payload:
+            card_payload = payload["card"]
+            logger.info(f"🔍 DEBUGGING EXPIRATION: expirationMonth='{card_payload.get('expirationMonth')}', expirationYear='{card_payload.get('expirationYear')}'")
+            
+            # Verificar se algum campo está None ou vazio
+            for field_name, field_value in card_payload.items():
+                if field_value is None or field_value == "":
+                    logger.error(f"❌ Campo do cartão está vazio: {field_name} = '{field_value}'")
+        
     except Exception as e:
         logger.error(f"❌ Erro ao preparar payload: {e}")
         raise HTTPException(status_code=400, detail=f"Erro ao preparar dados do pagamento: {str(e)}")
 
     headers = await get_rede_headers(empresa_id, config_repo)
+    
+    # 🔧 NOVO: Validação final antes do envio
+    if "card" in payload:
+        required_card_fields = ["number", "expirationMonth", "expirationYear", "securityCode", "holderName"]
+        card_data = payload["card"]
+        
+        for field in required_card_fields:
+            if field not in card_data or not card_data[field] or card_data[field] == "":
+                logger.error(f"❌ VALIDATION FAILED: Campo obrigatório ausente ou vazio: {field}")
+                logger.error(f"❌ Card payload atual: {card_data}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Campo obrigatório do cartão está ausente ou vazio: {field}"
+                )
+        
+        logger.info(f"✅ Validação de campos obrigatórios passou")
     
     # 🔧 NOVO: Logs detalhados para debugging
     logger.info(f"🚀 Enviando pagamento à Rede: empresa={empresa_id}")
