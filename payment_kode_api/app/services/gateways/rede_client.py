@@ -1,10 +1,7 @@
-# payment_kode_api/app/services/gateways/rede_client.py
-
+import uuid
 import httpx
 from base64 import b64encode
 from typing import Any, Dict, Optional
-import uuid
-
 from fastapi import HTTPException
 
 from payment_kode_api.app.core.config import settings
@@ -112,6 +109,35 @@ def is_internal_token(token: str) -> bool:
         return False
 
 
+async def debug_card_data_structure(empresa_id: str, card_token: str) -> Dict[str, Any]:
+    """
+    🧪 FUNÇÃO DE DEBUG: Analisa estrutura dos dados do cartão descriptografados.
+    Útil para identificar problemas com nomes de campos.
+    """
+    try:
+        real_card_data = await resolve_internal_token(empresa_id, card_token)
+        
+        debug_info = {
+            "available_fields": list(real_card_data.keys()),
+            "field_values": {k: "***" if k in ["card_number", "security_code"] else v 
+                           for k, v in real_card_data.items()},
+            "has_required_fields": {
+                "card_number": any(k in real_card_data for k in ["card_number", "number", "cardNumber"]),
+                "expiration_month": any(k in real_card_data for k in ["expiration_month", "expirationMonth", "month"]),
+                "expiration_year": any(k in real_card_data for k in ["expiration_year", "expirationYear", "year"]),
+                "security_code": any(k in real_card_data for k in ["security_code", "securityCode", "cvv", "ccv"]),
+                "cardholder_name": any(k in real_card_data for k in ["cardholder_name", "holderName", "name"])
+            }
+        }
+        
+        logger.info(f"🔍 Debug card data: {debug_info}")
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"❌ Erro no debug: {e}")
+        return {"error": str(e)}
+
+
 # ✅ MANTÉM: Funções existentes com pequenas melhorias
 
 async def get_rede_headers(
@@ -190,6 +216,10 @@ async def create_rede_payment(
                 real_card_data = await resolve_internal_token(empresa_id, card_token)
                 resolved_card_data = real_card_data
                 logger.info("✅ Token interno resolvido - usando dados reais para Rede")
+                
+                # 🧪 DEBUG: Analisar estrutura dos dados (remover em produção)
+                await debug_card_data_structure(empresa_id, card_token)
+                
             except Exception as e:
                 logger.error(f"❌ Erro ao resolver token interno: {e}")
                 raise HTTPException(status_code=400, detail=f"Erro ao resolver token: {str(e)}")
@@ -211,29 +241,117 @@ async def create_rede_payment(
             "softDescriptor": payment_data.get("soft_descriptor", "PAYMENT_KODE")
         }
         
-        # 🔧 CORRIGIDO: Estrutura do cartão conforme documentação da Rede
+        # ========== 🔧 CORRIGIDO: Preparação robusta dos dados do cartão ==========
         if resolved_card_data:
-            # Usar dados resolvidos do token interno
-            payload["card"] = {
-                "number": resolved_card_data["card_number"],
-                "expirationMonth": f"{int(resolved_card_data['expiration_month']):02d}",
-                "expirationYear": str(resolved_card_data["expiration_year"]),
-                "securityCode": resolved_card_data["security_code"],
-                "holderName": resolved_card_data["cardholder_name"]
-            }
+            # ✅ DEBUGGING: Log dos dados resolvidos para identificar problema
+            logger.debug(f"🔍 Dados resolvidos do token: {list(resolved_card_data.keys())}")
+            
+            # ✅ NORMALIZAÇÃO: Mapear todos os possíveis nomes de campos
+            card_number = (
+                resolved_card_data.get("card_number") or 
+                resolved_card_data.get("number") or 
+                resolved_card_data.get("cardNumber")
+            )
+            
+            expiration_month = (
+                resolved_card_data.get("expiration_month") or 
+                resolved_card_data.get("expirationMonth") or 
+                resolved_card_data.get("month")
+            )
+            
+            expiration_year = (
+                resolved_card_data.get("expiration_year") or 
+                resolved_card_data.get("expirationYear") or 
+                resolved_card_data.get("year")
+            )
+            
+            security_code = (
+                resolved_card_data.get("security_code") or 
+                resolved_card_data.get("securityCode") or 
+                resolved_card_data.get("cvv") or 
+                resolved_card_data.get("ccv")
+            )
+            
+            cardholder_name = (
+                resolved_card_data.get("cardholder_name") or 
+                resolved_card_data.get("holderName") or 
+                resolved_card_data.get("name")
+            )
+            
+            # ✅ VALIDAÇÃO: Verificar se todos os campos necessários estão presentes
+            missing_fields = []
+            if not card_number:
+                missing_fields.append("card_number")
+            if not expiration_month:
+                missing_fields.append("expiration_month")
+            if not expiration_year:
+                missing_fields.append("expiration_year")
+            if not security_code:
+                missing_fields.append("security_code")
+            if not cardholder_name:
+                missing_fields.append("cardholder_name")
+            
+            if missing_fields:
+                logger.error(f"❌ Campos obrigatórios ausentes nos dados do token: {missing_fields}")
+                logger.error(f"❌ Dados disponíveis: {list(resolved_card_data.keys())}")
+                raise ValueError(f"Dados do cartão incompletos: {missing_fields}")
+            
+            # ✅ CORRIGIDO: Estrutura final com validação de formato
+            try:
+                month_int = int(expiration_month)
+                if month_int < 1 or month_int > 12:
+                    raise ValueError(f"Mês inválido: {month_int}")
+                
+                year_str = str(expiration_year)
+                if len(year_str) == 2:
+                    # Converter YY para YYYY
+                    year_int = int(year_str)
+                    if year_int < 30:  # Assumir 20XX
+                        year_str = f"20{year_str}"
+                    else:  # Assumir 19XX
+                        year_str = f"19{year_str}"
+                
+                payload["card"] = {
+                    "number": str(card_number),
+                    "expirationMonth": f"{month_int:02d}",
+                    "expirationYear": year_str,
+                    "securityCode": str(security_code),
+                    "holderName": str(cardholder_name)
+                }
+                
+                logger.info(f"✅ Payload do cartão preparado: number=***{str(card_number)[-4:]}, month={month_int:02d}, year={year_str}")
+                
+            except (ValueError, TypeError) as e:
+                logger.error(f"❌ Erro ao formatar dados do cartão: {e}")
+                raise ValueError(f"Dados do cartão inválidos: {str(e)}")
+                
         elif payment_data.get("card_token") and not is_internal_token(payment_data["card_token"]):
             # Token externo da Rede
             payload["cardToken"] = payment_data["card_token"]
+            logger.info(f"✅ Usando token externo da Rede: {payment_data['card_token'][:8]}...")
+            
         elif payment_data.get("card_data"):
             # Dados diretos do cartão
             card_data = payment_data["card_data"]
-            payload["card"] = {
-                "number": card_data["card_number"],
-                "expirationMonth": f"{int(card_data['expiration_month']):02d}",
-                "expirationYear": str(card_data["expiration_year"]),
-                "securityCode": card_data["security_code"],
-                "holderName": card_data["cardholder_name"]
-            }
+            
+            try:
+                month_int = int(card_data["expiration_month"])
+                year_str = str(card_data["expiration_year"])
+                
+                payload["card"] = {
+                    "number": str(card_data["card_number"]),
+                    "expirationMonth": f"{month_int:02d}",
+                    "expirationYear": year_str,
+                    "securityCode": str(card_data["security_code"]),
+                    "holderName": str(card_data["cardholder_name"])
+                }
+                
+                logger.info(f"✅ Usando dados diretos do cartão: ***{str(card_data['card_number'])[-4:]}")
+                
+            except (ValueError, TypeError, KeyError) as e:
+                logger.error(f"❌ Erro nos dados diretos do cartão: {e}")
+                raise ValueError(f"Dados do cartão inválidos: {str(e)}")
+                
         else:
             raise ValueError("É necessário fornecer card_token ou card_data")
         
@@ -701,6 +819,7 @@ async def create_rede_payment_legacy(empresa_id: str, **payment_data: Any) -> Di
 __all__ = [
     "resolve_internal_token",
     "is_internal_token",
+    "debug_card_data_structure",
     "get_rede_headers",
     "tokenize_rede_card",
     "create_rede_payment",
