@@ -289,7 +289,7 @@ async def refund_credit_card(
                 )
                 
                 # 🔧 MELHORADO: Verificar diferentes status de sucesso
-                if resp.get("status") == "refunded" or resp.get("returnCode") == "00":
+                if resp.get("status") == "refunded" or resp.get("returnCode") in ["00","359", "360"]:
                     new_status = "canceled"
                     # ✅ USANDO INTERFACE
                     await payment_repo.update_payment_status(tx_id, empresa_id, new_status)
@@ -308,8 +308,10 @@ async def refund_credit_card(
                         "status": new_status, 
                         "transaction_id": tx_id, 
                         "provider": "rede",
-                        "rede_tid": payment.get("rede_tid")
-                    }
+                        "rede_tid": payment.get("rede_tid"),
+                        "return_code": resp.get("return_code"),
+                        "message": resp.get("message", "Estorno processado com sucesso")
+                    } 
                 else:
                     logger.warning(f"⚠️ [refund_cc] Rede retornou status inesperado: {resp}")
                     
