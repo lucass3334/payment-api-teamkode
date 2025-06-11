@@ -743,7 +743,7 @@ async def create_rede_refund(
             # 🔧 ANÁLISE DETALHADA DA RESPOSTA POR STATUS CODE
             
             if resp.status_code == 200:
-                # ✅ SUCESSO PADRÃO (RARO PARA ESTORNOS)
+                # ✅ SUCESSO PADRÃO OU CÓDIGOS ESPECIAIS (359/360)
                 try:
                     data = resp.json()
                     return_code = data.get("returnCode", "")
@@ -751,10 +751,19 @@ async def create_rede_refund(
                     
                     logger.info(f"✅ [create_rede_refund] HTTP 200 - returnCode: {return_code}, message: {return_message}")
                     
-                    if return_code == "00":
-                        # Sucesso confirmado
+                    # 🔧 CORREÇÃO: Aceitar códigos 00, 359, 360 e mensagens de sucesso
+                    success_codes = ["00", "359", "360"]
+                    success_keywords = ["successful", "refund successful", "estorno realizado"]
+                    
+                    is_success = (
+                        return_code in success_codes or
+                        any(keyword in return_message.lower() for keyword in success_keywords)
+                    )
+                    
+                    if is_success:
+                        # 🎉 SUCESSO CONFIRMADO
                         await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
-                        logger.info(f"🎉 [create_rede_refund] Estorno processado com sucesso via HTTP 200")
+                        logger.info(f"🎉 [create_rede_refund] Estorno processado com SUCESSO via HTTP 200 + código {return_code}")
                         
                         return {
                             "status": "refunded",
@@ -766,8 +775,10 @@ async def create_rede_refund(
                             "provider": "rede"
                         }
                     else:
-                        # Código de retorno indica erro
-                        logger.warning(f"⚠️ [create_rede_refund] HTTP 200 mas returnCode indica erro: {return_code}")
+                        # ❌ CÓDIGO DE RETORNO INDICA ERRO REAL
+                        logger.error(f"❌ [create_rede_refund] HTTP 200 mas returnCode indica erro: {return_code}")
+                        logger.error(f"   Códigos de sucesso esperados: {success_codes}")
+                        logger.error(f"   Mensagem recebida: '{return_message}'")
                         raise HTTPException(400, f"Estorno rejeitado pela Rede: {return_message}")
                         
                 except ValueError as e:
