@@ -673,7 +673,27 @@ async def create_rede_refund(
 ) -> Dict[str, Any]:
     """
     ✅ CORRIGIDO: Solicita estorno usando TID da Rede (não nosso transaction_id).
+    🔧 FIX CRÍTICO: Códigos 359 e 360 da Rede são tratados corretamente como SUCESSO.
+    
     Endpoint: POST /v1/transactions/{rede_tid}/refunds
+    
+    ⚠️ IMPORTANTE: A e.Rede retorna HTTP 400 para estornos bem-sucedidos!
+    - Código 359 = "Refund successful" 
+    - Código 360 = "Refund successful" (variação)
+    - Códigos 00 = Sucesso padrão (raro em estornos)
+    
+    Args:
+        empresa_id: ID da empresa
+        transaction_id: Nosso ID interno da transação
+        amount: Valor em centavos (None = estorno total)
+        config_repo: Repository de configurações (lazy loading)
+        payment_repo: Repository de pagamentos (lazy loading)
+        
+    Returns:
+        Dict com status do estorno
+        
+    Raises:
+        HTTPException: Para erros reais de comunicação ou negócio
     """
     # ✅ LAZY LOADING: Dependency injection
     if payment_repo is None:
@@ -683,103 +703,209 @@ async def create_rede_refund(
         from ...dependencies import get_config_repository
         config_repo = get_config_repository()
 
-    # 🔧 NOVO: Buscar TID da Rede no banco - ✅ USANDO INTERFACE
+    # 🔍 BUSCAR TID DA REDE NO BANCO
     payment = await payment_repo.get_payment(transaction_id, empresa_id)
     if not payment:
+        logger.error(f"❌ [create_rede_refund] Pagamento não encontrado: {transaction_id}")
         raise HTTPException(404, "Pagamento não encontrado")
     
     rede_tid = payment.get("rede_tid")
     if not rede_tid:
+        logger.error(f"❌ [create_rede_refund] TID da Rede não encontrado para: {transaction_id}")
         raise HTTPException(400, "TID da Rede não encontrado para este pagamento")
     
-    headers = await get_rede_headers(empresa_id, config_repo)
-    # 🔧 CORRIGIDO: Usar rede_tid ao invés de transaction_id
+    # 🔐 OBTER HEADERS DE AUTENTICAÇÃO
+    try:
+        headers = await get_rede_headers(empresa_id, config_repo)
+    except Exception as e:
+        logger.error(f"❌ [create_rede_refund] Erro ao obter headers: {e}")
+        raise HTTPException(401, "Erro ao obter credenciais da Rede")
+    
+    # 📍 MONTAR URL E PAYLOAD
     url = f"{TRANSACTIONS_URL}/{rede_tid}/refunds"
     payload: Dict[str, Any] = {}
     if amount is not None:
         payload["amount"] = amount
 
+    logger.info(f"🔄 [create_rede_refund] Iniciando estorno Rede")
+    logger.info(f"   Transaction ID: {transaction_id}")
+    logger.info(f"   Rede TID: {rede_tid}")
+    logger.info(f"   URL: {url}")
+    logger.info(f"   Payload: {payload}")
+
     try:
-        logger.info(f"🔄 Solicitando estorno Rede: POST {url} – payload={payload}")
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            logger.debug(f"📡 [create_rede_refund] Enviando POST para Rede...")
             resp = await client.post(url, json=payload, headers=headers)
             
-            # 🔧 CORRIGIDO: Verificar status codes específicos da Rede para estornos
-            # A Rede pode retornar 200 ou 400 com mensagem de sucesso
+            logger.info(f"📥 [create_rede_refund] Resposta Rede: HTTP {resp.status_code}")
+            
+            # 🔧 ANÁLISE DETALHADA DA RESPOSTA POR STATUS CODE
+            
             if resp.status_code == 200:
-                data = resp.json()
-                return_code = data.get("returnCode", "")
-                return_message = data.get("returnMessage", "")
-                
-                if return_code == "00":
-                    # Atualizar status no banco - ✅ USANDO INTERFACE
-                    await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
-                    logger.info(f"✅ Estorno Rede processado com sucesso: {transaction_id}")
-                    return {"status": "refunded", **data}
-                else:
-                    logger.warning(f"⚠️ Estorno Rede falhou: {return_code} - {return_message}")
-                    raise HTTPException(400, f"Estorno Rede falhou: {return_message}")
+                # ✅ SUCESSO PADRÃO (RARO PARA ESTORNOS)
+                try:
+                    data = resp.json()
+                    return_code = data.get("returnCode", "")
+                    return_message = data.get("returnMessage", "")
+                    
+                    logger.info(f"✅ [create_rede_refund] HTTP 200 - returnCode: {return_code}, message: {return_message}")
+                    
+                    if return_code == "00":
+                        # Sucesso confirmado
+                        await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                        logger.info(f"🎉 [create_rede_refund] Estorno processado com sucesso via HTTP 200")
+                        
+                        return {
+                            "status": "refunded",
+                            "transaction_id": transaction_id,
+                            "rede_tid": rede_tid,
+                            "return_code": return_code,
+                            "message": return_message,
+                            "raw_response": data,
+                            "provider": "rede"
+                        }
+                    else:
+                        # Código de retorno indica erro
+                        logger.warning(f"⚠️ [create_rede_refund] HTTP 200 mas returnCode indica erro: {return_code}")
+                        raise HTTPException(400, f"Estorno rejeitado pela Rede: {return_message}")
+                        
+                except ValueError as e:
+                    # Resposta não é JSON válido
+                    logger.error(f"❌ [create_rede_refund] HTTP 200 com resposta inválida: {e}")
+                    raise HTTPException(502, "Resposta inválida da Rede")
             
             elif resp.status_code == 400:
-                # 🔧 CORREÇÃO ESPECÍFICA: A e.Rede retorna HTTP 400 com códigos de sucesso para estornos
+                # 🚨 CASO ESPECIAL: HTTP 400 PODE SER SUCESSO NA REDE!
+                logger.debug(f"🔍 [create_rede_refund] HTTP 400 - analisando conteúdo...")
+                
                 try:
                     data = resp.json()
                     return_code = data.get("returnCode", "")
                     return_message = data.get("returnMessage", "") or data.get("message", "")
                     
-                    # 🔧 VERIFICAÇÃO ESPECÍFICA: Códigos 359 e 360 são sucessos mesmo com HTTP 400
-                    if return_code in ["359", "360"] or "successful" in return_message.lower():
-                        logger.info(f"✅ Estorno Rede processado (HTTP 400 + código {return_code}): {return_message}")
+                    logger.info(f"🔍 [create_rede_refund] HTTP 400 - returnCode: '{return_code}', message: '{return_message}'")
+                    
+                    # ✅ CÓDIGOS DE SUCESSO ESPECÍFICOS DA REDE
+                    success_codes = ["359", "360"]
+                    success_keywords = ["successful", "refund successful", "estorno realizado"]
+                    
+                    is_success = (
+                        return_code in success_codes or
+                        any(keyword in return_message.lower() for keyword in success_keywords)
+                    )
+                    
+                    if is_success:
+                        # 🎉 SUCESSO DETECTADO!
+                        logger.info(f"🎉 [create_rede_refund] SUCESSO detectado em HTTP 400!")
+                        logger.info(f"   Critério: returnCode='{return_code}' ou mensagem contém palavra-chave de sucesso")
+                        logger.info(f"   Mensagem: '{return_message}'")
+                        
+                        # Atualizar status no banco
                         await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                        
+                        logger.info(f"✅ [create_rede_refund] Estorno processado com SUCESSO (HTTP 400 + código {return_code})")
+                        
                         return {
-                            "status": "refunded", 
-                            "return_code": return_code,
-                            "message": return_message,
+                            "status": "refunded",
                             "transaction_id": transaction_id,
                             "rede_tid": rede_tid,
-                            "raw_response": data
+                            "return_code": return_code,
+                            "message": return_message,
+                            "raw_response": data,
+                            "provider": "rede",
+                            "note": f"Sucesso via HTTP 400 + código {return_code}"
                         }
                     else:
-                        # É um erro real
-                        logger.error(f"❌ Estorno Rede falhou (400): Código {return_code} - {return_message}")
-                        raise HTTPException(400, f"Estorno Rede falhou: {return_message}")
+                        # ❌ ERRO REAL
+                        logger.error(f"❌ [create_rede_refund] Erro REAL em HTTP 400:")
+                        logger.error(f"   returnCode: '{return_code}' (não está em {success_codes})")
+                        logger.error(f"   message: '{return_message}' (não contém palavras-chave de sucesso)")
+                        
+                        raise HTTPException(400, f"Estorno rejeitado pela Rede: {return_message}")
                         
                 except ValueError:
-                    # Resposta não é JSON válido - verificar texto bruto
-                    error_text = resp.text
-                    if "successful" in error_text.lower() or "359" in error_text or "360" in error_text:
-                        logger.info(f"✅ Estorno Rede processado (400 text com sucesso): {error_text}")
+                    # Resposta não é JSON - tentar analisar texto
+                    response_text = resp.text
+                    logger.debug(f"🔍 [create_rede_refund] HTTP 400 com texto (não JSON): {response_text[:200]}...")
+                    
+                    # Verificar palavras-chave de sucesso no texto
+                    success_indicators = ["successful", "359", "360", "estorno realizado", "refund successful"]
+                    
+                    if any(indicator in response_text.lower() for indicator in success_indicators):
+                        logger.info(f"🎉 [create_rede_refund] SUCESSO detectado no texto da resposta HTTP 400")
+                        
+                        # Atualizar status no banco
                         await payment_repo.update_payment_status(transaction_id, empresa_id, "canceled")
+                        
                         return {
-                            "status": "refunded", 
-                            "message": error_text,
+                            "status": "refunded",
                             "transaction_id": transaction_id,
-                            "rede_tid": rede_tid
+                            "rede_tid": rede_tid,
+                            "message": response_text,
+                            "provider": "rede",
+                            "note": "Sucesso detectado em resposta de texto HTTP 400"
                         }
                     else:
-                        logger.error(f"❌ Estorno Rede falhou (400 text): {error_text}")
-                        raise HTTPException(400, f"Estorno Rede falhou: {error_text}")
+                        logger.error(f"❌ [create_rede_refund] HTTP 400 com texto de erro: {response_text}")
+                        raise HTTPException(400, f"Estorno rejeitado pela Rede: {response_text}")
             
+            elif resp.status_code == 401:
+                logger.error(f"❌ [create_rede_refund] HTTP 401 - Falha de autenticação")
+                raise HTTPException(401, "Falha de autenticação com a Rede")
+                
+            elif resp.status_code == 403:
+                logger.error(f"❌ [create_rede_refund] HTTP 403 - Acesso negado")
+                raise HTTPException(403, "Acesso negado pela Rede")
+                
+            elif resp.status_code == 404:
+                logger.error(f"❌ [create_rede_refund] HTTP 404 - Transação não encontrada")
+                logger.error(f"   Verificar se TID '{rede_tid}' está correto")
+                raise HTTPException(404, "Transação não encontrada na Rede")
+                
+            elif resp.status_code == 405:
+                logger.error(f"❌ [create_rede_refund] HTTP 405 - Método não permitido")
+                logger.error(f"   URL: {url}")
+                raise HTTPException(502, "Método HTTP não permitido pela Rede")
+                
             else:
                 # Outros códigos de erro
+                logger.error(f"❌ [create_rede_refund] HTTP {resp.status_code} inesperado")
+                logger.error(f"   Resposta: {resp.text[:500]}...")
+                
+                # Tentar raise_for_status para capturar no except
                 resp.raise_for_status()
 
     except httpx.HTTPStatusError as e:
-        # 🔧 REMOVIDO: Lógica duplicada que causava o problema
-        # Esta era a causa do erro - estava tratando 400 como erro sempre
-        status, text = e.response.status_code, e.response.text
-        logger.error(f"❌ Rede estorno HTTP {status}: {text}")
+        # 🚨 CAPTURA ERROS HTTP NÃO TRATADOS ACIMA
+        status_code = e.response.status_code
+        response_text = e.response.text
         
-        if status in (401, 403):
-            raise HTTPException(status_code=401, detail="Falha de autenticação com a Rede")
-        elif status == 404:
-            raise HTTPException(status_code=404, detail="Transação não encontrada na Rede")
+        logger.error(f"❌ [create_rede_refund] HTTPStatusError não tratado:")
+        logger.error(f"   Status: {status_code}")
+        logger.error(f"   Resposta: {response_text[:500]}...")
+        
+        # Mapear códigos específicos
+        if status_code in (401, 403):
+            raise HTTPException(401, "Falha de autenticação com a Rede")
+        elif status_code == 404:
+            raise HTTPException(404, "Transação não encontrada na Rede")
+        elif status_code == 429:
+            raise HTTPException(429, "Muitas requisições - tente novamente em alguns segundos")
         else:
-            raise HTTPException(status_code=502, detail=f"Erro no gateway Rede: HTTP {status}")
+            raise HTTPException(502, f"Erro no gateway Rede: HTTP {status_code}")
             
+    except httpx.TimeoutException:
+        logger.error(f"❌ [create_rede_refund] Timeout na conexão com a Rede")
+        raise HTTPException(504, "Timeout na comunicação com a Rede")
+        
+    except httpx.NetworkError as e:
+        logger.error(f"❌ [create_rede_refund] Erro de rede: {e}")
+        raise HTTPException(502, "Erro de conectividade com a Rede")
+        
     except Exception as e:
-        logger.error(f"❌ Erro de conexão ao estornar na Rede: {e}")
-        raise HTTPException(status_code=502, detail="Erro de conexão ao processar estorno na Rede")
+        logger.error(f"❌ [create_rede_refund] Erro inesperado: {type(e).__name__}: {e}")
+        raise HTTPException(502, "Erro interno ao processar estorno na Rede")
 
 
 # 🆕 NOVA: Função para testar conectividade com a Rede
