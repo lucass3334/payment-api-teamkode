@@ -206,7 +206,7 @@ async def create_asaas_payment(
 
 async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str, Any]:
     """
-    🔧 MANTIDO: Função de estorno do Asaas (sem alterações).
+    🔧 CORRIGIDO: Função de estorno do Asaas com validações adicionais.
     
     Args:
         empresa_id: ID da empresa
@@ -227,6 +227,20 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
         if not asaas_payment_id:
             raise ValueError("ID do pagamento Asaas não encontrado")
         
+        # 🆕 VALIDAR STATUS DO PAGAMENTO
+        payment_status = payment.get("status", "").lower()
+        if payment_status not in ["approved", "confirmed", "received"]:
+            raise ValueError(f"Não é possível estornar pagamento com status: {payment_status}")
+        
+        # 🆕 VERIFICAR SE JÁ FOI ESTORNADO
+        if payment_status in ["refunded", "canceled"]:
+            logger.warning(f"⚠️ Pagamento {transaction_id} já foi estornado anteriormente")
+            return {
+                "status": "refunded",
+                "message": "Pagamento já foi estornado anteriormente",
+                "provider": "asaas"
+            }
+        
         # Obter credenciais
         from ...services.config_service import get_empresa_credentials
         credentials = await get_empresa_credentials(empresa_id)
@@ -243,16 +257,125 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
             "Content-Type": "application/json",
         }
         
-        logger.info(f"🔄 Solicitando estorno Asaas: {asaas_payment_id}")
+        # 🆕 PRIMEIRO: CONSULTAR STATUS ATUAL NO ASAAS
+        logger.info(f"🔍 Consultando status atual do pagamento no Asaas: {asaas_payment_id}")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{base_url}/payments/{asaas_payment_id}/refund",
+            # Consultar status atual
+            status_response = await client.get(
+                f"{base_url}/payments/{asaas_payment_id}",
                 headers=headers
             )
-            response.raise_for_status()
             
-            refund_data = response.json()
+            if status_response.status_code == 404:
+                raise ValueError("Pagamento não encontrado no Asaas")
+            
+            status_response.raise_for_status()
+            current_payment = status_response.json()
+            
+            # Verificar status do pagamento no Asaas
+            asaas_status = current_payment.get("status", "").upper()
+            logger.info(f"📊 Status atual no Asaas: {asaas_status}")
+            
+            # 🆕 VALIDAR SE PODE SER ESTORNADO SEGUNDO REGRAS DO ASAAS
+            if asaas_status not in ["RECEIVED", "CONFIRMED"]:
+                logger.error(f"❌ Status do Asaas não permite estorno: {asaas_status}")
+                return {
+                    "status": "failed",
+                    "message": f"Pagamento com status '{asaas_status}' não pode ser estornado",
+                    "asaas_status": asaas_status,
+                    "provider": "asaas"
+                }
+            
+            # 🆕 VERIFICAR SE JÁ TEM REFUNDS
+            existing_refunds = current_payment.get("refunds", [])
+            if existing_refunds:
+                total_refunded = sum(float(refund.get("value", 0)) for refund in existing_refunds)
+                payment_value = float(current_payment.get("value", 0))
+                
+                if total_refunded >= payment_value:
+                    logger.warning(f"⚠️ Pagamento já está totalmente estornado: R$ {total_refunded}")
+                    return {
+                        "status": "refunded",
+                        "message": "Pagamento já foi totalmente estornado",
+                        "total_refunded": total_refunded,
+                        "provider": "asaas"
+                    }
+            
+            # 🆕 VERIFICAR SALDO DISPONÍVEL (para evitar erro de saldo insuficiente)
+            try:
+                balance_response = await client.get(f"{base_url}/finance/balance", headers=headers)
+                if balance_response.status_code == 200:
+                    balance_data = balance_response.json()
+                    available_balance = float(balance_data.get("totalBalance", 0))
+                    payment_amount = float(current_payment.get("value", 0))
+                    
+                    if available_balance < payment_amount:
+                        logger.error(f"❌ Saldo insuficiente para estorno: R$ {available_balance} < R$ {payment_amount}")
+                        return {
+                            "status": "failed",
+                            "message": f"Saldo insuficiente para estorno (R$ {available_balance} disponível, R$ {payment_amount} necessário)",
+                            "provider": "asaas"
+                        }
+            except Exception as e:
+                logger.warning(f"⚠️ Não foi possível verificar saldo: {e}")
+                # Continuar mesmo sem verificar saldo
+            
+            # Realizar o estorno
+            logger.info(f"🔄 Solicitando estorno Asaas: {asaas_payment_id}")
+            
+            # 🆕 PAYLOAD OPCIONAL PARA ESTORNO (pode ajudar em alguns casos)
+            refund_payload = {}
+            
+            # Se quiser estorno parcial, pode adicionar o valor:
+            # refund_payload = {"value": amount} 
+            
+            refund_response = await client.post(
+                f"{base_url}/payments/{asaas_payment_id}/refund",
+                json=refund_payload if refund_payload else None,  # Enviar None para estorno total
+                headers=headers
+            )
+            
+            # 🆕 MELHOR TRATAMENTO DE ERROS 400
+            if refund_response.status_code == 400:
+                try:
+                    error_data = refund_response.json()
+                    error_messages = []
+                    
+                    # Extrair mensagens de erro específicas
+                    if "errors" in error_data:
+                        for error in error_data["errors"]:
+                            error_code = error.get("code", "")
+                            error_description = error.get("description", "")
+                            error_messages.append(f"{error_code}: {error_description}")
+                    
+                    error_detail = "; ".join(error_messages) if error_messages else error_data
+                    
+                    logger.error(f"❌ Erro 400 do Asaas: {error_detail}")
+                    
+                    # Retornar erro mais específico
+                    return {
+                        "status": "failed",
+                        "message": f"Erro do Asaas: {error_detail}",
+                        "error_code": "asaas_refund_error",
+                        "asaas_error": error_data,
+                        "provider": "asaas"
+                    }
+                    
+                except Exception:
+                    # Se não conseguir parsear JSON do erro
+                    error_text = refund_response.text
+                    logger.error(f"❌ Erro 400 do Asaas (texto bruto): {error_text}")
+                    
+                    return {
+                        "status": "failed",
+                        "message": f"Erro do Asaas: {error_text}",
+                        "error_code": "asaas_refund_error",
+                        "provider": "asaas"
+                    }
+            
+            refund_response.raise_for_status()
+            refund_data = refund_response.json()
             
             # Processar resposta do estorno
             if refund_data.get("status") == "REFUNDED":
@@ -270,9 +393,17 @@ async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str,
                 return {
                     "status": "failed",
                     "message": f"Estorno com status: {refund_data.get('status')}",
+                    "asaas_response": refund_data,
                     "provider": "asaas"
                 }
                 
+    except httpx.HTTPStatusError as e:
+        logger.error(f"❌ Erro HTTP no estorno Asaas: {e.response.status_code} - {e.response.text}")
+        return {
+            "status": "failed",
+            "message": f"Erro HTTP {e.response.status_code}: {e.response.text}",
+            "provider": "asaas"
+        }
     except Exception as e:
         logger.error(f"❌ Erro no estorno Asaas: {e}")
         return {
