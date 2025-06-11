@@ -598,7 +598,7 @@ async def _process_asaas_response(
     payment_type: str
 ) -> Dict[str, Any]:
     """
-    🔧 FUNÇÃO AUXILIAR: Processa resposta do Asaas e atualiza banco.
+    🔧 AJUSTADO: Processa resposta do Asaas usando as novas colunas da tabela.
     """
     try:
         asaas_payment_id = response_data.get("id")
@@ -618,23 +618,27 @@ async def _process_asaas_response(
             mapped_status = "pending"
             message = f"Status: {status}"
         
-        # Atualizar pagamento no banco
+        # ✅ USAR AS NOVAS COLUNAS: Atualizar com dados específicos do Asaas
         if transaction_id:
             from ...database.database import update_payment_status
+            
+            # Preparar dados extras do Asaas
+            extra_data = {
+                "asaas_payment_id": asaas_payment_id,
+                "asaas_status": status,
+                "asaas_response": response_data  # Salvar resposta completa como JSON
+            }
+            
             await update_payment_status(
                 transaction_id=transaction_id,
                 empresa_id=empresa_id,
                 status=mapped_status,
-                extra_data={
-                    "asaas_payment_id": asaas_payment_id,
-                    "asaas_status": status,
-                    "asaas_response": response_data
-                }
+                extra_data=extra_data
             )
         
         logger.info(f"✅ Pagamento Asaas processado: {mapped_status} | ID: {asaas_payment_id}")
         
-        # Retorno base
+        # Retorno estruturado
         result = {
             "status": mapped_status,
             "message": message,
@@ -652,7 +656,8 @@ async def _process_asaas_response(
             })
         elif payment_type.lower() == "credit_card":
             result.update({
-                "installments": response_data.get("installmentCount", 1)
+                "installments": response_data.get("installmentCount", 1),
+                "installment_value": response_data.get("installmentValue")
             })
         
         return result
@@ -664,7 +669,6 @@ async def _process_asaas_response(
             "message": f"Erro ao processar resposta: {str(e)}",
             "provider": "asaas"
         }
-
 
 # ========== FUNÇÕES AUXILIARES PARA TOKENIZAÇÃO (OPCIONAIS) ==========
 

@@ -774,7 +774,7 @@ async def update_payment_status(
     extra_data: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    ✅ MELHORADO: Atualiza status do pagamento com validações.
+    ✅ MELHORADO: Atualiza status do pagamento com validações e suporte ao Asaas.
     """
     try:
         if not all([transaction_id, empresa_id, status]):
@@ -789,12 +789,38 @@ async def update_payment_status(
         }
         
         if extra_data:
-            # Sanitizar extra_data
+            # ✅ NOVO: Mapear campos específicos do Asaas
+            asaas_fields = {
+                "asaas_payment_id": "asaas_payment_id",
+                "asaas_status": "asaas_status", 
+                "asaas_response": "asaas_response"
+            }
+            
+            # ✅ MANTIDO: Campos da Rede (já existiam)
+            rede_fields = {
+                "rede_tid": "rede_tid",
+                "authorization_code": "authorization_code",
+                "return_code": "return_code",
+                "return_message": "return_message"
+            }
+            
+            # Combinar todos os campos mapeados
+            all_mapped_fields = {**asaas_fields, **rede_fields}
+            
+            # Processar extra_data
             for k, v in extra_data.items():
-                if isinstance(v, Decimal):
-                    update_data[k] = sanitize_decimal(v)
+                # Se é um campo mapeado, usar diretamente
+                if k in all_mapped_fields:
+                    if isinstance(v, Decimal):
+                        update_data[all_mapped_fields[k]] = sanitize_decimal(v)
+                    else:
+                        update_data[all_mapped_fields[k]] = v
+                # Senão, sanitizar como antes
                 else:
-                    update_data[k] = v
+                    if isinstance(v, Decimal):
+                        update_data[k] = sanitize_decimal(v)
+                    else:
+                        update_data[k] = v
 
         response = (
             supabase.table("payments")
@@ -808,7 +834,14 @@ async def update_payment_status(
             logger.warning(f"⚠️ Pagamento não encontrado para atualização: {transaction_id}")
             return None
 
-        logger.info(f"✅ Status do pagamento atualizado: {transaction_id} → {status}")
+        # ✅ MELHORADO: Log mais detalhado
+        extra_info = ""
+        if extra_data:
+            mapped_count = len([k for k in extra_data.keys() if k in all_mapped_fields])
+            if mapped_count > 0:
+                extra_info = f" | Dados extras: {mapped_count} campos"
+
+        logger.info(f"✅ Status do pagamento atualizado: {transaction_id} → {status}{extra_info}")
         return response.data[0]
 
     except Exception as e:
@@ -822,7 +855,9 @@ async def update_payment_status_by_txid(
     status: str,
     extra_data: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, Any]]:
-    """Atualiza status do pagamento por TXID."""
+    """
+    ✅ MANTIDO: Atualiza status do pagamento por TXID.
+    """
     try:
         payment = await get_payment_by_txid(txid)
         if not payment:
