@@ -432,6 +432,10 @@ async def _get_or_create_asaas_customer(
     """
     🔧 FUNÇÃO AUXILIAR: Busca ou cria cliente no Asaas.
     """
+
+    raw_name = customer_data.get("name")
+    name = raw_name.strip() if raw_name and raw_name.strip() else "Cliente"
+    customer_data["name"] = name
     try:
         # Tentar buscar cliente existente pelo externalReference
         external_ref = customer_data.get("externalReference") or customer_data.get("local_id")
