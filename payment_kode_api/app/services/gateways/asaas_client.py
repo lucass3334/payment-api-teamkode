@@ -87,12 +87,7 @@ async def create_asaas_payment(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    🔧 ATUALIZADO: Pagamento Asaas com resolução automática de token interno.
-    
-    Mudanças:
-    - Detecta se card_token é token interno (UUID)
-    - Resolve automaticamente para dados reais
-    - Mantém compatibilidade com tokens externos do Asaas
+    🔧 ATUALIZADO: Pagamento Asaas com correção do installmentValue.
     """
     try:
         logger.info(f"🚀 Processando pagamento Asaas para empresa {empresa_id}")
@@ -146,6 +141,7 @@ async def create_asaas_payment(
                 asaas_customer_id, amount, customer_data, kwargs
             )
         elif payment_type.lower() == "credit_card":
+            # 🔧 CORREÇÃO: Usar função corrigida
             payment_payload = await _create_credit_card_payment_payload(
                 asaas_customer_id, amount, resolved_card_data, resolved_card_token, installments, kwargs
             )
@@ -175,6 +171,25 @@ async def create_asaas_payment(
             
     except httpx.HTTPStatusError as e:
         logger.error(f"❌ Erro HTTP no Asaas: {e.response.status_code} - {e.response.text}")
+        
+        # 🔧 NOVO: Tratamento específico para erro de installmentValue
+        if e.response.status_code == 400:
+            try:
+                error_data = e.response.json()
+                errors = error_data.get("errors", [])
+                
+                for error in errors:
+                    if error.get("code") == "invalid_installmentValue":
+                        logger.error("❌ Erro de installmentValue detectado - verificar payload")
+                        return {
+                            "status": "failed",
+                            "message": "Erro na configuração de parcelas",
+                            "error_code": "invalid_installment_value",
+                            "provider": "asaas"
+                        }
+            except:
+                pass
+        
         return {
             "status": "failed",
             "message": f"Erro no Asaas: {e.response.status_code}",
@@ -188,7 +203,6 @@ async def create_asaas_payment(
             "message": f"Erro interno: {str(e)}",
             "provider": "asaas"
         }
-
 
 async def create_asaas_refund(empresa_id: str, transaction_id: str) -> Dict[str, Any]:
     """
@@ -525,8 +539,15 @@ async def _create_credit_card_payment_payload(
     extra_kwargs: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    🔧 FUNÇÃO AUXILIAR: Cria payload para pagamento com cartão.
+    🔧 CORRIGIDO: Cria payload para pagamento com cartão.
+    Agora inclui installmentValue quando necessário.
     """
+    from decimal import Decimal
+    
+    # Calcular valor da parcela
+    amount_decimal = Decimal(str(amount))
+    installment_value = amount_decimal / installments
+    
     payload = {
         "customer": customer_id,
         "billingType": "CREDIT_CARD",
@@ -534,6 +555,17 @@ async def _create_credit_card_payment_payload(
         "dueDate": datetime.now().strftime("%Y-%m-%d"),
         "installmentCount": installments
     }
+    
+    # 🔧 CORREÇÃO: Adicionar installmentValue quando necessário
+    if installments > 1:
+        # Para mais de 1 parcela, sempre incluir o valor da parcela
+        payload["installmentValue"] = float(installment_value.quantize(Decimal("0.01")))
+        logger.info(f"✅ Parcelamento: {installments}x de R$ {payload['installmentValue']:.2f}")
+    elif installments == 1:
+        # Para 1 parcela, alguns casos ainda podem exigir installmentValue
+        # Incluir para garantir compatibilidade
+        payload["installmentValue"] = amount
+        logger.info(f"✅ Pagamento à vista: R$ {amount:.2f}")
     
     # Usar token ou dados do cartão
     if card_token and not card_data:
@@ -555,8 +587,9 @@ async def _create_credit_card_payment_payload(
     if extra_kwargs.get("description"):
         payload["description"] = extra_kwargs["description"]
     
+    logger.debug(f"📦 Payload Asaas criado: installmentCount={installments}, installmentValue={payload.get('installmentValue')}")
+    
     return payload
-
 
 async def _process_asaas_response(
     empresa_id: str, 

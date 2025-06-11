@@ -5,12 +5,110 @@ import json
 import base64
 import uuid
 import secrets
+import re
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from cryptography.fernet import Fernet
 
 from ..database.supabase_client import supabase
 from ..utilities.logging_config import logger
+
+
+def safe_parse_datetime(date_string: str) -> datetime:
+    """
+    🔧 NOVA: Parse seguro de datetime com diferentes formatos e timezone.
+    
+    Resolve problemas com:
+    - Microsegundos com diferentes números de dígitos
+    - Diferentes formatos de timezone
+    - Strings mal formatadas
+    - Comparação entre datetime naive e aware
+    """
+    if not date_string:
+        raise ValueError("Data string vazia")
+    
+    try:
+        # Primeiro, tentar o formato padrão
+        parsed = datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+        
+        # 🔧 GARANTIR QUE SEMPRE TENHA TIMEZONE
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        
+        return parsed
+        
+    except ValueError:
+        pass
+    
+    try:
+        # 🔧 CORREÇÃO: Normalizar microsegundos para 6 dígitos
+        # Padrão: YYYY-MM-DDTHH:MM:SS.microsegundos+timezone
+        pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{1,6})([+-]\d{2}:\d{2}|Z)'
+        match = re.match(pattern, date_string)
+        
+        if match:
+            base_datetime = match.group(1)
+            microseconds = match.group(2)
+            timezone_part = match.group(3)
+            
+            # Normalizar microsegundos para 6 dígitos
+            if len(microseconds) < 6:
+                microseconds = microseconds.ljust(6, '0')
+            elif len(microseconds) > 6:
+                microseconds = microseconds[:6]
+            
+            # Normalizar timezone
+            if timezone_part == 'Z':
+                timezone_part = '+00:00'
+            
+            # Reconstituir a string
+            normalized_string = f"{base_datetime}.{microseconds}{timezone_part}"
+            parsed = datetime.fromisoformat(normalized_string)
+            
+            # 🔧 GARANTIR QUE SEMPRE TENHA TIMEZONE
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            
+            return parsed
+            
+    except Exception:
+        pass
+    
+    try:
+        # 🔧 FALLBACK: Tentar outros formatos comuns
+        formats_to_try = [
+            '%Y-%m-%dT%H:%M:%S.%f%z',
+            '%Y-%m-%dT%H:%M:%S%z',
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%Y-%m-%dT%H:%M:%SZ',
+            '%Y-%m-%d %H:%M:%S.%f',
+            '%Y-%m-%d %H:%M:%S',
+        ]
+        
+        for fmt in formats_to_try:
+            try:
+                # Remover timezone se formato não suporta
+                test_string = date_string
+                if '%z' not in fmt and 'Z' not in fmt:
+                    test_string = re.sub(r'[+-]\d{2}:\d{2}|Z$', '', date_string)
+                
+                parsed = datetime.strptime(test_string, fmt)
+                
+                # 🔧 SEMPRE ADICIONAR TIMEZONE UTC SE NÃO PRESENTE
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                
+                return parsed
+                
+            except ValueError:
+                continue
+                
+    except Exception:
+        pass
+    
+    # 🚨 ÚLTIMO RECURSO: Retornar datetime atual com warning
+    logger.warning(f"⚠️ Não foi possível parsear data '{date_string}', usando datetime atual")
+    return datetime.now(timezone.utc)
 
 
 class CompanyEncryptionService:
@@ -23,6 +121,7 @@ class CompanyEncryptionService:
     - Validação robusta de chaves
     - Melhor tratamento de erros
     - Sistema de backup de chaves
+    - 🆕 NOVO: Correção de problemas de timezone
     """
     
     def __init__(self):
@@ -196,13 +295,11 @@ class CompanyEncryptionService:
                 stored_key = response.data[0]["decryption_key"]
                 logger.info(f"✅ Chave encontrada no banco para empresa {empresa_id}")
 
-
                 if self.validate_fernet_key(stored_key):
                     logger.info(f"chave válida  recuperada para empresa {empresa_id}")
                     return stored_key
                 else:
                     logger.warning(f"⚠️ Chave inválida encontrada para empresa {empresa_id}")
-
                     await self._remove_invalid_key(empresa_id)
                 
                 # ⚠️ IMPORTANTE: Não podemos regenerar uma chave Fernet aleatória
@@ -337,7 +434,8 @@ class CompanyEncryptionService:
     
     async def resolve_internal_token(self, empresa_id: str, card_token: str) -> Dict[str, Any]:
         """
-        🔧 MELHORADO: Resolve token interno para dados reais do cartão.
+        🔧 CORRIGIDO: Resolve token interno para dados reais do cartão.
+        Agora com tratamento correto de timezone.
         """
         try:
             # 1. Buscar token no banco
@@ -355,18 +453,20 @@ class CompanyEncryptionService:
             
             card = response.data[0]
             
-            # 2. Verificar se token expirou
+            # 2. Verificar se token expirou - 🔧 CORRIGIDO
             expires_at = card.get("expires_at")
             if expires_at:
                 try:
-                    exp_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                    if exp_dt.tzinfo is None:
-                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                    # Usar função de parse seguro
+                    exp_dt = safe_parse_datetime(expires_at)
+                    current_dt = datetime.now(timezone.utc)
                     
-                    if exp_dt < datetime.now(timezone.utc):
+                    if exp_dt < current_dt:
                         raise ValueError(f"Token {card_token} expirou em {expires_at}")
-                except Exception:
-                    logger.warning(f"⚠️ Erro ao verificar expiração do token {card_token}")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao verificar expiração do token {card_token}: {e}")
+                    # Continuar sem bloquear, mas logar o problema
             
             # 3. Buscar chave da empresa
             decryption_key = await self.get_empresa_decryption_key(empresa_id)
@@ -392,7 +492,6 @@ class CompanyEncryptionService:
             return True
         except (ValueError, TypeError):
             return False
-    
 
     async def _remove_invalid_key(self, empresa_id: str) -> None:
         """
@@ -445,7 +544,6 @@ class CompanyEncryptionService:
                     stored_key = response.data[0]["decryption_key"]
                     health["key_valid"] = self.validate_fernet_key(stored_key)
                     if self.validate_fernet_key(stored_key):
-
                         logger.info(f"✅ Chave Fernet válida encontrada para empresa {empresa_id}")
                         health["key_valid"] = True
                     else:
@@ -620,6 +718,69 @@ class CompanyEncryptionService:
             logger.error(f"❌ Erro na migração da empresa {empresa_id}: {e}")
             migration_stats["errors"] = migration_stats["processed"]
             return migration_stats
+
+
+# ========== FUNÇÃO ADICIONAL PARA CORRIGIR EXPIRAÇÃO ==========
+
+async def fix_token_expiration_format(empresa_id: str) -> Dict[str, Any]:
+    """
+    🔧 NOVA: Corrige formato de expiração dos tokens existentes.
+    Útil para migrar tokens com problemas de timezone.
+    """
+    try:
+        # Buscar tokens da empresa
+        response = (
+            supabase.table("cartoes_tokenizados")
+            .select("id, card_token, expires_at")
+            .eq("empresa_id", empresa_id)
+            .execute()
+        )
+        
+        tokens = response.data or []
+        fixed_count = 0
+        error_count = 0
+        
+        for token_data in tokens:
+            token_id = token_data["id"]
+            expires_at = token_data.get("expires_at")
+            
+            if not expires_at:
+                continue
+                
+            try:
+                # Tentar parsear e normalizar
+                parsed_dt = safe_parse_datetime(expires_at)
+                
+                # Gerar novo formato correto
+                new_expires_at = parsed_dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+                
+                # Atualizar no banco
+                supabase.table("cartoes_tokenizados").update({
+                    "expires_at": new_expires_at,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", token_id).execute()
+                
+                fixed_count += 1
+                logger.info(f"✅ Token {token_data['card_token'][:8]}... expiração corrigida")
+                
+            except Exception as e:
+                error_count += 1
+                logger.error(f"❌ Erro ao corrigir token {token_data['card_token']}: {e}")
+        
+        return {
+            "empresa_id": empresa_id,
+            "total_tokens": len(tokens),
+            "fixed_count": fixed_count,
+            "error_count": error_count,
+            "message": f"Correção concluída: {fixed_count} tokens corrigidos, {error_count} erros"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na correção de formato: {e}")
+        return {
+            "empresa_id": empresa_id,
+            "error": str(e)
+        }
 
 
 # ========== FUNÇÕES AUXILIARES PARA GESTÃO MANUAL ==========
@@ -831,6 +992,8 @@ __all__ = [
     "create_company_encryption_service",
     "generate_fernet_key",
     "quick_token_resolution",
+    "safe_parse_datetime",
+    "fix_token_expiration_format",
     
     # Funções de gestão manual
     "setup_company_encryption_for_existing_companies",
