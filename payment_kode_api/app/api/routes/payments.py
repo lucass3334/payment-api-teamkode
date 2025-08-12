@@ -356,32 +356,48 @@ async def create_credit_card_payment(
 
     logger.info(f"🔍 Provider de crédito: {credit_provider} | Parcelas: {payment_data.installments} | Valor: R$ {payment_data.amount}")
 
-    # Recuperar ou gerar token interno + cliente
+    # ========== NOVO: LÓGICA SIMPLIFICADA PARA CARD DATA ==========
     cliente_uuid = None
-    card_data = {}
+    card_data_for_gateway = {}
     
     if payment_data.card_token:
-        # ✅ USANDO INTERFACE
+        # Usar token existente - ✅ USANDO INTERFACE
         card_data_result = await card_repo.get_tokenized_card(payment_data.card_token)
         if not card_data_result:
             raise HTTPException(400, "Cartão não encontrado ou expirado.")
         
         cliente_uuid = card_data_result.get("cliente_id")  # UUID interno do cliente
-        card_data = {"card_token": payment_data.card_token}
+        card_data_for_gateway = {"card_token": payment_data.card_token}
+        logger.info(f"✅ Usando token existente: {payment_data.card_token}")
         
     elif payment_data.card_data:
-        # Tokenizar cartão E criar cliente automaticamente
-        token_request = TokenizeCardRequest(**payment_data.card_data.dict())
+        # ✅ CORRIGIDO: Usar dados diretamente SEM tokenização obrigatória
+        logger.info("🔧 Usando dados do cartão diretamente (sem tokenização)")
         
-        # Merge dados extras do payment se disponíveis
-        if not token_request.customer_id and payment_data.customer_id:
-            token_request.customer_id = payment_data.customer_id
+        # Preparar dados para o gateway
+        card_data_for_gateway = {
+            "card_number": payment_data.card_data.card_number,
+            "expiration_month": payment_data.card_data.expiration_month,
+            "expiration_year": payment_data.card_data.expiration_year,
+            "security_code": payment_data.card_data.security_code,
+            "cardholder_name": payment_data.card_data.cardholder_name
+        }
         
-        token_resp = await tokenize_card(token_request, empresa, customer_repo, card_repo, customer_service)
-        card_data = {**payment_data.card_data.dict(), "card_token": token_resp["card_token"]}
-        cliente_uuid = token_resp["customer_id"]
+        # 🆕 NOVO: Tentar criar cliente se temos dados suficientes
+        try:
+            # ✅ USANDO INTERFACE
+            customer_payload = customer_service.extract_customer_data_from_payment(payment_data.dict())
+            if not customer_payload.get("nome"):
+                customer_payload["nome"] = payment_data.card_data.cardholder_name
+                
+            if customer_payload.get("nome"):
+                # ✅ USANDO INTERFACE
+                cliente_uuid = await customer_repo.get_or_create_cliente(empresa_id, customer_payload)
+                logger.info(f"✅ Cliente criado para cartão: {cliente_uuid}")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao criar cliente (continuando sem cliente): {e}")
 
-    # Criar cliente se não temos ainda
+    # Criar cliente adicional se ainda não temos e temos dados extras
     if not cliente_uuid:
         try:
             # ✅ USANDO INTERFACE
@@ -389,9 +405,9 @@ async def create_credit_card_payment(
             if customer_payload.get("nome") or customer_payload.get("cpf_cnpj") or customer_payload.get("email"):
                 # ✅ USANDO INTERFACE
                 cliente_uuid = await customer_repo.get_or_create_cliente(empresa_id, customer_payload)
-                logger.info(f"✅ Cliente criado para cartão: {cliente_uuid}")
+                logger.info(f"✅ Cliente adicional criado: {cliente_uuid}")
         except Exception as e:
-            logger.warning(f"⚠️ Erro ao criar cliente para cartão (continuando sem cliente): {e}")
+            logger.warning(f"⚠️ Erro ao criar cliente adicional (continuando sem cliente): {e}")
 
     # Salvar como pending - ✅ USANDO INTERFACE
     payment_record = {
@@ -409,7 +425,7 @@ async def create_credit_card_payment(
 
     # Preparar dados para gateway
     base_data = {**payment_data.dict(exclude_unset=False), "transaction_id": transaction_id}
-    mapper_data = {**base_data, **card_data, "installments": validated_installments}
+    mapper_data = {**base_data, **card_data_for_gateway, "installments": validated_installments}
 
     # ========== PROCESSAR PAGAMENTO ==========
     if credit_provider == "rede":
@@ -463,10 +479,10 @@ async def create_credit_card_payment(
             raise
         except Exception as e:
             logger.error(f"❌ Erro inesperado com Rede: {e}")
-            raise HTTPException(502, "Erro no gateway Rede.")
+            raise HTTPException(502, f"Erro no gateway Rede: {str(e)}")
 
     elif credit_provider == "asaas":
-        # ✅ CORRIGIDO: Aplicar mesma lógica para Asaas se necessário
+        # ✅ CORRIGIDO: Aplicar mesma lógica para Asaas
         asaas_data = {k: v for k, v in mapper_data.items() if k != "empresa_id"}
         asaas_info = map_to_asaas_credit_payload(asaas_data)
         
@@ -517,7 +533,7 @@ async def create_credit_card_payment(
             raise
         except Exception as e:
             logger.error(f"❌ Erro Asaas: {e}")
-            raise HTTPException(502, "Erro no gateway Asaas.")
+            raise HTTPException(502, f"Erro no gateway Asaas: {str(e)}")
 
     else:
         raise HTTPException(400, f"Provedor de crédito desconhecido: {credit_provider}")
@@ -1017,3 +1033,69 @@ async def get_customer_statistics(
     except Exception as e:
         logger.error(f"❌ Erro ao buscar estatísticas do cliente {customer_external_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro interno ao buscar estatísticas")
+
+
+# ========== ENDPOINT ADICIONAL PARA VALIDAÇÃO DE PARCELAS ==========
+
+@router.post("/validate-installments")
+async def validate_installments_endpoint(
+    data: dict,
+    empresa: dict = Depends(validate_access_token),
+    # ✅ NOVO: Dependency injection
+    config_repo: ConfigRepositoryInterface = Depends(get_config_repository),
+    validator: PaymentValidatorInterface = Depends(get_payment_validator)
+):
+    """
+    ✅ NOVO: Endpoint para pré-validar parcelas antes do pagamento.
+    Útil para frontends validarem parcelas em tempo real.
+    """
+    empresa_id = empresa["empresa_id"]
+    
+    try:
+        # Validar campos obrigatórios
+        amount = data.get("amount")
+        installments = data.get("installments", 1)
+        gateway = data.get("gateway")
+        
+        if not amount or amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount deve ser maior que 0")
+        
+        if not isinstance(installments, int) or installments < 1 or installments > 12:
+            raise HTTPException(status_code=400, detail="Installments deve ser entre 1 e 12")
+        
+        # Se gateway não fornecido, buscar da configuração da empresa
+        if not gateway:
+            config = await config_repo.get_empresa_config(empresa_id)
+            gateway = (config or {}).get("credit_provider", "rede").lower()
+        
+        # Validar parcelas
+        validated_installments = validator.validate_installments_by_gateway(
+            installments, 
+            gateway, 
+            amount
+        )
+        
+        # Calcular valores
+        amount_per_installment = round(float(amount) / validated_installments, 2)
+        total_amount = round(float(amount), 2)
+        was_adjusted = validated_installments != installments
+        
+        return {
+            "original_installments": installments,
+            "validated_installments": validated_installments,
+            "was_adjusted": was_adjusted,
+            "gateway": gateway,
+            "amount_per_installment": amount_per_installment,
+            "total_amount": total_amount,
+            "validation_details": {
+                "min_amount_per_installment": 5.00 if gateway == "rede" else 3.00,
+                "max_installments": 12,
+                "gateway_rules": f"Gateway {gateway.upper()} permite máximo 12 parcelas"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro na validação de parcelas: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
