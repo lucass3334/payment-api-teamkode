@@ -678,7 +678,8 @@ async def create_pix_payment(
         )
         logger.debug(f"💬 [create_pix_payment] Asaas respondeu: {resp2!r}")
 
-        if resp2.get("status", "").lower() != "approved":
+        # PIX sempre retorna "pending" inicialmente (cliente ainda não pagou)
+        if resp2.get("status", "").lower() not in ["pending", "approved"]:
             logger.critical(f"❌ [create_pix_payment] erro Asaas {transaction_id}: {resp2}")
             raise HTTPException(status_code=500, detail="Falha no pagamento via Asaas")
 
@@ -692,6 +693,16 @@ async def create_pix_payment(
                 break
             await asyncio.sleep(interval)
             interval *= 2
+
+        # Inicia polling de status em background (se webhook_url fornecido)
+        if payment_data.webhook_url:
+            logger.info(f"🔄 [create_pix_payment] iniciando polling Asaas para transaction_id={transaction_id}")
+            background_tasks.add_task(
+                _poll_asaas_pix_status,
+                transaction_id, empresa_id, payment_data.webhook_url
+            )
+        else:
+            logger.warning(f"⚠️ [create_pix_payment] webhook_url não fornecido, polling NÃO será iniciado")
 
         return {
             "status": resp2["status"].lower(),

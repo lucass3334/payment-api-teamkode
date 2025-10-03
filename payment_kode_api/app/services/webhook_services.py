@@ -16,10 +16,11 @@ async def notify_user_webhook(webhook_url: str, data: dict) -> None:
     }
 
     try:
+        logger.info(f"📤 [notify_user_webhook] Enviando para {webhook_url}: {data}")
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.post(webhook_url, json=data, headers=headers)
             response.raise_for_status()
-            logger.info(f"📤 Notificação enviada com sucesso para {webhook_url}")
+            logger.info(f"✅ Notificação enviada com sucesso para {webhook_url}")
     except httpx.RequestError as e:
         logger.warning(f"⚠️ Erro de conexão ao notificar {webhook_url}: {e}")
     except httpx.HTTPStatusError as e:

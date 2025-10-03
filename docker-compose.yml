@@ -15,6 +15,7 @@ services:
     #   interval: 10s
     #   timeout: 5s
     #   retries: 5
+    entrypoint: []  # Anula o ENTRYPOINT do Dockerfile para uso local
     command: >
       sh -c "
       if [[ -f '/app/certificados/sicredi-cert.pem' && -f '/app/certificados/sicredi-key.pem' ]]; then
@@ -45,6 +46,7 @@ services:
     #   interval: 20s
     #   timeout: 10s
     #   retries: 5
+    entrypoint: []  # Anula o ENTRYPOINT do Dockerfile para uso local
     command: >
       sh -c "exec poetry run celery -A payment_kode_api.app.workers.tasks worker --loglevel=info --concurrency=4"
     restart: always
