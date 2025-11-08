@@ -33,7 +33,12 @@ def build_ssl_context_from_memory(
     key_file.write(key_pem)
     key_file.flush()
 
-    ssl_ctx = ssl.create_default_context(cadata=ca_pem.decode())
+    # ✅ FIX: Carrega CAs do sistema + CA do cliente para validação SSL completa
+    # Carrega os CAs confiáveis do sistema (DigiCert, Let's Encrypt, etc) para validar o servidor
+    ssl_ctx = ssl.create_default_context()
+    # Adiciona o CA do cliente para autenticação mútua (mTLS)
+    ssl_ctx.load_verify_locations(cadata=ca_pem.decode())
+    # Carrega certificado e chave do cliente para apresentar ao servidor
     ssl_ctx.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_REQUIRED
