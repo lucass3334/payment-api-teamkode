@@ -79,7 +79,7 @@ def generate_txid() -> str:
 
 class PixPaymentRequest(BaseModel):
     amount: Decimal
-    chave_pix: PixKeyType
+    chave_pix: Optional[PixKeyType] = None  # 🔄 Opcional - usa do banco se não fornecida
     txid: Optional[str] = None
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
@@ -607,8 +607,21 @@ async def create_pix_payment(
 
     if pix_provider == "sicredi":
         # ——— Fluxo Sicredi ———
+        # 🔄 NOVO: Busca chave PIX do banco se não fornecida no payload
+        chave_pix = payment_data.chave_pix or config.get("sicredi_chave_pix")
+
+        if not chave_pix:
+            logger.error(f"❌ Chave PIX Sicredi não configurada para empresa {empresa_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="Chave PIX Sicredi não configurada. Configure em empresas_config.sicredi_chave_pix ou envie no payload."
+            )
+
+        logger.info(f"🔑 [create_pix_payment] Usando chave PIX: {chave_pix[:8]}... (origem: {'payload' if payment_data.chave_pix else 'banco'})")
+
         sicredi_payload = map_to_sicredi_payload({
             **payment_data.dict(exclude_unset=False),
+            "chave_pix": chave_pix,  # 🔄 Força uso da chave selecionada
             "txid": txid,
             "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
         })
@@ -645,15 +658,25 @@ async def create_pix_payment(
 
     elif pix_provider == "asaas":
         # ——— Fluxo Asaas ———
-        if not payment_data.chave_pix:
-            raise HTTPException(status_code=400, detail="Para Pix via Asaas, 'chave_pix' é obrigatório.")
+        # 🔄 NOVO: Busca chave PIX do banco se não fornecida no payload
+        chave_pix = payment_data.chave_pix or config.get("asaas_chave_pix")
+
+        if not chave_pix:
+            logger.error(f"❌ Chave PIX Asaas não configurada para empresa {empresa_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="Chave PIX Asaas não configurada. Configure em empresas_config.asaas_chave_pix ou envie no payload."
+            )
+
+        logger.info(f"🔑 [create_pix_payment] Usando chave PIX: {chave_pix[:8]}... (origem: {'payload' if payment_data.chave_pix else 'banco'})")
 
         # Valida se a chave já está cadastrada
-        await validate_asaas_pix_key(empresa_id, payment_data.chave_pix)
+        await validate_asaas_pix_key(empresa_id, chave_pix)
 
         # Monta payload simples de Pix
         pix_payload = map_to_asaas_pix_payload({
             **payment_data.dict(exclude_unset=False),
+            "chave_pix": chave_pix,  # 🔄 Força uso da chave selecionada
             "txid": txid
         })
 
@@ -665,7 +688,7 @@ async def create_pix_payment(
             "cpfCnpj": payment_data.cpf or payment_data.cnpj,
             "externalReference": transaction_id,
             "due_date": (payment_data.due_date or datetime.now(timezone.utc).date()).isoformat(),
-            "pixKey": payment_data.chave_pix
+            "pixKey": chave_pix  # 🔄 Usa chave selecionada (banco ou payload)
         }
 
         logger.info(f"🚀 [create_pix_payment] criando cobrança Asaas para txid={txid}")

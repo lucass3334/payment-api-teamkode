@@ -386,20 +386,46 @@ async def get_empresa_by_token(access_token: str) -> Optional[Dict[str, Any]]:
 
 
 async def get_empresa_by_chave_pix(chave_pix: str) -> Optional[Dict[str, Any]]:
-    """Busca empresa por chave PIX."""
+    """
+    Busca empresa por chave PIX com fallback entre colunas.
+    Prioridade: sicredi_chave_pix → asaas_chave_pix → chave_pix (legacy)
+
+    🔄 NOVO: Suporta múltiplas colunas para backward compatibility.
+    Webhooks continuam funcionando mesmo após migração de dados.
+    """
     try:
         if not chave_pix:
             raise ValueError("Chave PIX é obrigatória")
-            
+
+        # Normalizar chave (remover espaços em branco)
+        chave_pix = chave_pix.strip()
+
+        # Query única com OR para buscar em todas as colunas (melhor performance)
         response = (
             supabase.table("empresas_config")
-            .select("empresa_id")
-            .eq("chave_pix", chave_pix)
+            .select("empresa_id, sicredi_chave_pix, asaas_chave_pix, chave_pix")
+            .or_(f"sicredi_chave_pix.eq.{chave_pix},asaas_chave_pix.eq.{chave_pix},chave_pix.eq.{chave_pix}")
             .limit(1)
             .execute()
         )
-        return response.data[0] if response.data else None
-        
+
+        if response.data:
+            result = response.data[0]
+
+            # Log para tracking: qual coluna foi usada (importante para analytics)
+            if result.get("sicredi_chave_pix") == chave_pix:
+                logger.info(f"✅ Webhook: Empresa encontrada via sicredi_chave_pix: {chave_pix[:8]}...")
+            elif result.get("asaas_chave_pix") == chave_pix:
+                logger.info(f"✅ Webhook: Empresa encontrada via asaas_chave_pix: {chave_pix[:8]}...")
+            else:
+                logger.warning(f"⚠️ Webhook: Empresa encontrada via chave_pix LEGACY: {chave_pix[:8]}...")
+
+            return {"empresa_id": result["empresa_id"]}
+
+        # Nenhuma coluna retornou resultado
+        logger.warning(f"⚠️ Webhook: Empresa NÃO encontrada para chave PIX: {chave_pix[:8]}...")
+        return None
+
     except Exception as e:
         logger.error(f"❌ Erro ao buscar empresa pela chave PIX {chave_pix}: {e}")
         return None
