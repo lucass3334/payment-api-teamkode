@@ -724,15 +724,19 @@ async def save_payment(data: Dict[str, Any]) -> Dict[str, Any]:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "data_marketing": sanitized_data.get("data_marketing", {}),
-            
+
             # Campos específicos da Rede
             "rede_tid": sanitized_data.get("rede_tid"),
             "authorization_code": sanitized_data.get("authorization_code"),
             "return_code": sanitized_data.get("return_code"),
             "return_message": sanitized_data.get("return_message"),
-            
+
             # Cliente (UUID interno)
-            "cliente_id": cliente_id
+            "cliente_id": cliente_id,
+
+            # 🔄 NOVO: Gateway tracking para polling e reconciliação
+            "pix_gateway": sanitized_data.get("pix_gateway"),
+            "credit_gateway": sanitized_data.get("credit_gateway")
         }
 
         # TXID para PIX

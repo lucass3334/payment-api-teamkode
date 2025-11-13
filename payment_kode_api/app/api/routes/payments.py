@@ -581,7 +581,12 @@ async def create_pix_payment(
     except Exception as e:
         logger.warning(f"⚠️ Erro ao processar cliente PIX (continuando sem cliente): {e}")
 
-    # Salva como pending - ✅ USANDO INTERFACE
+    # Determina provider de PIX ANTES de salvar - ✅ USANDO INTERFACE
+    config = await config_repo.get_empresa_config(empresa_id)
+    pix_provider = config.get("pix_provider", "sicredi").lower()
+    logger.info(f"🔍 [create_pix_payment] pix_provider configurado: {pix_provider}")
+
+    # Salva como pending com gateway tracking - ✅ USANDO INTERFACE
     payment_record = {
         "empresa_id": empresa_id,
         "transaction_id": transaction_id,
@@ -590,20 +595,16 @@ async def create_pix_payment(
         "status": "pending",
         "webhook_url": payment_data.webhook_url,
         "txid": txid,
-        "data_marketing": payment_data.data_marketing
+        "data_marketing": payment_data.data_marketing,
+        "pix_gateway": pix_provider  # 🔄 NOVO: Rastrear gateway usado
     }
-    
+
     # 🆕 NOVO: Adicionar cliente_id se foi criado
     if cliente_uuid:
         payment_record["cliente_id"] = cliente_uuid
-    
-    await payment_repo.save_payment(payment_record)
-    logger.debug("💾 [create_pix_payment] payment registrado como pending no DB")
 
-    # Determina provider de PIX - ✅ USANDO INTERFACE
-    config = await config_repo.get_empresa_config(empresa_id)
-    pix_provider = config.get("pix_provider", "sicredi").lower()
-    logger.info(f"🔍 [create_pix_payment] pix_provider configurado: {pix_provider}")
+    await payment_repo.save_payment(payment_record)
+    logger.debug(f"💾 [create_pix_payment] payment registrado como pending no DB (gateway: {pix_provider})")
 
     if pix_provider == "sicredi":
         # ——— Fluxo Sicredi ———
@@ -639,7 +640,12 @@ async def create_pix_payment(
         if payment_data.webhook_url:
             background_tasks.add_task(
                 _poll_sicredi_status,
-                txid, empresa_id, transaction_id, payment_data.webhook_url, config_repo
+                txid,
+                empresa_id,
+                transaction_id,
+                payment_data.webhook_url,
+                config_repo,
+                "sicredi"  # 🔄 NOVO: passa gateway usado
             )
 
         result = {
@@ -722,7 +728,10 @@ async def create_pix_payment(
             logger.info(f"🔄 [create_pix_payment] iniciando polling Asaas para transaction_id={transaction_id}")
             background_tasks.add_task(
                 _poll_asaas_pix_status,
-                transaction_id, empresa_id, payment_data.webhook_url
+                transaction_id,
+                empresa_id,
+                payment_data.webhook_url,
+                "asaas"  # 🔄 NOVO: passa gateway usado
             )
         else:
             logger.warning(f"⚠️ [create_pix_payment] webhook_url não fornecido, polling NÃO será iniciado")
@@ -748,13 +757,20 @@ async def _poll_sicredi_status(
     empresa_id: str,
     transaction_id: str,
     webhook_url: str,
-    config_repo: ConfigRepositoryInterface
+    config_repo: ConfigRepositoryInterface,
+    gateway: str = "sicredi"  # 🔄 NOVO: rastreamento de gateway
 ):
     """
     Polling de status de cobrança Pix Sicredi.
     ✅ ATUALIZADO: Agora usa ConfigRepositoryInterface para token
+    🔄 NOVO: Valida que está consultando o gateway correto
     """
-    logger.info(f"🔄 [_poll_sicredi_status] iniciar: txid={txid} transaction_id={transaction_id}")
+    # Validação de segurança: garante que está consultando o gateway certo
+    if gateway != "sicredi":
+        logger.error(f"❌ [_poll_sicredi_status] Polling Sicredi chamado para gateway errado: {gateway}")
+        return
+
+    logger.info(f"🔄 [_poll_sicredi_status] iniciar: txid={txid} transaction_id={transaction_id} gateway={gateway}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=15)
     interval = 5
@@ -844,13 +860,21 @@ async def _poll_asaas_pix_status(
     transaction_id: str,
     empresa_id: str,
     webhook_url: str,
+    gateway: str = "asaas",  # 🔄 NOVO: rastreamento de gateway
     interval: int = 5,
     timeout_minutes: int = 15
 ):
     """
     Polling de status de uma cobrança PIX via Asaas.
     ✅ ATUALIZADO: Agora usa interfaces quando necessário
+    🔄 NOVO: Valida que está consultando o gateway correto
     """
+    # Validação de segurança: garante que está consultando o gateway certo
+    if gateway != "asaas":
+        logger.error(f"❌ [_poll_asaas_pix_status] Polling Asaas chamado para gateway errado: {gateway}")
+        return
+
+    logger.info(f"🔄 [_poll_asaas_pix_status] iniciar: transaction_id={transaction_id} gateway={gateway}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=timeout_minutes)
 
