@@ -1,7 +1,7 @@
 # payment_kode_api/app/api/routes/payments.py
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
-from pydantic import BaseModel, Field, field_validator, EmailStr
+from pydantic import BaseModel, Field, field_validator, model_validator, EmailStr
 from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
@@ -12,6 +12,7 @@ from io import BytesIO
 import base64
 import qrcode
 import asyncio
+import re
 
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.database.supabase_client import supabase
@@ -87,14 +88,20 @@ class PixPaymentRequest(BaseModel):
 
     # Dados do cliente (existentes)
     nome_devedor: Optional[str] = None
+
+    # ✅ NOVO: Campo unificado (RECOMENDADO para novas integrações)
+    customer_cpf_cnpj: Optional[str] = None
+
+    # ⚠️ DEPRECATED: Manter para backward compatibility - preferir customer_cpf_cnpj
     cpf: Optional[str] = None
     cnpj: Optional[str] = None
+
     email: Optional[EmailStr] = None
-    
+
     # 🆕 NOVOS: Dados extras do cliente
     customer_phone: Optional[str] = None  # Telefone do cliente
     customer_id: Optional[str] = None     # ID externo customizado do cliente
-    
+
     # 🆕 NOVOS: Dados de endereço para o cliente
     customer_cep: Optional[str] = None
     customer_logradouro: Optional[str] = None
@@ -104,7 +111,7 @@ class PixPaymentRequest(BaseModel):
     customer_cidade: Optional[str] = None
     customer_estado: Optional[str] = None
     customer_pais: Optional[str] = "Brasil"
-    
+
     data_marketing: Optional[Dict[str, Any]] = Field(default=None, description="Dados extras de marketing")
 
     @field_validator("amount", mode="before")
@@ -117,6 +124,45 @@ class PixPaymentRequest(BaseModel):
             return decimal_value
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
+
+    @field_validator("customer_cpf_cnpj", "cpf", "cnpj", mode="before")
+    @classmethod
+    def normalize_document(cls, v):
+        """Remove formatação de CPF/CNPJ."""
+        if v:
+            return re.sub(r'[^0-9]', '', str(v))
+        return v
+
+    @model_validator(mode="after")
+    def validate_and_migrate_document_fields(self):
+        """
+        Valida e migra campos de documento para garantir compatibilidade.
+        Prioriza customer_cpf_cnpj sobre cpf/cnpj (campos deprecated).
+        """
+        # Se customer_cpf_cnpj foi fornecido, é o campo preferencial
+        if self.customer_cpf_cnpj:
+            # Log de alerta se campos antigos também foram fornecidos
+            if self.cpf or self.cnpj:
+                logger.warning(
+                    "⚠️ Campos 'cpf'/'cnpj' ignorados pois 'customer_cpf_cnpj' foi fornecido. "
+                    "Recomendação: use apenas 'customer_cpf_cnpj'."
+                )
+            return self
+
+        # Se apenas cpf OU cnpj foi fornecido, migra automaticamente para customer_cpf_cnpj
+        if self.cpf and not self.cnpj:
+            self.customer_cpf_cnpj = self.cpf
+            logger.info("🔄 Campo 'cpf' migrado automaticamente para 'customer_cpf_cnpj'")
+        elif self.cnpj and not self.cpf:
+            self.customer_cpf_cnpj = self.cnpj
+            logger.info("🔄 Campo 'cnpj' migrado automaticamente para 'customer_cpf_cnpj'")
+        elif self.cpf and self.cnpj:
+            raise ValueError(
+                "Forneça apenas 'cpf' OU 'cnpj', não ambos. "
+                "Recomendação: use 'customer_cpf_cnpj' que unifica ambos campos."
+            )
+
+        return self
 
 
 class TokenizeCardRequest(BaseModel):
@@ -562,8 +608,14 @@ async def create_pix_payment(
     if payment_data.due_date:
         if not payment_data.nome_devedor:
             raise HTTPException(status_code=400, detail="Para cobrança com vencimento, 'nome_devedor' é obrigatório.")
-        if not (payment_data.cpf or payment_data.cnpj):
-            raise HTTPException(status_code=400, detail="Para cobrança com vencimento, 'cpf' ou 'cnpj' é obrigatório.")
+
+        # ✅ ATUALIZADO: Aceita customer_cpf_cnpj (novo) OU cpf/cnpj (backward compatibility)
+        has_document = payment_data.customer_cpf_cnpj or payment_data.cpf or payment_data.cnpj
+        if not has_document:
+            raise HTTPException(
+                status_code=400,
+                detail="Para cobrança com vencimento, 'customer_cpf_cnpj' (ou 'cpf'/'cnpj') é obrigatório."
+            )
 
     # Evita duplicação - ✅ USANDO INTERFACE
     existing_payment = await payment_repo.get_payment(transaction_id, empresa_id)
@@ -691,7 +743,8 @@ async def create_pix_payment(
             "local_id": transaction_id,
             "name": payment_data.nome_devedor or "",
             "email": payment_data.email,
-            "cpfCnpj": payment_data.cpf or payment_data.cnpj,
+            # ✅ ATUALIZADO: Aceita customer_cpf_cnpj (novo) OU cpf/cnpj (backward compatibility)
+            "cpfCnpj": payment_data.customer_cpf_cnpj or payment_data.cpf or payment_data.cnpj,
             "externalReference": transaction_id,
             "due_date": (payment_data.due_date or datetime.now(timezone.utc).date()).isoformat(),
             "pixKey": chave_pix  # 🔄 Usa chave selecionada (banco ou payload)
