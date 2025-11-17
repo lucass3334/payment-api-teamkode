@@ -1,6 +1,7 @@
 # payment_kode_api/app/services/gateways/payment_payload_mapper.py
 
 from typing import Dict, Any
+import re
 
 
 def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,14 +37,31 @@ def map_to_sicredi_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     if data.get("due_date"):
         if not data.get("nome_devedor"):
             raise ValueError("Para cobranças com vencimento, 'nome_devedor' é obrigatório.")
-        if not data.get("cpf") and not data.get("cnpj"):
-            raise ValueError("Para cobranças com vencimento, 'cpf' ou 'cnpj' é obrigatório.")
+
+        # ✅ ATUALIZADO: Aceita customer_cpf_cnpj (novo) OU cpf/cnpj (backward compatibility)
+        cpf_cnpj = (
+            data.get("customer_cpf_cnpj") or
+            data.get("cpf") or
+            data.get("cnpj")
+        )
+
+        if not cpf_cnpj:
+            raise ValueError("Para cobranças com vencimento, documento (CPF/CNPJ) é obrigatório.")
+
+        # Remove formatação e detecta tipo automaticamente (11 = CPF, 14 = CNPJ)
+        clean_doc = re.sub(r'[^0-9]', '', str(cpf_cnpj))
 
         devedor: Dict[str, Any] = {"nome": data["nome_devedor"]}
-        if data.get("cpf"):
-            devedor["cpf"] = data["cpf"]
+
+        if len(clean_doc) == 11:
+            devedor["cpf"] = clean_doc
+        elif len(clean_doc) == 14:
+            devedor["cnpj"] = clean_doc
         else:
-            devedor["cnpj"] = data["cnpj"]
+            raise ValueError(
+                f"Documento inválido: deve ter 11 (CPF) ou 14 (CNPJ) dígitos. "
+                f"Recebido: {len(clean_doc)} dígitos."
+            )
 
         payload["devedor"] = devedor
 

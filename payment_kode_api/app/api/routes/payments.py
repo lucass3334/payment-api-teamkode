@@ -1,7 +1,7 @@
 # payment_kode_api/app/api/routes/payments.py
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
-from pydantic import BaseModel, Field, field_validator, EmailStr
+from pydantic import BaseModel, Field, field_validator, model_validator, EmailStr
 from typing import Annotated, Optional, Dict, Any
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
@@ -12,6 +12,7 @@ from io import BytesIO
 import base64
 import qrcode
 import asyncio
+import re
 
 from payment_kode_api.app.core.config import settings
 from payment_kode_api.app.database.supabase_client import supabase
@@ -79,7 +80,7 @@ def generate_txid() -> str:
 
 class PixPaymentRequest(BaseModel):
     amount: Decimal
-    chave_pix: PixKeyType
+    chave_pix: Optional[PixKeyType] = None  # 🔄 Opcional - usa do banco se não fornecida
     txid: Optional[str] = None
     transaction_id: Optional[TransactionIDType] = None
     webhook_url: Optional[str] = None
@@ -87,14 +88,20 @@ class PixPaymentRequest(BaseModel):
 
     # Dados do cliente (existentes)
     nome_devedor: Optional[str] = None
+
+    # ✅ NOVO: Campo unificado (RECOMENDADO para novas integrações)
+    customer_cpf_cnpj: Optional[str] = None
+
+    # ⚠️ DEPRECATED: Manter para backward compatibility - preferir customer_cpf_cnpj
     cpf: Optional[str] = None
     cnpj: Optional[str] = None
+
     email: Optional[EmailStr] = None
-    
+
     # 🆕 NOVOS: Dados extras do cliente
     customer_phone: Optional[str] = None  # Telefone do cliente
     customer_id: Optional[str] = None     # ID externo customizado do cliente
-    
+
     # 🆕 NOVOS: Dados de endereço para o cliente
     customer_cep: Optional[str] = None
     customer_logradouro: Optional[str] = None
@@ -104,7 +111,7 @@ class PixPaymentRequest(BaseModel):
     customer_cidade: Optional[str] = None
     customer_estado: Optional[str] = None
     customer_pais: Optional[str] = "Brasil"
-    
+
     data_marketing: Optional[Dict[str, Any]] = Field(default=None, description="Dados extras de marketing")
 
     @field_validator("amount", mode="before")
@@ -117,6 +124,45 @@ class PixPaymentRequest(BaseModel):
             return decimal_value
         except Exception as e:
             raise ValueError(f"Valor inválido para amount: {v}. Erro: {e}")
+
+    @field_validator("customer_cpf_cnpj", "cpf", "cnpj", mode="before")
+    @classmethod
+    def normalize_document(cls, v):
+        """Remove formatação de CPF/CNPJ."""
+        if v:
+            return re.sub(r'[^0-9]', '', str(v))
+        return v
+
+    @model_validator(mode="after")
+    def validate_and_migrate_document_fields(self):
+        """
+        Valida e migra campos de documento para garantir compatibilidade.
+        Prioriza customer_cpf_cnpj sobre cpf/cnpj (campos deprecated).
+        """
+        # Se customer_cpf_cnpj foi fornecido, é o campo preferencial
+        if self.customer_cpf_cnpj:
+            # Log de alerta se campos antigos também foram fornecidos
+            if self.cpf or self.cnpj:
+                logger.warning(
+                    "⚠️ Campos 'cpf'/'cnpj' ignorados pois 'customer_cpf_cnpj' foi fornecido. "
+                    "Recomendação: use apenas 'customer_cpf_cnpj'."
+                )
+            return self
+
+        # Se apenas cpf OU cnpj foi fornecido, migra automaticamente para customer_cpf_cnpj
+        if self.cpf and not self.cnpj:
+            self.customer_cpf_cnpj = self.cpf
+            logger.info("🔄 Campo 'cpf' migrado automaticamente para 'customer_cpf_cnpj'")
+        elif self.cnpj and not self.cpf:
+            self.customer_cpf_cnpj = self.cnpj
+            logger.info("🔄 Campo 'cnpj' migrado automaticamente para 'customer_cpf_cnpj'")
+        elif self.cpf and self.cnpj:
+            raise ValueError(
+                "Forneça apenas 'cpf' OU 'cnpj', não ambos. "
+                "Recomendação: use 'customer_cpf_cnpj' que unifica ambos campos."
+            )
+
+        return self
 
 
 class TokenizeCardRequest(BaseModel):
@@ -562,8 +608,14 @@ async def create_pix_payment(
     if payment_data.due_date:
         if not payment_data.nome_devedor:
             raise HTTPException(status_code=400, detail="Para cobrança com vencimento, 'nome_devedor' é obrigatório.")
-        if not (payment_data.cpf or payment_data.cnpj):
-            raise HTTPException(status_code=400, detail="Para cobrança com vencimento, 'cpf' ou 'cnpj' é obrigatório.")
+
+        # ✅ ATUALIZADO: Aceita customer_cpf_cnpj (novo) OU cpf/cnpj (backward compatibility)
+        has_document = payment_data.customer_cpf_cnpj or payment_data.cpf or payment_data.cnpj
+        if not has_document:
+            raise HTTPException(
+                status_code=400,
+                detail="Para cobrança com vencimento, 'customer_cpf_cnpj' (ou 'cpf'/'cnpj') é obrigatório."
+            )
 
     # Evita duplicação - ✅ USANDO INTERFACE
     existing_payment = await payment_repo.get_payment(transaction_id, empresa_id)
@@ -581,7 +633,12 @@ async def create_pix_payment(
     except Exception as e:
         logger.warning(f"⚠️ Erro ao processar cliente PIX (continuando sem cliente): {e}")
 
-    # Salva como pending - ✅ USANDO INTERFACE
+    # Determina provider de PIX ANTES de salvar - ✅ USANDO INTERFACE
+    config = await config_repo.get_empresa_config(empresa_id)
+    pix_provider = config.get("pix_provider", "sicredi").lower()
+    logger.info(f"🔍 [create_pix_payment] pix_provider configurado: {pix_provider}")
+
+    # Salva como pending com gateway tracking - ✅ USANDO INTERFACE
     payment_record = {
         "empresa_id": empresa_id,
         "transaction_id": transaction_id,
@@ -590,25 +647,34 @@ async def create_pix_payment(
         "status": "pending",
         "webhook_url": payment_data.webhook_url,
         "txid": txid,
-        "data_marketing": payment_data.data_marketing
+        "data_marketing": payment_data.data_marketing,
+        "pix_gateway": pix_provider  # 🔄 NOVO: Rastrear gateway usado
     }
-    
+
     # 🆕 NOVO: Adicionar cliente_id se foi criado
     if cliente_uuid:
         payment_record["cliente_id"] = cliente_uuid
-    
-    await payment_repo.save_payment(payment_record)
-    logger.debug("💾 [create_pix_payment] payment registrado como pending no DB")
 
-    # Determina provider de PIX - ✅ USANDO INTERFACE
-    config = await config_repo.get_empresa_config(empresa_id)
-    pix_provider = config.get("pix_provider", "sicredi").lower()
-    logger.info(f"🔍 [create_pix_payment] pix_provider configurado: {pix_provider}")
+    await payment_repo.save_payment(payment_record)
+    logger.debug(f"💾 [create_pix_payment] payment registrado como pending no DB (gateway: {pix_provider})")
 
     if pix_provider == "sicredi":
         # ——— Fluxo Sicredi ———
+        # 🔄 NOVO: Busca chave PIX do banco se não fornecida no payload
+        chave_pix = payment_data.chave_pix or config.get("sicredi_chave_pix")
+
+        if not chave_pix:
+            logger.error(f"❌ Chave PIX Sicredi não configurada para empresa {empresa_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="Chave PIX Sicredi não configurada. Configure em empresas_config.sicredi_chave_pix ou envie no payload."
+            )
+
+        logger.info(f"🔑 [create_pix_payment] Usando chave PIX: {chave_pix[:8]}... (origem: {'payload' if payment_data.chave_pix else 'banco'})")
+
         sicredi_payload = map_to_sicredi_payload({
             **payment_data.dict(exclude_unset=False),
+            "chave_pix": chave_pix,  # 🔄 Força uso da chave selecionada
             "txid": txid,
             "due_date": payment_data.due_date.isoformat() if payment_data.due_date else None
         })
@@ -626,7 +692,12 @@ async def create_pix_payment(
         if payment_data.webhook_url:
             background_tasks.add_task(
                 _poll_sicredi_status,
-                txid, empresa_id, transaction_id, payment_data.webhook_url, config_repo
+                txid,
+                empresa_id,
+                transaction_id,
+                payment_data.webhook_url,
+                config_repo,
+                "sicredi"  # 🔄 NOVO: passa gateway usado
             )
 
         result = {
@@ -645,15 +716,25 @@ async def create_pix_payment(
 
     elif pix_provider == "asaas":
         # ——— Fluxo Asaas ———
-        if not payment_data.chave_pix:
-            raise HTTPException(status_code=400, detail="Para Pix via Asaas, 'chave_pix' é obrigatório.")
+        # 🔄 NOVO: Busca chave PIX do banco se não fornecida no payload
+        chave_pix = payment_data.chave_pix or config.get("asaas_chave_pix")
+
+        if not chave_pix:
+            logger.error(f"❌ Chave PIX Asaas não configurada para empresa {empresa_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="Chave PIX Asaas não configurada. Configure em empresas_config.asaas_chave_pix ou envie no payload."
+            )
+
+        logger.info(f"🔑 [create_pix_payment] Usando chave PIX: {chave_pix[:8]}... (origem: {'payload' if payment_data.chave_pix else 'banco'})")
 
         # Valida se a chave já está cadastrada
-        await validate_asaas_pix_key(empresa_id, payment_data.chave_pix)
+        await validate_asaas_pix_key(empresa_id, chave_pix)
 
         # Monta payload simples de Pix
         pix_payload = map_to_asaas_pix_payload({
             **payment_data.dict(exclude_unset=False),
+            "chave_pix": chave_pix,  # 🔄 Força uso da chave selecionada
             "txid": txid
         })
 
@@ -662,10 +743,11 @@ async def create_pix_payment(
             "local_id": transaction_id,
             "name": payment_data.nome_devedor or "",
             "email": payment_data.email,
-            "cpfCnpj": payment_data.cpf or payment_data.cnpj,
+            # ✅ ATUALIZADO: Aceita customer_cpf_cnpj (novo) OU cpf/cnpj (backward compatibility)
+            "cpfCnpj": payment_data.customer_cpf_cnpj or payment_data.cpf or payment_data.cnpj,
             "externalReference": transaction_id,
             "due_date": (payment_data.due_date or datetime.now(timezone.utc).date()).isoformat(),
-            "pixKey": payment_data.chave_pix
+            "pixKey": chave_pix  # 🔄 Usa chave selecionada (banco ou payload)
         }
 
         logger.info(f"🚀 [create_pix_payment] criando cobrança Asaas para txid={txid}")
@@ -699,7 +781,10 @@ async def create_pix_payment(
             logger.info(f"🔄 [create_pix_payment] iniciando polling Asaas para transaction_id={transaction_id}")
             background_tasks.add_task(
                 _poll_asaas_pix_status,
-                transaction_id, empresa_id, payment_data.webhook_url
+                transaction_id,
+                empresa_id,
+                payment_data.webhook_url,
+                "asaas"  # 🔄 NOVO: passa gateway usado
             )
         else:
             logger.warning(f"⚠️ [create_pix_payment] webhook_url não fornecido, polling NÃO será iniciado")
@@ -725,13 +810,20 @@ async def _poll_sicredi_status(
     empresa_id: str,
     transaction_id: str,
     webhook_url: str,
-    config_repo: ConfigRepositoryInterface
+    config_repo: ConfigRepositoryInterface,
+    gateway: str = "sicredi"  # 🔄 NOVO: rastreamento de gateway
 ):
     """
     Polling de status de cobrança Pix Sicredi.
     ✅ ATUALIZADO: Agora usa ConfigRepositoryInterface para token
+    🔄 NOVO: Valida que está consultando o gateway correto
     """
-    logger.info(f"🔄 [_poll_sicredi_status] iniciar: txid={txid} transaction_id={transaction_id}")
+    # Validação de segurança: garante que está consultando o gateway certo
+    if gateway != "sicredi":
+        logger.error(f"❌ [_poll_sicredi_status] Polling Sicredi chamado para gateway errado: {gateway}")
+        return
+
+    logger.info(f"🔄 [_poll_sicredi_status] iniciar: txid={txid} transaction_id={transaction_id} gateway={gateway}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=15)
     interval = 5
@@ -821,13 +913,21 @@ async def _poll_asaas_pix_status(
     transaction_id: str,
     empresa_id: str,
     webhook_url: str,
+    gateway: str = "asaas",  # 🔄 NOVO: rastreamento de gateway
     interval: int = 5,
     timeout_minutes: int = 15
 ):
     """
     Polling de status de uma cobrança PIX via Asaas.
     ✅ ATUALIZADO: Agora usa interfaces quando necessário
+    🔄 NOVO: Valida que está consultando o gateway correto
     """
+    # Validação de segurança: garante que está consultando o gateway certo
+    if gateway != "asaas":
+        logger.error(f"❌ [_poll_asaas_pix_status] Polling Asaas chamado para gateway errado: {gateway}")
+        return
+
+    logger.info(f"🔄 [_poll_asaas_pix_status] iniciar: transaction_id={transaction_id} gateway={gateway}")
     start = datetime.now(timezone.utc)
     deadline = start + timedelta(minutes=timeout_minutes)
 
